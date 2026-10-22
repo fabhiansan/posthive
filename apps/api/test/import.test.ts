@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseCsv } from "../src/lib/import/csv.js";
 import {
-  getTemplateCsv,
   makeImportKey,
   parsePlanningCsv,
   parsePlatforms,
@@ -31,21 +30,23 @@ test("CSV parser supports semicolon-separated files", () => {
   assert.deepEqual(rows[1], ["First", "Hello; world"]);
 });
 
-test("two-row client header is detected and designCopy is preserved exactly", () => {
+test("two-row client header is detected, designCopy and Caption are preserved", () => {
   const header1 = [
-    "Category", "", "Content Title", "Link Copywrite", "Aset Pendukung",
+    "Category", "", "Content Title", "Link Copywrite", "Caption", "Aset Pendukung",
     "Post Date", "Platform", "PIC Content", "Content Review", "", "", "", "Status",
   ].join(",");
   const header2 = [
-    "Content Pillar", "Content Category", "", "", "",
+    "Content Pillar", "Content Category", "", "", "", "",
     "", "", "", "Acc by", "PIC Design", "Progress Content", "Link Output", "",
   ].join(",");
-  const copy = 'Slide 1: line one, with comma\nSlide 2: quote "hello"\n\nCaption: not imported as caption';
+  const copy = 'Slide 1: line one, with comma\nSlide 2: quote "hello"';
+  const caption = "Caption line one.\n\nCaption line two with a comma, and a quote \"hello\".";
   const data = [
     "Educational",
     "Geospatial Insight/Expertise",
     quote("When Environmental Data Leads to Enforcement"),
     quote(copy),
+    quote(caption),
     "https://www.figma.com/design/example",
     "2026-01-27",
     "LinkedIn",
@@ -65,6 +66,7 @@ test("two-row client header is detected and designCopy is preserved exactly", ()
   assert.equal(parsed.rows.length, 1);
   assert.equal(parsed.rows[0].title, "When Environmental Data Leads to Enforcement");
   assert.equal(parsed.rows[0].designCopy, copy);
+  assert.equal(parsed.rows[0].caption, caption);
   assert.equal(parsed.rows[0].postDate, "2026-01-27");
   assert.equal(parsed.rows[0].scheduledFor.toISOString(), "2026-01-27T02:00:00.000Z");
   assert.deepEqual(parsed.rows[0].platforms, ["linkedin"]);
@@ -76,14 +78,14 @@ test("two-row client header is detected and designCopy is preserved exactly", ()
   assert.ok(parsed.rows[0].warnings.some((warning) => warning.includes("Published")));
 });
 
-test("template CSV parses back with both sample rows and multiline design copy", () => {
-  const parsed = parsePlanningCsv(getTemplateCsv());
-  assert.equal(parsed.invalidRows.length, 0);
-  assert.equal(parsed.duplicates.length, 0);
-  assert.equal(parsed.rows.length, 2);
-  assert.ok(parsed.rows[0].designCopy.includes("\n"));
-  assert.deepEqual(parsed.rows[0].platforms, ["linkedin"]);
-  assert.deepEqual(parsed.rows[1].platforms, ["linkedin", "instagram"]);
+test("Caption column is optional and leaves content text empty when absent", () => {
+  const parsed = parsePlanningCsv(
+    "Content Title,Link Copywrite,Post Date,Platform\nDesign only,Slide 1: draft,2026-10-22,LinkedIn",
+  );
+
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0].designCopy, "Slide 1: draft");
+  assert.equal(parsed.rows[0].caption, "");
 });
 
 test("duplicate rows in one file are reported and skipped", () => {

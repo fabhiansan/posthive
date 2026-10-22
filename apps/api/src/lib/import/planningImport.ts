@@ -9,6 +9,7 @@ type PlanningField =
   | "pillar"
   | "category"
   | "designCopy"
+  | "caption"
   | "assetNotes"
   | "postDate"
   | "platform"
@@ -26,6 +27,7 @@ const HEADER_ALIASES: Record<PlanningField, string[]> = {
   pillar: ["content pillar", "main content pillar", "pillar", "pilar konten", "pilar"],
   category: ["content category", "content categories", "kategori konten", "kategori"],
   designCopy: ["link copywrite", "link copywriter", "link copy", "copywrite", "copywriter", "design copy", "copy desain"],
+  caption: ["caption", "caption copy", "copy caption", "caption text", "teks caption"],
   assetNotes: ["aset pendukung", "asset pendukung", "supporting asset", "supporting assets", "asset notes"],
   postDate: ["post date", "tanggal post", "tanggal", "date"],
   platform: ["platform", "platforms", "channel", "kanal"],
@@ -71,6 +73,7 @@ export interface PlanningRow {
   platforms: string[];
   platformLabel: string;
   designCopy: string;
+  caption: string;
   assetNotes: string;
   pillar: string | null;
   category: string | null;
@@ -463,6 +466,7 @@ export function parsePlanningCsv(input: string): PlanningParseResult {
       platformLabel: parsedPlatforms.label,
       // Preserve the raw cell exactly (including line breaks) for future Figma placeholders.
       designCopy: getCell(row, header.columns, "designCopy"),
+      caption: cleanCell(getCell(row, header.columns, "caption")),
       assetNotes: cleanCell(getCell(row, header.columns, "assetNotes")),
       pillar: nullable(cleanCell(getCell(row, header.columns, "pillar"))),
       category: nullable(cleanCell(getCell(row, header.columns, "category"))),
@@ -486,69 +490,4 @@ export function parsePlanningCsv(input: string): PlanningParseResult {
     delimiter,
     totalDataRows: nonBlankRows.length,
   };
-}
-
-export function getTemplateHeaders(): string[] {
-  return [
-    "Content Pillar",
-    "Content Category",
-    "Content Title",
-    "Link Copywrite",
-    "Aset Pendukung",
-    "Post Date",
-    "Platform",
-    "PIC Content",
-    "Content Review",
-    "Acc by",
-    "PIC Design",
-    "Progress Content",
-    "Link Output",
-    "Status",
-  ];
-}
-
-function csvEscape(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-export function getTemplateCsv(): string {
-  const headers = getTemplateHeaders();
-  const rows = [
-    [
-      "Educational",
-      "Geospatial Insight/Expertise",
-      "When Environmental Data Leads to Enforcement",
-      "Slide 1: Draft headline\nSlide 2: Supporting proof\nSlide 3: Closing CTA\n\nCaption: Tulis caption di Posthive, bukan di sini.",
-      "https://www.figma.com/design/example",
-      "2026-10-30",
-      "LinkedIn",
-      "ICA",
-      "Bang Jum",
-      "Ka Yasin",
-      "Finish Design",
-      "https://www.figma.com/design/example",
-      "Planned",
-    ],
-    [
-      "Promotional",
-      "Product Features",
-      "Example mirroring row",
-      "Slide 1: Example copy with a comma, a quote \"like this\", and a new line.",
-      "",
-      "2026-11-05",
-      "Mirroring (LI&Ig)",
-      "ICA",
-      "Bang Jum",
-      "Ka Yasin",
-      "In Progress",
-      "",
-      "",
-    ],
-  ];
-
-  const lines = [headers, ...rows].map((row) => row.map(csvEscape).join(","));
-  return `\uFEFF${lines.join("\r\n")}\r\n`;
 }

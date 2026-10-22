@@ -44,6 +44,7 @@ Optional:
 | `Content Pillar` | `content.pillar` |
 | `Content Category` | `content.category` |
 | `Link Copywrite` | `content.designCopy` (raw, preserved exactly) |
+| `Caption` | `content.text` (caption final; optional) |
 | `Aset Pendukung` | `content.assetNotes` (links/notes, not media uploads) |
 | `PIC Content` | `content.picContent` |
 | `Content Review` | `content.contentReview` |
@@ -53,7 +54,7 @@ Optional:
 | `Link Output` | `content.outputUrl` |
 | `Status` | `content.sourceStatus` |
 
-Caption and media are **not** in the Excel/CSV. The import leaves `content.text` empty and `content.mediaUrls` empty. `Link Copywrite` is design copy, not a caption.
+Media is **not** in the Excel/CSV. The import leaves `content.mediaUrls` empty. `Link Copywrite` is design copy, not a caption. When the optional `Caption` column is present, its value is stored as `content.text`; when it is absent or empty, the draft is created without a caption. The client Excel copy places `Caption` in column N so the existing merged headers and drawings are not shifted.
 
 ## Date rules
 
@@ -118,6 +119,9 @@ Response:
       "designCopyPreview": "Slide 1...",
       "designCopyLength": 2450,
       "designCopyHasLineBreaks": true,
+      "captionPreview": "Most organizations today...",
+      "captionLength": 780,
+      "captionHasLineBreaks": true,
       "targets": [],
       "warnings": ["Akun linkedin belum terhubung; draft dibuat tanpa target."]
     }
@@ -133,7 +137,7 @@ Response:
 }
 ```
 
-`designCopyPreview` is truncated to 500 characters. The full value is only stored during commit, from the original file.
+`designCopyPreview` and `captionPreview` are truncated to 500 characters. The full values are only stored during commit, from the original file.
 
 ### Commit
 
@@ -175,14 +179,6 @@ Response:
 }
 ```
 
-### Template
-
-```http
-GET /jobs/import/template
-```
-
-Returns `posthive-content-plan-template.csv` with headers and two sample rows, including a multiline `Link Copywrite` sample.
-
 ## Draft behavior
 
 Imported rows are created with:
@@ -192,7 +188,7 @@ status         = draft
 approvalStatus = null
 scheduledFor   = date at 09:00 WIB
 commentText    = null
-content.text   = ""
+content.text   = caption from the Caption column (may be empty)
 content.mediaUrls = []
 ```
 
@@ -203,8 +199,10 @@ The content JSON also stores:
 ```json
 {
   "title": "...",
+  "text": "Caption dari kolom Caption",
   "designCopy": "...",
   "designCopySource": "Link Copywrite",
+  "captionSource": "Caption",
   "assetNotes": "...",
   "platforms": ["linkedin", "instagram"],
   "sourceStatus": "Published",
@@ -217,7 +215,7 @@ The content JSON also stores:
 }
 ```
 
-`designCopy` is preserved exactly, including line breaks, quotes, and commas. It is intentionally not split into slides; future Figma placeholder mapping can build on this field without re-importing.
+`designCopy` is preserved exactly, including line breaks, quotes, and commas. It is intentionally not split into slides; future Figma placeholder mapping can build on this field without re-importing. `text` is the caption from the separate `Caption` column, so design copy stays clean.
 
 ## Duplicate prevention
 
@@ -227,7 +225,7 @@ The content JSON also stores:
 normalized title | postDate | sorted platforms
 ```
 
-There is a unique constraint on `[workspaceId, importKey]`. Re-importing the same plan returns `created: 0` for rows that already exist. Design-copy changes do not create a duplicate, and the existing draft is not overwritten.
+There is a unique constraint on `[workspaceId, importKey]`. Re-importing the same plan returns `created: 0` for rows that already exist. Design-copy or caption changes do not create a duplicate, and the existing draft is not overwritten. To apply a new caption to an already-imported row, edit the draft or delete it and import again.
 
 ## Frontend notes
 
@@ -261,14 +259,13 @@ await fetch(`${API_BASE}/jobs/import/commit`, {
 - A draft can have zero targets; don't treat that as an import failure.
 - `Website` rows cannot be scheduled to a social account.
 - Show `warnings` from preview and `skipped` from commit so users understand invalid/duplicate rows.
-- The edit flow should let users add a caption, media, and accounts before scheduling. The existing `PATCH /jobs/:id` preserves unknown content JSON fields such as `designCopy`.
+- The edit flow should let users edit the imported caption, add media, and accounts before scheduling. The existing `PATCH /jobs/:id` preserves unknown content JSON fields such as `designCopy`.
 
 ### Implemented page
 
 - Route: `/jobs/import` (`apps/web/src/app/jobs/import/page.tsx`).
 - Entry points: sidebar **Import Plan** and the **Import Plan** button on `/jobs`.
 - Upload or paste a CSV, preview valid/invalid/duplicate rows, select valid rows, then commit the selection.
-- Download the template from the Format Guide tab (`GET /jobs/import/template`).
 - Warnings and skipped rows stay visible in the preview table after commit.
 
 ## Out of scope

@@ -8,7 +8,6 @@ import {
 import {
   CsvHeaderError,
   MAX_IMPORT_BYTES,
-  getTemplateCsv,
   parsePlanningCsv,
   type PlanningDuplicateRow,
   type PlanningRow,
@@ -192,6 +191,9 @@ function previewRow(row: PlanningRow, targets: ResolvedTarget[], targetWarnings:
     designCopyPreview: row.designCopy.slice(0, 500),
     designCopyLength: row.designCopy.length,
     designCopyHasLineBreaks: row.designCopy.includes("\n") || row.designCopy.includes("\r"),
+    captionPreview: row.caption.slice(0, 500),
+    captionLength: row.caption.length,
+    captionHasLineBreaks: row.caption.includes("\n") || row.caption.includes("\r"),
     targets,
     warnings: [...row.warnings, ...targetWarnings],
   };
@@ -243,17 +245,6 @@ function importError(reply: { status: (code: number) => { send: (body: unknown) 
 }
 
 export async function importRoutes(app: FastifyInstance): Promise<void> {
-  app.get(
-    "/jobs/import/template",
-    { preHandler: [withAuth], config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
-    async (_req, reply) => {
-      return reply
-        .header("Content-Disposition", 'attachment; filename="posthive-content-plan-template.csv"')
-        .type("text/csv; charset=utf-8")
-        .send(getTemplateCsv());
-    },
-  );
-
   app.post(
     "/jobs/import/preview",
     { preHandler: [withAuth], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
@@ -343,11 +334,12 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
           const resolved = resolveTargets(row.platforms, accounts);
           const importedAt = new Date().toISOString();
           const content = {
-            text: "",
+            text: row.caption,
             mediaUrls: [],
             title: row.title,
             designCopy: row.designCopy,
             designCopySource: "Link Copywrite",
+            captionSource: "Caption",
             assetNotes: row.assetNotes,
             pillar: row.pillar,
             category: row.category,

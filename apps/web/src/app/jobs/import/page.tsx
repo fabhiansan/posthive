@@ -34,6 +34,9 @@ interface PreviewRow {
   designCopyPreview: string;
   designCopyLength: number;
   designCopyHasLineBreaks: boolean;
+  captionPreview: string;
+  captionLength: number;
+  captionHasLineBreaks: boolean;
   targets: PreviewTarget[];
   warnings: string[];
 }
@@ -116,6 +119,7 @@ const OPTIONAL_COLUMNS = [
   { name: "Content Pillar", description: "Pilar konten dari file marketing." },
   { name: "Content Category", description: "Kategori konten." },
   { name: "Link Copywrite", description: "Design copy mentah. Disimpan sebagai content.designCopy." },
+  { name: "Caption", description: "Caption final. Disimpan sebagai content.text; boleh kosong." },
   { name: "Aset Pendukung", description: "Link/notes aset, bukan upload media." },
   { name: "PIC Content", description: "PIC konten." },
   { name: "Content Review / Acc by", description: "Reviewer atau approver." },
@@ -358,45 +362,6 @@ export default function ImportContentPlanPage() {
     }
   }
 
-  async function downloadTemplate() {
-    try {
-      let response = await fetch(`${API_BASE}/jobs/import/template`, {
-        credentials: "include",
-      });
-
-      if (response.status === 401) {
-        await fetch(`${API_BASE}/auth/refresh`, { method: "POST", credentials: "include" });
-        response = await fetch(`${API_BASE}/jobs/import/template`, {
-          credentials: "include",
-        });
-      }
-
-      if (!response.ok) {
-        const body = await response.text();
-        let message = `${response.status} error`;
-        try {
-          const parsed = JSON.parse(body) as { error?: string; message?: string };
-          message = parsed.error ?? parsed.message ?? message;
-        } catch {
-          // Keep the generic HTTP error.
-        }
-        throw new Error(message);
-      }
-
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "posthive-content-plan-template.csv";
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
-  }
-
   function clearAll() {
     previewRequestRef.current += 1;
     setCsvText("");
@@ -635,14 +600,6 @@ export default function ImportContentPlanPage() {
               </>
             ) : (
               <>
-                <button
-                  onClick={downloadTemplate}
-                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-colors hover:opacity-90"
-                  style={{ backgroundColor: "#1f1f2e", color: "#818cf8", border: "1px solid #3730a3" }}
-                >
-                  Download CSV template
-                </button>
-
                 <div>
                   <p className="text-xs font-semibold mb-3" style={{ color: "#ededed" }}>Required columns</p>
                   <div className="space-y-3">
@@ -681,9 +638,9 @@ export default function ImportContentPlanPage() {
                 </div>
 
                 <div className="rounded-xl p-3" style={{ backgroundColor: "#1a1200", border: "1px solid #3a2800" }}>
-                  <p className="text-[11px] font-semibold mb-1" style={{ color: "#c9a227" }}>Link Copywrite bukan caption</p>
+                  <p className="text-[11px] font-semibold mb-1" style={{ color: "#c9a227" }}>Link Copywrite = design copy, Caption = caption final</p>
                   <p className="text-[11px] leading-relaxed" style={{ color: "#8a6e1a" }}>
-                    Isi kolom ini disimpan mentah sebagai design copy. Caption dan media tetap diisi manual di Posthive sebelum scheduling.
+                    Isi Link Copywrite disimpan mentah sebagai content.designCopy. Isi Caption disimpan sebagai content.text. Media tetap diisi manual di Posthive sebelum scheduling.
                   </p>
                 </div>
 
@@ -796,6 +753,7 @@ export default function ImportContentPlanPage() {
                       <th className="text-left px-4 py-3 font-semibold whitespace-nowrap" style={{ color: "#444" }}>Post Date</th>
                       <th className="text-left px-4 py-3 font-semibold" style={{ color: "#444" }}>Platform</th>
                       <th className="text-left px-4 py-3 font-semibold" style={{ color: "#444" }}>Link Copywrite</th>
+                      <th className="text-left px-4 py-3 font-semibold" style={{ color: "#444" }}>Caption</th>
                       <th className="text-left px-4 py-3 font-semibold" style={{ color: "#444" }}>Status</th>
                     </tr>
                   </thead>
@@ -867,6 +825,18 @@ export default function ImportContentPlanPage() {
                                 ) : <span style={{ color: "#333" }}>—</span>
                               ) : <span style={{ color: "#444" }}>—</span>}
                             </td>
+                            <td className="px-4 py-3" style={{ maxWidth: "260px" }}>
+                              {entry.kind === "valid" ? (
+                                entry.row.captionPreview ? (
+                                  <span
+                                    className={isExpanded ? "" : "block truncate"}
+                                    style={{ color: "#888", whiteSpace: isExpanded ? "pre-wrap" : undefined, wordBreak: "break-word" }}
+                                  >
+                                    {entry.row.captionPreview}
+                                  </span>
+                                ) : <span style={{ color: "#333" }}>—</span>
+                              ) : <span style={{ color: "#444" }}>—</span>}
+                            </td>
                             <td className="px-4 py-3 whitespace-nowrap">
                               <StatusBadge color={status.color} label={status.label} />
                             </td>
@@ -874,7 +844,7 @@ export default function ImportContentPlanPage() {
 
                           {isExpanded && (
                             <tr style={{ borderBottom: "1px solid #1e1e1e", backgroundColor: "#111" }}>
-                              <td colSpan={7} className="px-6 py-4">
+                              <td colSpan={8} className="px-6 py-4">
                                 {entry.kind === "valid" ? (
                                   <div className="space-y-4">
                                     {entry.row.warnings.length > 0 && (
@@ -903,6 +873,7 @@ export default function ImportContentPlanPage() {
                                       <Detail label="Progress" value={entry.row.progress} />
                                       <Detail label="Source Status" value={entry.row.sourceStatus} />
                                       <Detail label="Design Copy Length" value={`${entry.row.designCopyLength} chars`} />
+                                      <Detail label="Caption Length" value={`${entry.row.captionLength} chars`} />
                                     </div>
 
                                     <div>
@@ -922,13 +893,24 @@ export default function ImportContentPlanPage() {
                                     </div>
 
                                     <div>
-                                      <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: "#555" }}>Link Copywrite (preview)</p>
+                                      <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: "#555" }}>Link Copywrite / Design Copy (preview)</p>
                                       {entry.row.designCopyPreview ? (
                                         <pre className="text-[11px] whitespace-pre-wrap break-words rounded-xl p-3 max-h-56 overflow-y-auto" style={{ backgroundColor: "#0a0a0a", border: "1px solid #1e1e1e", color: "#aaa", fontFamily: "monospace" }}>
                                           {entry.row.designCopyPreview}
                                         </pre>
                                       ) : (
                                         <p className="text-[11px]" style={{ color: "#444" }}>Kosong.</p>
+                                      )}
+                                    </div>
+
+                                    <div>
+                                      <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: "#555" }}>Caption / content.text (preview)</p>
+                                      {entry.row.captionPreview ? (
+                                        <pre className="text-[11px] whitespace-pre-wrap break-words rounded-xl p-3 max-h-56 overflow-y-auto" style={{ backgroundColor: "#0a0a0a", border: "1px solid #1e1e1e", color: "#aaa", fontFamily: "monospace" }}>
+                                          {entry.row.captionPreview}
+                                        </pre>
+                                      ) : (
+                                        <p className="text-[11px]" style={{ color: "#444" }}>Kosong. Draft akan dibuat tanpa caption.</p>
                                       )}
                                     </div>
                                   </div>

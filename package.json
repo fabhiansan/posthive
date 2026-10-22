@@ -6,6 +6,7 @@
   "scripts": {
     "dev:db": "docker start posthive-pg || docker run -d --name posthive-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:15",
     "dev": "pnpm dev:db && pnpm --parallel --filter api --filter web dev",
+    "dev:redis": "docker start posthive-redis || docker run -d --name posthive-redis -p 127.0.0.1:6379:6379 redis:7-alpine",
     "db:stop": "docker stop posthive-pg",
     "db:start": "docker start posthive-pg",
     "dev:api": "pnpm --filter api dev",
