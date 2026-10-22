@@ -56,6 +56,10 @@ const STATUS_CONFIG: Record<string, { label: string; dot: string; badge: string 
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
+function contentDisplayTitle(content: { text?: string; title?: string }): string {
+  return content.title?.trim() || content.text?.trim() || "Untitled";
+}
+
 function StatusBadge({ status }: { status: string }) {
   const cfg = STATUS_CONFIG[status] ?? { label: status, dot: "bg-gray-400", badge: "bg-stone-100 text-stone-600 border-stone-200" };
   return (
@@ -109,7 +113,8 @@ function RepeatModal({ job, onClose, onConfirm }: {
   const [interval, setInterval] = useState<"daily" | "weekly" | "monthly">("weekly");
   const [endsAt, setEndsAt] = useState("");
   const [saving, setSaving] = useState(false);
-  const content = JSON.parse(job.content) as { text: string };
+  const content = JSON.parse(job.content) as { text: string; title?: string };
+  const displayTitle = contentDisplayTitle(content);
 
   async function submit() {
     setSaving(true);
@@ -121,7 +126,7 @@ function RepeatModal({ job, onClose, onConfirm }: {
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{ background: "#111111", border: "1px solid #2a2a2a", borderRadius: 16, padding: 24, width: 380, maxWidth: "calc(100vw - 32px)" }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "#ededed", marginBottom: 4 }}>Repeat this post</h3>
-        <p style={{ fontSize: 13, color: "#666", marginBottom: 20 }} className="line-clamp-2">{content.text}</p>
+        <p style={{ fontSize: 13, color: "#666", marginBottom: 20 }} className="line-clamp-2">{displayTitle}</p>
 
         <label style={{ fontSize: 12, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em" }}>Frequency</label>
         <div style={{ display: "flex", gap: 8, marginTop: 8, marginBottom: 20 }}>
@@ -173,7 +178,8 @@ function RejectModal({ job, onClose, onConfirm }: {
 }) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
-  const content = JSON.parse(job.content) as { text: string };
+  const content = JSON.parse(job.content) as { text: string; title?: string };
+  const displayTitle = contentDisplayTitle(content);
 
   async function submit() {
     if (!note.trim()) return;
@@ -186,7 +192,7 @@ function RejectModal({ job, onClose, onConfirm }: {
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{ background: "#111111", border: "1px solid #2a2a2a", borderRadius: 16, padding: 24, width: 420, maxWidth: "calc(100vw - 32px)" }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "#ededed", marginBottom: 4 }}>Reject & send back</h3>
-        <p style={{ fontSize: 13, color: "#666", marginBottom: 20 }} className="line-clamp-2">{content.text}</p>
+        <p style={{ fontSize: 13, color: "#666", marginBottom: 20 }} className="line-clamp-2">{displayTitle}</p>
 
         <label style={{ fontSize: 12, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Review note — what should be fixed?
@@ -230,7 +236,8 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
 }) {
   const [retrying, setRetrying] = useState(false);
   const [analytics, setAnalytics] = useState<Record<string, AnalyticsResult | "loading" | "error">>({});
-  const content = JSON.parse(job.content) as { text: string; mediaUrls?: string[] };
+  const content = JSON.parse(job.content) as { text: string; title?: string; mediaUrls?: string[] };
+  const displayTitle = contentDisplayTitle(content);
   const isDraft = job.status === "draft";
   const scheduled = job.scheduledFor ? new Date(job.scheduledFor) : null;
   const isPast = scheduled ? scheduled < new Date() : false;
@@ -293,7 +300,7 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
           </div>
 
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium leading-snug line-clamp-2" style={{ color: "#ededed" }}>{content.text}</p>
+            <p className="text-sm font-medium leading-snug line-clamp-2" style={{ color: "#ededed" }}>{displayTitle}</p>
             {job.commentText && (
               <p className="mt-1 text-xs flex items-start gap-1" style={{ color: "#666" }}>
                 <span>↳</span><span className="italic line-clamp-1">{job.commentText}</span>

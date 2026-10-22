@@ -11,6 +11,7 @@ import type { Job } from "../app/jobs/page";
 import { PlatformIcon } from "./PlatformIcon";
 
 const STATUS_STYLE: Record<string, { bg: string; border: string; text: string; dot: string }> = {
+  draft:    { bg: "#171717", border: "#404040", text: "#a3a3a3", dot: "#6b7280" },
   pending:  { bg: "#1c1a10", border: "#78560a", text: "#fbbf24", dot: "#f59e0b" },
   running:  { bg: "#0d1526", border: "#1e3a6e", text: "#60a5fa", dot: "#3b82f6" },
   done:     { bg: "#0a1f12", border: "#14532d", text: "#4ade80", dot: "#22c55e" },
@@ -24,9 +25,14 @@ interface Props {
   onEdit?: (job: Job) => void;
 }
 
+function jobDisplayTitle(content: { text?: string; title?: string }): string {
+  return content.title?.trim() || content.text?.trim() || "Untitled";
+}
+
 function EventCard({ info }: { info: EventContentArg }) {
   const job = info.event.extendedProps.job as Job;
-  const content = JSON.parse(job.content) as { text: string };
+  const content = JSON.parse(job.content) as { text?: string; title?: string };
+  const displayTitle = jobDisplayTitle(content);
   const style = STATUS_STYLE[job.status] ?? STATUS_STYLE.pending;
   const isTimegrid = info.view.type.startsWith("timeGrid");
 
@@ -77,7 +83,7 @@ function EventCard({ info }: { info: EventContentArg }) {
           fontSize: 11, fontWeight: 600, color: style.text, lineHeight: 1.3,
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", margin: 0,
         }}>
-          {content.text}
+          {displayTitle}
         </p>
       </div>
     );
@@ -125,7 +131,7 @@ function EventCard({ info }: { info: EventContentArg }) {
         overflow: "hidden", display: "-webkit-box",
         WebkitLineClamp: 2, WebkitBoxOrient: "vertical", margin: 0,
       }}>
-        {content.text}
+        {displayTitle}
       </p>
       {job.commentText && (
         <p style={{
@@ -330,15 +336,18 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
     setIsTouchDevice(window.matchMedia("(pointer: coarse)").matches);
   }, []);
 
-  const events = jobs.filter((job) => job.status !== "draft" && job.scheduledFor).map((job) => ({
-    id: job.id,
-    title: JSON.parse(job.content).text,
-    start: job.scheduledFor!,
-    backgroundColor: "transparent",
-    borderColor: "transparent",
-    editable: job.status === "pending",
-    extendedProps: { job },
-  }));
+  const events = jobs.filter((job) => job.scheduledFor).map((job) => {
+    const content = JSON.parse(job.content) as { text?: string; title?: string };
+    return {
+      id: job.id,
+      title: jobDisplayTitle(content),
+      start: job.scheduledFor!,
+      backgroundColor: "transparent",
+      borderColor: "transparent",
+      editable: job.status === "pending",
+      extendedProps: { job },
+    };
+  });
 
   async function handleEventDrop(info: EventDropArg) {
     if (!info.event.start) { info.revert(); return; }
@@ -405,7 +414,7 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
         eventDrop={handleEventDrop}
         eventClick={(info) => {
           const job = info.event.extendedProps.job as Job;
-          if (job.status === "pending" && onEdit) onEdit(job);
+          if ((job.status === "pending" || job.status === "draft") && onEdit) onEdit(job);
         }}
         eventContent={(info) => <EventCard info={info} />}
         height="auto"
@@ -418,8 +427,8 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
         longPressDelay={isTouchDevice ? 9999 : 1000}
         eventDidMount={(info) => {
           const job = info.event.extendedProps.job as Job;
-          const content = JSON.parse(job.content) as { text: string };
-          info.el.title = content.text + (job.status !== "pending" ? ` (${job.status})` : "");
+          const content = JSON.parse(job.content) as { text?: string; title?: string };
+          info.el.title = jobDisplayTitle(content) + (job.status !== "pending" ? ` (${job.status})` : "");
           if (job.status !== "pending") info.el.style.opacity = "0.8";
         }}
       />

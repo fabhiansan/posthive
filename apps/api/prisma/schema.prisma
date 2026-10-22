@@ -184,6 +184,9 @@ model PostJob {
   reviewedBy       User?     @relation("PostJobReviewedBy", fields: [reviewedByUserId], references: [id])
   reviewedAt       DateTime?
 
+  // Content-plan import idempotency — hash of title + date + platforms.
+  importKey String?
+
   // Repeat / evergreen
   repeatInterval String? // "daily" | "weekly" | "monthly"
   repeatEndsAt   DateTime? // stop spawning after this date (inclusive)
@@ -207,6 +210,7 @@ model PostJob {
   @@index([workspaceId, scheduledFor, id])
   @@index([workspaceId, approvalStatus])
   @@index([repeatParentId])
+  @@unique([workspaceId, importKey])
 }
 
 // One row per (PostJob × Account).
