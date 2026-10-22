@@ -991,6 +991,14 @@ export default function JobsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          <button onClick={() => router.push("/jobs/import")}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl transition-colors hover:opacity-80"
+            style={{ backgroundColor: "#1a1a1a", color: "#888", border: "1px solid #2a2a2a" }}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+            <span className="hidden sm:inline">Import Plan</span>
+          </button>
           <button onClick={() => router.push("/bulk")}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl transition-colors hover:opacity-80"
             style={{ backgroundColor: "#1a1a1a", color: "#888", border: "1px solid #2a2a2a" }}>

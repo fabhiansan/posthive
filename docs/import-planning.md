@@ -254,7 +254,7 @@ await fetch(`${API_BASE}/jobs/import/commit`, {
 });
 ```
 
-If the app uses `apiFetch`, use a `FormData` body only if the helper leaves the `Content-Type` header unset.
+`apiFetch` leaves `Content-Type` unset when the body is a `FormData` instance, so `apiFetch("/jobs/import/preview", { method: "POST", body })` works without extra headers.
 
 - Imported drafts have `scheduledFor`, so the calendar should include them.
 - Calendar/list titles should use `content.title` first, then `content.text`, then a fallback such as `Untitled`.
@@ -262,6 +262,14 @@ If the app uses `apiFetch`, use a `FormData` body only if the helper leaves the 
 - `Website` rows cannot be scheduled to a social account.
 - Show `warnings` from preview and `skipped` from commit so users understand invalid/duplicate rows.
 - The edit flow should let users add a caption, media, and accounts before scheduling. The existing `PATCH /jobs/:id` preserves unknown content JSON fields such as `designCopy`.
+
+### Implemented page
+
+- Route: `/jobs/import` (`apps/web/src/app/jobs/import/page.tsx`).
+- Entry points: sidebar **Import Plan** and the **Import Plan** button on `/jobs`.
+- Upload or paste a CSV, preview valid/invalid/duplicate rows, select valid rows, then commit the selection.
+- Download the template from the Format Guide tab (`GET /jobs/import/template`).
+- Warnings and skipped rows stay visible in the preview table after commit.
 
 ## Out of scope
 
