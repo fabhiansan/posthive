@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { APP_TZ_LABEL, addDaysKey, toWibInput, wibDateKey } from "../lib/datetime";
 
 interface Props {
   value: string; // "YYYY-MM-DDTHH:mm"
@@ -16,15 +17,16 @@ const ITEM_H = 32;
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 
-function parseLocal(v: string): Date {
+// Value is WIB wall-clock — parse the string directly, never through the browser's local Date
+function parseValue(v: string) {
   const [date, time] = v.split("T");
-  const [y, mo, d] = date.split("-").map(Number);
-  const [h, m] = (time ?? "09:00").split(":").map(Number);
-  return new Date(y, mo - 1, d, h, m);
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = (time ?? "09:00").split(":").map(Number);
+  return { year, month: month - 1, day, hour, minute };
 }
 
-function toLocal(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function dateKey(year: number, month: number, day: number) {
+  return `${year}-${pad(month + 1)}-${pad(day)}`;
 }
 
 function ScrollColumn({
@@ -87,17 +89,16 @@ function ScrollColumn({
   );
 }
 
-const HOURS = Array.from({ length: 12 }, (_, i) => String(i + 1));
+const HOURS = Array.from({ length: 24 }, (_, i) => pad(i));
 const MINUTES = Array.from({ length: 60 }, (_, i) => pad(i));
-const AMPM = ["AM", "PM"];
 
 export function DateTimePicker({ value, onChange, dropdownDirection = "up", min }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
-  const selected = parseLocal(value);
-  const [cursor, setCursor] = useState(new Date(selected.getFullYear(), selected.getMonth(), 1));
+  const selected = parseValue(value);
+  const [cursor, setCursor] = useState(new Date(selected.year, selected.month, 1));
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -129,41 +130,28 @@ export function DateTimePicker({ value, onChange, dropdownDirection = "up", min 
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
-  const minDate = (() => {
-    if (!min) return null;
-    const [y, m, d] = min.split("-").map(Number);
-    const dt = new Date(y, m - 1, d); dt.setHours(0, 0, 0, 0); return dt;
-  })();
+  const todayKey = wibDateKey(new Date());
+  const selectedKey = dateKey(selected.year, selected.month, selected.day);
 
   function isDayDisabled(day: number) {
-    if (!minDate) return false;
-    return new Date(year, month, day) < minDate;
+    if (!min) return false;
+    return dateKey(year, month, day) < min;
   }
 
   function selectDay(day: number) {
     if (isDayDisabled(day)) return;
-    const next = new Date(year, month, day, selected.getHours(), selected.getMinutes());
-    onChange(toLocal(next));
+    onChange(`${dateKey(year, month, day)}T${pad(selected.hour)}:${pad(selected.minute)}`);
   }
 
   function setTime(h: number, m: number) {
-    const next = new Date(selected.getFullYear(), selected.getMonth(), selected.getDate(), h, m);
-    onChange(toLocal(next));
+    onChange(`${selectedKey}T${pad(h)}:${pad(m)}`);
   }
 
-  const h12 = selected.getHours() % 12 || 12;
-  const minIndex = selected.getMinutes();
-  const ampmIndex = selected.getHours() >= 12 ? 1 : 0;
-
   const label = (() => {
-    const today = new Date();
-    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-    const isToday = selected.toDateString() === today.toDateString();
-    const isTomorrow = selected.toDateString() === tomorrow.toDateString();
-    const dateStr = isToday ? "Today" : isTomorrow ? "Tomorrow"
-      : selected.toLocaleDateString([], { month: "short", day: "numeric" });
-    const timeStr = selected.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    return `${dateStr} · ${timeStr}`;
+    const dateStr = selectedKey === todayKey ? "Today"
+      : selectedKey === addDaysKey(todayKey, 1) ? "Tomorrow"
+      : `${MONTHS[selected.month]} ${selected.day}`;
+    return `${dateStr} · ${pad(selected.hour)}:${pad(selected.minute)} ${APP_TZ_LABEL}`;
   })();
 
   const cells: (number | null)[] = [
@@ -202,8 +190,8 @@ export function DateTimePicker({ value, onChange, dropdownDirection = "up", min 
           {cells.map((day, i) => {
             if (!day) return <div key={i} />;
             const disabled = isDayDisabled(day);
-            const isSelected = day === selected.getDate() && month === selected.getMonth() && year === selected.getFullYear();
-            const isToday = day === new Date().getDate() && month === new Date().getMonth() && year === new Date().getFullYear();
+            const isSelected = dateKey(year, month, day) === selectedKey;
+            const isToday = dateKey(year, month, day) === todayKey;
             return (
               <button key={i} type="button" onClick={() => selectDay(day)} disabled={disabled}
                 className="w-full aspect-square rounded-lg text-xs font-medium transition flex items-center justify-center"
@@ -224,32 +212,14 @@ export function DateTimePicker({ value, onChange, dropdownDirection = "up", min 
           <ScrollColumn
             label="Hour"
             items={HOURS}
-            selectedIndex={h12 - 1}
-            onSelect={(i) => {
-              const newH12 = i + 1;
-              const isPm = selected.getHours() >= 12;
-              const h24 = isPm ? (newH12 === 12 ? 12 : newH12 + 12) : (newH12 === 12 ? 0 : newH12);
-              setTime(h24, selected.getMinutes());
-            }}
+            selectedIndex={selected.hour}
+            onSelect={(i) => setTime(i, selected.minute)}
           />
           <ScrollColumn
             label="Min"
             items={MINUTES}
-            selectedIndex={minIndex}
-            onSelect={(i) => setTime(selected.getHours(), i)}
-          />
-          <ScrollColumn
-            label="Period"
-            items={AMPM}
-            selectedIndex={ampmIndex}
-            onSelect={(i) => {
-              const h = selected.getHours();
-              const isPm = i === 1;
-              let h24 = h;
-              if (isPm && h < 12) h24 = h + 12;
-              if (!isPm && h >= 12) h24 = h - 12;
-              setTime(h24, selected.getMinutes());
-            }}
+            selectedIndex={selected.minute}
+            onSelect={(i) => setTime(selected.hour, i)}
           />
         </div>
       </div>
@@ -257,9 +227,9 @@ export function DateTimePicker({ value, onChange, dropdownDirection = "up", min 
       {/* Quick shortcuts */}
       <div className="px-3 py-3 flex gap-1.5 flex-wrap">
         {[
-          { label: "In 1h", fn: () => { const d = new Date(); d.setHours(d.getHours() + 1, 0, 0, 0); onChange(toLocal(d)); } },
-          { label: "Tomorrow 9am", fn: () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); onChange(toLocal(d)); } },
-          { label: "Next Mon", fn: () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); d.setHours(9, 0, 0, 0); onChange(toLocal(d)); } },
+          { label: "In 1h", fn: () => onChange(`${toWibInput(new Date(Date.now() + 60 * 60 * 1000)).slice(0, 13)}:00`) },
+          { label: "Tomorrow 09:00", fn: () => onChange(`${addDaysKey(todayKey, 1)}T09:00`) },
+          { label: "Next Mon", fn: () => { const dow = new Date(`${todayKey}T00:00:00Z`).getUTCDay(); onChange(`${addDaysKey(todayKey, (8 - dow) % 7 || 7)}T09:00`); } },
         ].map(({ label, fn }) => (
           <button key={label} type="button"
             onClick={() => { fn(); setOpen(false); }}

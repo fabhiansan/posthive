@@ -4,11 +4,13 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import timeGridPlugin from "@fullcalendar/timegrid";
 import interactionPlugin from "@fullcalendar/interaction";
+import luxonPlugin from "@fullcalendar/luxon3";
 import type { EventDropArg, EventContentArg } from "@fullcalendar/core";
 import type { CalendarApi } from "@fullcalendar/core";
 import { useRef, useEffect, useCallback, useState } from "react";
 import type { Job } from "../app/jobs/page";
 import { PlatformIcon } from "./PlatformIcon";
+import { APP_TIMEZONE, wibDateKey } from "../lib/datetime";
 
 const STATUS_STYLE: Record<string, { bg: string; border: string; text: string; dot: string }> = {
   draft:    { bg: "#171717", border: "#404040", text: "#a3a3a3", dot: "#6b7280" },
@@ -323,9 +325,6 @@ const DARK_CSS = `
   }
 `;
 
-const today = new Date();
-today.setHours(0, 0, 0, 0);
-
 export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
   const calendarRef = useRef<FullCalendar>(null);
   const dragNavTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -351,10 +350,8 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
 
   async function handleEventDrop(info: EventDropArg) {
     if (!info.event.start) { info.revert(); return; }
-    // Block dropping on past dates
-    const dropDate = new Date(info.event.start);
-    dropDate.setHours(0, 0, 0, 0);
-    if (dropDate < today) { info.revert(); return; }
+    // Block dropping on past dates (WIB calendar day)
+    if (wibDateKey(info.event.start) < wibDateKey(new Date())) { info.revert(); return; }
     try { await onReschedule(info.event.id, info.event.start); }
     catch { info.revert(); }
   }
@@ -396,7 +393,10 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
       <style>{DARK_CSS}</style>
       <FullCalendar
         ref={calendarRef}
-        plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin]}
+        plugins={[dayGridPlugin, timeGridPlugin, interactionPlugin, luxonPlugin]}
+        timeZone={APP_TIMEZONE}
+        eventTimeFormat={{ hour: "2-digit", minute: "2-digit", hour12: false }}
+        slotLabelFormat={{ hour: "2-digit", minute: "2-digit", hour12: false }}
         initialView="dayGridMonth"
         headerToolbar={{
           left: "prev,next today",

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { PlatformIcon } from "../../components/PlatformIcon";
 import { apiFetch } from "../../lib/api";
 import type { Account } from "../../components/PlatformPreview";
+import { formatDate, formatTime, parseCsvDate } from "../../lib/datetime";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -47,7 +48,7 @@ function parseCSV(csv: string, accounts: Account[]): ParsedRow[] {
     const [rawDate, rawText, rawAccounts, rawComment, rawImages] = cols.map(clean);
     const mediaUrls = rawImages ? rawImages.split(";").map(u => u.trim()).filter(Boolean) : undefined;
 
-    const parsed = new Date(rawDate?.replace(" ", "T") ?? "");
+    const parsed = parseCsvDate(rawDate ?? "");
     if (!rawDate || isNaN(parsed.getTime())) {
       return { scheduledFor: "", text: rawText ?? "", accountIds: [], mediaUrls, error: `Invalid date: "${rawDate}"` };
     }
@@ -378,7 +379,7 @@ export default function BulkPage() {
                   <p className="text-xs font-semibold mb-3" style={{ color: "#ededed" }}>Required columns</p>
                   <div className="space-y-3">
                     {[
-                      { col: "scheduled_for", desc: "Date and time", ex: "2026-07-10 09:00" },
+                      { col: "scheduled_for", desc: "Date and time in WIB (24h)", ex: "2026-07-10 14:30" },
                       { col: "text", desc: "Post body text (required)", ex: "Hello world!" },
                       { col: "accounts", desc: "Target accounts (see below)", ex: "facebook|bluesky" },
                     ].map(({ col, desc, ex }) => (
@@ -648,7 +649,7 @@ export default function BulkPage() {
 
                         <td className="px-4 py-3 whitespace-nowrap" style={{ color: row.error ? "#444" : "#aaa" }}>
                           {row.scheduledFor
-                            ? new Date(row.scheduledFor).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                            ? `${formatDate(new Date(row.scheduledFor))}, ${formatTime(new Date(row.scheduledFor))}`
                             : "—"}
                         </td>
 

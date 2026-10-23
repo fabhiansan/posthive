@@ -4,6 +4,8 @@ import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch } from "../../lib/api";
 import { PlatformIcon } from "../../components/PlatformIcon";
+import { DateTimePicker } from "../../components/DateTimePicker";
+import { fromWibInput, toWibInput, wibDateKey } from "../../lib/datetime";
 import confetti from "canvas-confetti";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -270,11 +272,7 @@ function OnboardingContent() {
 
   const [postText, setPostText] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [scheduledFor, setScheduledFor] = useState(() => {
-    const d = new Date(Date.now() + 60 * 60 * 1000);
-    d.setSeconds(0, 0);
-    return d.toISOString().slice(0, 16);
-  });
+  const [scheduledFor, setScheduledFor] = useState(() => toWibInput(new Date(Date.now() + 60 * 60 * 1000)));
   const [scheduling, setScheduling] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
 
@@ -325,7 +323,7 @@ function OnboardingContent() {
       await apiFetch("/jobs", {
         method: "POST",
         body: JSON.stringify({
-          scheduledFor: asDraft ? undefined : new Date(scheduledFor).toISOString(),
+          scheduledFor: asDraft ? undefined : fromWibInput(scheduledFor).toISOString(),
           draft: asDraft,
           content: { text: postText.trim(), mediaUrls: [] },
           accountIds: selectedIds,
@@ -628,17 +626,7 @@ function OnboardingContent() {
 
               {!billingEnabled && (
                 <div className="px-5 py-4 flex items-center gap-3">
-                  <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="#555" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                  <input
-                    type="datetime-local"
-                    value={scheduledFor}
-                    min={new Date().toISOString().slice(0, 16)}
-                    onChange={(e) => setScheduledFor(e.target.value)}
-                    className="flex-1 bg-transparent text-sm focus:outline-none"
-                    style={{ color: "#ededed", colorScheme: "dark" }}
-                  />
+                  <DateTimePicker value={scheduledFor} onChange={setScheduledFor} min={wibDateKey(new Date())} dropdownDirection="down" />
                 </div>
               )}
               {billingEnabled && (

@@ -606,7 +606,7 @@ export default function ImportContentPlanPage() {
                     {REQUIRED_COLUMNS.map((column) => (
                       <div key={column.name} className="rounded-xl p-3 space-y-1" style={{ backgroundColor: "#111", border: "1px solid #1e1e1e" }}>
                         <code className="text-xs font-bold" style={{ color: "#818cf8" }}>{column.name}</code>
-                        <p style={{ color: "#888" }}>{column.description}</p>
+                        <p className="text-xs mt-1" style={{ color: "#888" }}>{column.description}</p>
                         <p className="font-mono text-[11px]" style={{ color: "#555" }}>e.g. {column.example}</p>
                       </div>
                     ))}
@@ -619,7 +619,7 @@ export default function ImportContentPlanPage() {
                     {OPTIONAL_COLUMNS.map((column) => (
                       <div key={column.name} className="rounded-xl p-3" style={{ backgroundColor: "#111", border: "1px solid #1e1e1e" }}>
                         <code className="text-xs font-bold" style={{ color: "#818cf8" }}>{column.name}</code>
-                        <p className="text-[11px] mt-1" style={{ color: "#666" }}>{column.description}</p>
+                        <p className="text-xs mt-1" style={{ color: "#666" }}>{column.description}</p>
                       </div>
                     ))}
                   </div>

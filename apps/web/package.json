@@ -11,12 +11,14 @@
   "dependencies": {
     "@fullcalendar/daygrid": "^6.1.21",
     "@fullcalendar/interaction": "^6.1.21",
+    "@fullcalendar/luxon3": "^6.1.21",
     "@fullcalendar/react": "^6.1.21",
     "@fullcalendar/timegrid": "^6.1.21",
     "@vercel/analytics": "^2.0.1",
     "canvas-confetti": "^1.9.4",
     "js-cookie": "^3.0.8",
     "lucide-react": "^1.21.0",
+    "luxon": "^3.7.2",
     "next": "^16.2.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -25,6 +27,7 @@
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
     "@types/js-cookie": "^3.0.6",
+    "@types/luxon": "^3.7.6",
     "@types/node": "^20.14.12",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",

@@ -22,6 +22,7 @@ import { BlueskyFields } from "../../components/composer/BlueskyFields";
 import { FirstComment } from "../../components/composer/FirstComment";
 import { WarningsBar } from "../../components/composer/WarningsBar";
 import { TrialUrgentBanner } from "../../components/TrialUrgentBanner";
+import { fromWibInput, toWibInput, wibDateKey } from "../../lib/datetime";
 import { MediaSection } from "../../components/composer/MediaSection";
 import { RepeatPicker } from "../../components/RepeatPicker";
 import { useWorkspace } from "../../context/WorkspaceContext";
@@ -33,8 +34,7 @@ const MAX_IMAGE_SIZE_MB = 10;
 const MAX_VIDEO_SIZE_MB = 100;
 
 function defaultScheduledFor(): string {
-  const d = new Date(Date.now() + 60 * 60 * 1000);
-  return d.toISOString().slice(0, 16);
+  return toWibInput(new Date(Date.now() + 60 * 60 * 1000));
 }
 
 export default function ComposePage() {
@@ -430,7 +430,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     }
 
     // Scheduled time must be in the future
-    if (new Date(scheduledFor) <= new Date()) return "Scheduled time must be in the future.";
+    if (fromWibInput(scheduledFor) <= new Date()) return "Scheduled time must be in the future.";
 
     return null;
   }
@@ -566,7 +566,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
       await apiFetch("/jobs", {
         method: "POST",
         body: JSON.stringify({
-          scheduledFor: new Date(scheduledFor).toISOString(),
+          scheduledFor: fromWibInput(scheduledFor).toISOString(),
           content: {
             text,
             mediaUrls,
@@ -1409,7 +1409,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
         </button>
 
         {/* Schedule datetime */}
-        <DateTimePicker value={scheduledFor} onChange={setScheduledFor} min={new Date().toISOString().slice(0, 10)} />
+        <DateTimePicker value={scheduledFor} onChange={setScheduledFor} min={wibDateKey(new Date())} />
 
         {/* Repeat */}
         <RepeatPicker
@@ -1466,7 +1466,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
               : dryRun
                 ? "Schedule Dry Run"
                 : needsApprovalFlow
-                  ? "Kirim untuk Review"
+                  ? "Submit for Review"
                   : "Schedule Post"}
           </button>
         </div>

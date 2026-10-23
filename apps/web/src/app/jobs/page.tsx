@@ -10,6 +10,7 @@ import { DeleteConfirmDialog } from "../../components/DeleteConfirmDialog";
 import { useToast } from "../../components/Toast";
 import { TrialUrgentBanner } from "../../components/TrialUrgentBanner";
 import { DatePicker } from "../../components/DatePicker";
+import { addDaysKey, formatDateTime, formatTime, wibDateKey } from "../../lib/datetime";
 import { useAuth } from "../../context/AuthContext";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import type { Account, PerAccountOverride } from "../../components/PlatformPreview";
@@ -147,13 +148,7 @@ function RepeatModal({ job, onClose, onConfirm }: {
           <DatePicker
             value={endsAt}
             onChange={setEndsAt}
-            min={(() => {
-              const d = new Date();
-              if (interval === "daily") d.setDate(d.getDate() + 1);
-              else if (interval === "weekly") d.setDate(d.getDate() + 7);
-              else d.setMonth(d.getMonth() + 1);
-              return d.toISOString().slice(0, 10);
-            })()}
+            min={addDaysKey(wibDateKey(new Date()), interval === "daily" ? 1 : interval === "weekly" ? 7 : 0, interval === "monthly" ? 1 : 0)}
             placeholder="End date (optional)"
           />
         </div>
@@ -241,15 +236,14 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
   const isDraft = job.status === "draft";
   const scheduled = job.scheduledFor ? new Date(job.scheduledFor) : null;
   const isPast = scheduled ? scheduled < new Date() : false;
-  const isToday = scheduled ? scheduled.toDateString() === new Date().toDateString() : false;
+  const isToday = scheduled ? wibDateKey(scheduled) === wibDateKey(new Date()) : false;
   const canEdit = job.status === "pending" || isDraft;
   const hasFailedTargets = job.targets.some((t) => t.status === "post_failed");
 
   function formatScheduled() {
     if (!scheduled) return "No date set";
-    if (isToday) return `Today at ${scheduled.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-    return scheduled.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) +
-      " · " + scheduled.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (isToday) return `Today at ${formatTime(scheduled)} WIB`;
+    return `${formatDateTime(scheduled)} WIB`;
   }
 
   return (
@@ -987,7 +981,7 @@ export default function JobsPage() {
           <h1 className="text-lg font-bold" style={{ color: "#ededed" }}>Posts</h1>
           <p className="text-xs mt-0.5 flex items-center gap-1.5 truncate" style={{ color: "#888888" }}>
             <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block flex-shrink-0" />
-            {lastRefresh ? `Live · updated ${lastRefresh.toLocaleTimeString()}` : "Connecting…"}
+            {lastRefresh ? `Live · updated ${formatTime(lastRefresh, { seconds: true })}` : "Connecting…"}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">

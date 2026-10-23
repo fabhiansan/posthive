@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { PlatformIcon } from "./PlatformIcon";
 import type { Account } from "./PlatformPreview";
+import { formatDate, formatTime, parseCsvDate } from "../lib/datetime";
 
 interface ParsedRow {
   scheduledFor: string; // ISO
@@ -48,8 +49,8 @@ function parseCSV(csv: string, accounts: Account[]): ParsedRow[] {
     const [rawDate, rawText, rawAccounts, rawComment, rawImages] = cols.map(clean);
     const mediaUrls = rawImages ? rawImages.split(";").map(u => u.trim()).filter(Boolean) : undefined;
 
-    // Parse date — accepts "2026-07-10 09:00" or ISO
-    const parsed = new Date(rawDate?.replace(" ", "T") ?? "");
+    // Parse date — accepts "2026-07-10 09:00" (WIB) or ISO with offset
+    const parsed = parseCsvDate(rawDate ?? "");
     if (!rawDate || isNaN(parsed.getTime())) {
       return { scheduledFor: "", text: rawText ?? "", accountIds: [], mediaUrls, error: `Invalid date: "${rawDate}"` };
     }
@@ -271,7 +272,7 @@ export function BulkScheduleModal({ accounts, onClose, onScheduled }: Props) {
                 >
                   <p className="font-semibold mb-2" style={{ color: "#ededed" }}>Column Reference</p>
                   <div className="space-y-1.5">
-                    <div><span className="font-mono" style={{ color: "#818cf8" }}>scheduled_for</span> — date &amp; time, e.g. <span className="font-mono" style={{ color: "#888" }}>2026-07-10 09:00</span></div>
+                    <div><span className="font-mono" style={{ color: "#818cf8" }}>scheduled_for</span> — date &amp; time in WIB (24h), e.g. <span className="font-mono" style={{ color: "#888" }}>2026-07-10 14:30</span></div>
                     <div><span className="font-mono" style={{ color: "#818cf8" }}>text</span> — post body (required)</div>
                     <div><span className="font-mono" style={{ color: "#818cf8" }}>accounts</span> — <span className="font-mono" style={{ color: "#888" }}>all</span>, platform names, or exact account display names separated by <span className="font-mono" style={{ color: "#888" }}>|</span>. Prefix with <span className="font-mono" style={{ color: "#f87171" }}>!</span> to exclude. Examples: <span className="font-mono" style={{ color: "#888" }}>facebook</span> (all FB pages), <span className="font-mono" style={{ color: "#888" }}>My Page|Other Page</span> (specific pages), <span className="font-mono" style={{ color: "#888" }}>all|!instagram</span>. YouTube not supported.</div>
                     <div><span className="font-mono" style={{ color: "#818cf8" }}>comment</span> — first comment text (optional)</div>
@@ -363,7 +364,7 @@ export function BulkScheduleModal({ accounts, onClose, onScheduled }: Props) {
                       <tr key={i} style={{ borderBottom: "1px solid #1a1a1a", backgroundColor: row.error ? "#150808" : undefined }}>
                         <td className="px-3 py-2 font-mono" style={{ color: "#444" }}>{i + 2}</td>
                         <td className="px-3 py-2 whitespace-nowrap" style={{ color: row.error ? "#555" : "#ededed" }}>
-                          {row.scheduledFor ? new Date(row.scheduledFor).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+                          {row.scheduledFor ? `${formatDate(new Date(row.scheduledFor))}, ${formatTime(new Date(row.scheduledFor))}` : "—"}
                         </td>
                         <td className="px-3 py-2 max-w-[160px]" style={{ color: "#aaa" }}>
                           <span className="block truncate">{row.text || "—"}</span>

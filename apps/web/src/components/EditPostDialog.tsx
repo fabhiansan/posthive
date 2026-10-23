@@ -14,13 +14,9 @@ import { BlueskyFields } from "./composer/BlueskyFields";
 import { FirstComment } from "./composer/FirstComment";
 import { WarningsBar } from "./composer/WarningsBar";
 import { MediaSection } from "./composer/MediaSection";
+import { fromWibInput, toWibInput, wibDateKey } from "../lib/datetime";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
-
-const pad = (n: number) => String(n).padStart(2, "0");
-function toLocalInput(d: Date) {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 interface EditableJob {
   scheduledFor: string | null;
@@ -46,7 +42,7 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
   const [commentText, setCommentText] = useState(job.commentText ?? "");
   const isDraft = job.status === "draft";
   const [scheduledFor, setScheduledFor] = useState(
-    job.scheduledFor ? toLocalInput(new Date(job.scheduledFor)) : toLocalInput(new Date(Date.now() + 60 * 60 * 1000))
+    job.scheduledFor ? toWibInput(new Date(job.scheduledFor)) : toWibInput(new Date(Date.now() + 60 * 60 * 1000))
   );
   const [igMediaType, setIgMediaType] = useState<"post" | "reel" | "story">(parsedContent.mediaType ?? "post");
   const [images, setImages] = useState<UploadedImage[]>(() => {
@@ -291,10 +287,7 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
       return p === "youtube" || p === "pinterest";
     });
     if ((!text.trim() && !_noPostTextNeeded) || selectedIds.length === 0) return;
-    const [dp, tp] = scheduledFor.split("T");
-    const [y, mo, d] = dp.split("-").map(Number);
-    const [h, m] = (tp ?? "09:00").split(":").map(Number);
-    const date = new Date(y, mo - 1, d, h, m);
+    const date = fromWibInput(scheduledFor);
     if (isNaN(date.getTime())) return;
     const cleanOverrides = Object.fromEntries(
       Object.entries(perAccountOverrides).filter(([id]) => selectedIds.includes(id))
@@ -782,7 +775,7 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
           </div>
         )}
         <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
-          <DateTimePicker value={scheduledFor} onChange={setScheduledFor} min={new Date().toISOString().slice(0, 10)} />
+          <DateTimePicker value={scheduledFor} onChange={setScheduledFor} min={wibDateKey(new Date())} />
           <div className="flex-1" />
           <div className="flex items-center gap-2 justify-end">
             <button onClick={onClose} disabled={saving}

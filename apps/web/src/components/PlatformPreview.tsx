@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PlatformIcon } from "./PlatformIcon";
+import { formatTime } from "../lib/datetime";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -574,7 +575,7 @@ function PixelfedPreview({ account, text, commentText, images, video }: {
   video: UploadedImage | null;
 }) {
   const initial = account.displayName[0]?.toUpperCase() ?? "?";
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatTime(new Date());
 
   return (
     <div className="rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: "#1a1215", border: "1px solid #2a2a2a" }}>
@@ -643,7 +644,7 @@ function MastodonPreview({ account, text, commentText, images, video }: {
   video: UploadedImage | null;
 }) {
   const initial = account.displayName[0]?.toUpperCase() ?? "?";
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatTime(new Date());
 
   return (
     <div className="rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: "#1f1f2e", border: "1px solid #2a2a2a" }}>
@@ -786,7 +787,7 @@ function TwitterPreview({ account, text, commentText, images, video }: {
   video: UploadedImage | null;
 }) {
   const initial = account.displayName[0]?.toUpperCase() ?? "?";
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatTime(new Date());
 
   return (
     <div className="rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: "#000000", border: "1px solid #2f3336" }}>
@@ -868,7 +869,7 @@ function TelegramPreview({ account, text, images, video }: {
   images: UploadedImage[];
   video: UploadedImage | null;
 }) {
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatTime(new Date());
   const hasMedia = images.length > 0 || video !== null;
 
   return (
@@ -934,7 +935,7 @@ function NostrPreview({ account, text, images }: {
   text: string;
   images: UploadedImage[];
 }) {
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatTime(new Date());
   return (
     <div className="rounded-2xl shadow-sm overflow-hidden" style={{ backgroundColor: "#111111", border: "1px solid #2a2a2a" }}>
       <div className="flex items-center gap-2 px-4 py-2.5"
@@ -1112,7 +1113,7 @@ function DiscordPreview({ account, text, commentText, images, video }: {
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 mb-1">
             <span className="text-sm font-semibold" style={{ color: "#00b0f4" }}>Posthive Bot</span>
-            <span className="text-[10px]" style={{ color: "#949ba4" }}>Today at {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+            <span className="text-[10px]" style={{ color: "#949ba4" }}>Today at {formatTime(new Date())}</span>
           </div>
           {text ? (
             <p className="text-sm whitespace-pre-wrap break-words leading-relaxed" style={{ color: "#dbdee1" }}>{text}</p>
@@ -1267,7 +1268,7 @@ export function PlatformPreview({ account, text, commentText, mediaItems = [], i
 
   const color = PLATFORM_COLOR[account.platform] ?? "#6b7280";
   const initial = account.displayName[0]?.toUpperCase() ?? "?";
-  const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const timeStr = formatTime(new Date());
 
   // Link card: only for Bluesky, only when no images/video
   const showLinkCard = account.platform === "bluesky" && images.length === 0 && !video;

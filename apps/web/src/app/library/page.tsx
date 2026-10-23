@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { apiFetch } from "../../lib/api";
 import { useToast } from "../../components/Toast";
 import { PlatformIcon } from "../../components/PlatformIcon";
+import { TimeInput24 } from "../../components/TimeInput24";
+import { APP_TIMEZONE, formatDate, formatTime } from "../../lib/datetime";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -131,11 +133,11 @@ function fmtSchedule(d: Date): string {
   const now = new Date();
   const diffMs = d.getTime() - now.getTime();
   const diffDays = Math.floor(diffMs / 86400000);
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = formatTime(d);
   if (diffDays === 0) return `Today ${time}`;
   if (diffDays === 1) return `Tomorrow ${time}`;
-  if (diffDays < 7) return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
-  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+  if (diffDays < 7) return `${formatDate(d, { weekday: "short" })} ${time}`;
+  return `${formatDate(d)} ${time}`;
 }
 
 // ── Guide section component ────────────────────────────────────────────────
@@ -251,7 +253,7 @@ export default function LibraryPage() {
     name: "",
     postsPerDay: 1,
     timeSlots: ["09:00"],
-    timezone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC",
+    timezone: APP_TIMEZONE,
     accountIds: [] as string[],
   });
 
@@ -346,7 +348,7 @@ export default function LibraryPage() {
     try {
       const lib = await apiFetch<{ id: string }>("/library", { method: "POST", body: JSON.stringify(form) });
       setCreateOpen(false);
-      setForm({ name: "", postsPerDay: 1, timeSlots: ["09:00"], timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", accountIds: [] });
+      setForm({ name: "", postsPerDay: 1, timeSlots: ["09:00"], timezone: APP_TIMEZONE, accountIds: [] });
       await loadLibraries();
       success("Library created");
       setSelectedId(lib.id);
@@ -1096,11 +1098,10 @@ function SettingsPanel({ library, accounts, onClose, onSaved, onError, onSuccess
           <div className="space-y-2">
             {form.timeSlots.map((slot, i) => (
               <div key={i} className="flex items-center gap-2">
-                <input
-                  type="time"
+                <TimeInput24
                   value={slot}
-                  onChange={e => setForm(f => ({ ...f, timeSlots: f.timeSlots.map((s, idx) => idx === i ? e.target.value : s) }))}
-                  style={{ flex: 1, backgroundColor: "#111", border: "1px solid #2a2a2a", borderRadius: 7, padding: "6px 8px", fontSize: 12, color: "#ededed", outline: "none" }}
+                  onChange={v => setForm(f => ({ ...f, timeSlots: f.timeSlots.map((s, idx) => idx === i ? v : s) }))}
+                  style={{ flex: 1 }}
                 />
                 {form.timeSlots.length > 1 && (
                   <button type="button" onClick={() => setForm(f => ({ ...f, timeSlots: f.timeSlots.filter((_, idx) => idx !== i) }))}
@@ -1247,9 +1248,9 @@ function LibraryModal({ title, accounts, form, setForm, saving, onSubmit, onClos
               <div className="space-y-2">
                 {form.timeSlots.map((slot, i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <input type="time" value={slot}
-                      onChange={e => setForm(f => ({ ...f, timeSlots: f.timeSlots.map((s, idx) => idx === i ? e.target.value : s) }))}
-                      style={{ ...inputStyle, flex: 1, width: "auto" }} />
+                    <TimeInput24 value={slot}
+                      onChange={v => setForm(f => ({ ...f, timeSlots: f.timeSlots.map((s, idx) => idx === i ? v : s) }))}
+                      style={{ flex: 1 }} />
                     {form.timeSlots.length > 1 && (
                       <button type="button"
                         onClick={() => setForm(f => ({ ...f, timeSlots: f.timeSlots.filter((_, idx) => idx !== i) }))}
