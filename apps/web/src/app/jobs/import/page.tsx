@@ -105,7 +105,7 @@ const REQUIRED_COLUMNS = [
   },
   {
     name: "Post Date",
-    description: "Tanggal tayang. Default jam 09:00 WIB.",
+    description: "Publish date. Defaults to 09:00 WIB.",
     example: "2026-10-22",
   },
   {
@@ -646,7 +646,7 @@ export default function ImportContentPlanPage() {
 
                 <div className="rounded-xl p-3" style={{ backgroundColor: "#111", border: "1px solid #1e1e1e" }}>
                   <p className="text-[11px] font-semibold mb-1" style={{ color: "#aaa" }}>Tanggal</p>
-                  <p className="text-[11px]" style={{ color: "#666" }}>Utamakan YYYY-MM-DD. DD/MM/YYYY dan DD-MM-YYYY juga diterima. Default jam 09:00 WIB.</p>
+                  <p className="text-[11px]" style={{ color: "#666" }}>Prefer YYYY-MM-DD. DD/MM/YYYY and DD-MM-YYYY are also accepted. Defaults to 09:00 WIB.</p>
                 </div>
               </>
             )}
