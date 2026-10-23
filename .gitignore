@@ -5,7 +5,7 @@ dist/
 .claude/
 
 # Agent skill files — local tooling, not part of source
-.agents/
+.claude/
 skills-lock.json
 
 # Environment variables — never commit real secrets

@@ -229,9 +229,12 @@ async function main() {
   });
 
   // Global error handler — captures only 5xx errors to Sentry (not CORS/4xx noise)
-  app.setErrorHandler((err, _req, reply) => {
+  app.setErrorHandler((err, req, reply) => {
     const status = err.statusCode ?? 500;
-    if (status >= 500) Sentry.captureException(err);
+    if (status >= 500) {
+      req.log.error(err);
+      Sentry.captureException(err);
+    }
     // Don't leak internal error details for server errors
     const message = status >= 500 ? "Internal Server Error" : err.message;
     reply.status(status).send({
