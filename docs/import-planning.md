@@ -58,9 +58,9 @@ Media is **not** in the Excel/CSV. The import leaves `content.mediaUrls` empty. 
 
 ## Date rules
 
-- Preferred: `YYYY-MM-DD`
-- Also accepted: `DD/MM/YYYY`, `DD-MM-YYYY`, `YYYY/MM/DD`
-- Ambiguous slash dates such as `01/02/2026` are read as `DD/MM/YYYY` with a warning.
+- Preferred: `DD-MM-YYYY`
+- Also accepted: `YYYY-MM-DD`, `DD/MM/YYYY`, `YYYY/MM/DD`
+- Ambiguous dates such as `01-02-2026` or `01/02/2026` are read as `DD-MM-YYYY` with a warning.
 - No time column: default is **09:00 WIB**.
 - Past dates are imported as archive drafts with a warning.
 

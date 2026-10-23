@@ -245,7 +245,7 @@ function parsePostDate(raw: string): { date: string; value: Date; warning?: stri
     } else {
       day = first;
       month = second;
-      warning = "Tanggal ambigu; dibaca sebagai DD/MM/YYYY.";
+      warning = "Tanggal ambigu; dibaca sebagai DD-MM-YYYY.";
     }
   }
 
@@ -410,7 +410,7 @@ export function parsePlanningCsv(input: string): PlanningParseResult {
 
     const parsedDate = parsePostDate(postDateRaw);
     if (postDateRaw && !parsedDate) {
-      errors.push(`Post Date tidak valid: "${postDateRaw}". Gunakan format YYYY-MM-DD.`);
+      errors.push(`Post Date tidak valid: "${postDateRaw}". Gunakan format DD-MM-YYYY (YYYY-MM-DD juga diterima).`);
     }
 
     const parsedPlatforms = parsePlatforms(platformRaw);

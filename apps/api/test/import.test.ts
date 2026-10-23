@@ -126,8 +126,15 @@ test("platform aliases and import keys are deterministic", () => {
   assert.equal(first, second);
 });
 
-test("ambiguous slash dates default to day-first with a warning", () => {
+test("DD-MM-YYYY is the preferred date format", () => {
+  const parsed = parsePlanningCsv("Content Title,Post Date,Platform\nPreferred format,22-12-2026,LinkedIn");
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0].postDate, "2026-12-22");
+  assert.equal(parsed.rows[0].scheduledFor.toISOString(), "2026-12-22T02:00:00.000Z");
+});
+
+test("ambiguous dates default to day-first with a warning", () => {
   const parsed = parsePlanningCsv("Content Title,Post Date,Platform\nAmbiguous,01/02/2026,LinkedIn");
   assert.equal(parsed.rows[0].postDate, "2026-02-01");
-  assert.ok(parsed.rows[0].warnings.some((warning) => warning.includes("DD/MM/YYYY")));
+  assert.ok(parsed.rows[0].warnings.some((warning) => warning.includes("DD-MM-YYYY")));
 });
