@@ -10,7 +10,7 @@ import { DeleteConfirmDialog } from "../../components/DeleteConfirmDialog";
 import { useToast } from "../../components/Toast";
 import { TrialUrgentBanner } from "../../components/TrialUrgentBanner";
 import { DatePicker } from "../../components/DatePicker";
-import { addDaysKey, formatDateTime, formatTime, wibDateKey } from "../../lib/datetime";
+import { formatDateTime, formatTime, minKeyForInterval, wibDateKey } from "../../lib/datetime";
 import { useAuth } from "../../context/AuthContext";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import type { Account, PerAccountOverride } from "../../components/PlatformPreview";
@@ -148,7 +148,7 @@ function RepeatModal({ job, onClose, onConfirm }: {
           <DatePicker
             value={endsAt}
             onChange={setEndsAt}
-            min={addDaysKey(wibDateKey(new Date()), interval === "daily" ? 1 : interval === "weekly" ? 7 : 0, interval === "monthly" ? 1 : 0)}
+            min={minKeyForInterval(interval)}
             placeholder="End date (optional)"
           />
         </div>

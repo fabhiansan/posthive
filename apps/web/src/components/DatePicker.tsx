@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { wibDateKey } from "../lib/datetime";
 
 interface Props {
   value: string; // "YYYY-MM-DD" or ""
@@ -33,7 +34,7 @@ export function DatePicker({ value, onChange, min, placeholder = "End date (opti
 
   const selected = parseDate(value);
   const minDate = parseDate(min ?? "");
-  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const today = new Date(`${wibDateKey(new Date())}T00:00:00`);
 
   const [cursor, setCursor] = useState(() => {
     const base = selected ?? today;

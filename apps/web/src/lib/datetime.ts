@@ -45,6 +45,11 @@ export function wibDateKey(d: Date): string {
   return toWibInput(d).slice(0, 10);
 }
 
+// Earliest selectable repeat end date, WIB-based
+export function minKeyForInterval(interval: "daily" | "weekly" | "monthly"): string {
+  return addDaysKey(wibDateKey(new Date()), interval === "daily" ? 1 : interval === "weekly" ? 7 : 0, interval === "monthly" ? 1 : 0);
+}
+
 // Calendar arithmetic on a "YYYY-MM-DD" key (timezone-free)
 export function addDaysKey(key: string, days: number, months = 0): string {
   const t = new Date(`${key}T00:00:00Z`);

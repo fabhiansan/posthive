@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { DatePicker } from "./DatePicker";
-import { addDaysKey, wibDateKey } from "../lib/datetime";
+import { minKeyForInterval } from "../lib/datetime";
 
 const INTERVALS = [
   { value: "daily", label: "Every Day" },
@@ -136,7 +136,7 @@ export function RepeatPicker({ value, endsAt, onChangeInterval, onChangeEndsAt }
           <DatePicker
             value={endsAt}
             onChange={onChangeEndsAt}
-            min={addDaysKey(wibDateKey(new Date()), value === "daily" ? 1 : value === "weekly" ? 7 : 0, value === "monthly" ? 1 : 0)}
+            min={minKeyForInterval(value)}
             placeholder="End date (optional)"
           />
         </div>
