@@ -337,7 +337,7 @@ export async function sendLibraryDigestEmail(
   }>,
   hasAnyWarning: boolean,
 ): Promise<void> {
-  const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+  const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "Asia/Jakarta" });
 
   const rows = libraries
     .map((lib) => {
@@ -473,7 +473,7 @@ export async function sendPostFailedEmail(
   postJobId: string,
 ): Promise<void> {
   const platformList = platforms.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(", ");
-  const scheduledStr = scheduledFor.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  const scheduledStr = scheduledFor.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", hourCycle: "h23", timeZone: "Asia/Jakarta" }) + " WIB";
   const jobsUrl = `${APP_URL}/jobs`;
 
   const body = `
