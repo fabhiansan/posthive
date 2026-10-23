@@ -1098,7 +1098,7 @@ TIKTOK_REDIRECT_URI="https://your-domain.com/auth/tiktok/callback"`}</pre>
               <p className="doc-p">The CSV must have a header row with these columns (in order):</p>
               <CopyCode>{`scheduled_for,text,accounts,comment,image_urls`}</CopyCode>
               <ul className="doc-ul">
-                <li className="doc-li"><span className="doc-inline-code">scheduled_for</span> — date and time in <span className="doc-inline-code">YYYY-MM-DD HH:MM</span> format or ISO 8601. Must be in the future.</li>
+                <li className="doc-li"><span className="doc-inline-code">scheduled_for</span> — date and time in <span className="doc-inline-code">YYYY-MM-DD HH:MM</span> format (WIB, 24-hour clock) or ISO 8601. Must be in the future.</li>
                 <li className="doc-li"><span className="doc-inline-code">text</span> — post body text (required).</li>
                 <li className="doc-li"><span className="doc-inline-code">accounts</span> — which platforms to post to (see below).</li>
                 <li className="doc-li"><span className="doc-inline-code">comment</span> — first comment text (optional, leave blank).</li>
