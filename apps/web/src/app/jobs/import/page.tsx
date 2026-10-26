@@ -57,7 +57,10 @@ interface DuplicateRow {
 interface PreviewResponse {
   file: {
     name: string;
-    delimiter: string;
+    format: "csv" | "xlsx";
+    delimiter: string | null;
+    sheetName: string | null;
+    candidateSheets: string[];
     headerRow: number;
     subHeaderRow: number | null;
   };
@@ -152,13 +155,13 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function validateCsvFile(file: File): string | null {
+function validateImportFile(file: File): string | null {
   const name = file.name.toLowerCase();
-  if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-    return "File Excel belum didukung. Export sheet ke CSV UTF-8 terlebih dahulu.";
+  if (name.endsWith(".xls") || name.endsWith(".xlsm")) {
+    return "File Excel lama (.xls/.xlsm) belum didukung. Simpan ulang sebagai .xlsx atau CSV UTF-8.";
   }
-  if (!name.endsWith(".csv")) {
-    return "Format file harus .csv.";
+  if (!name.endsWith(".csv") && !name.endsWith(".xlsx")) {
+    return "Format file harus .csv atau .xlsx.";
   }
   if (file.size > MAX_FILE_BYTES) {
     return "File terlalu besar. Maksimum 5 MB.";
@@ -263,7 +266,7 @@ export default function ImportContentPlanPage() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [phase]);
 
-  async function runPreview(csvFile: File) {
+  async function runPreview(importFile: File) {
     const requestId = ++previewRequestRef.current;
     setPhase("previewing");
     setError(null);
@@ -273,7 +276,7 @@ export default function ImportContentPlanPage() {
     setExpandedRow(null);
 
     const body = new FormData();
-    body.append("file", csvFile, csvFile.name);
+    body.append("file", importFile, importFile.name);
 
     try {
       const data = await apiFetch<PreviewResponse>("/jobs/import/preview", {
@@ -291,8 +294,8 @@ export default function ImportContentPlanPage() {
     }
   }
 
-  async function processFile(csvFile: File) {
-    const validation = validateCsvFile(csvFile);
+  async function processFile(importFile: File) {
+    const validation = validateImportFile(importFile);
     if (validation) {
       setFile(null);
       setPreview(null);
@@ -303,30 +306,37 @@ export default function ImportContentPlanPage() {
       return;
     }
 
-    setFile(csvFile);
+    setFile(importFile);
     setCommitResult(null);
     setSelected(new Set());
     setError(null);
-    try {
-      setCsvText(await csvFile.text());
-    } catch {
+
+    if (importFile.name.toLowerCase().endsWith(".csv")) {
+      try {
+        setCsvText(await importFile.text());
+      } catch {
+        setCsvText("");
+      }
+    } else {
+      // XLSX is binary; keep the paste editor empty so it cannot show garbled data.
       setCsvText("");
     }
-    await runPreview(csvFile);
+
+    await runPreview(importFile);
   }
 
   async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
-    const csvFile = event.target.files?.[0];
+    const importFile = event.target.files?.[0];
     event.target.value = "";
-    if (!csvFile) return;
-    await processFile(csvFile);
+    if (!importFile) return;
+    await processFile(importFile);
   }
 
   async function handleDrop(event: React.DragEvent<HTMLButtonElement>) {
     event.preventDefault();
-    const csvFile = event.dataTransfer.files?.[0];
-    if (!csvFile) return;
-    await processFile(csvFile);
+    const importFile = event.dataTransfer.files?.[0];
+    if (!importFile) return;
+    await processFile(importFile);
   }
 
   async function handlePastePreview() {
@@ -497,7 +507,7 @@ export default function ImportContentPlanPage() {
                   borderBottom: activeTab === tab ? "2px solid #5b63d3" : "2px solid transparent",
                 }}
               >
-                {tab === "input" ? "CSV Input" : "Format Guide"}
+                {tab === "input" ? "CSV / XLSX" : "Format Guide"}
               </button>
             ))}
           </div>
@@ -518,14 +528,14 @@ export default function ImportContentPlanPage() {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                   </svg>
                   <div className="text-center">
-                    <p className="text-sm font-medium" style={{ color: "#888" }}>Drop CSV file here</p>
+                    <p className="text-sm font-medium" style={{ color: "#888" }}>Drop CSV or XLSX file here</p>
                     <p className="text-xs mt-0.5" style={{ color: "#444" }}>or click to browse</p>
                   </div>
                 </button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv,text/csv"
+                  accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                   className="hidden"
                   onChange={handleFileUpload}
                 />
@@ -595,7 +605,7 @@ export default function ImportContentPlanPage() {
                 </div>
 
                 <p className="text-[11px] leading-relaxed" style={{ color: "#555" }}>
-                  CSV UTF-8, maksimum 5 MB dan 1.000 baris data. File Excel harus di-export ke CSV terlebih dahulu.
+                  CSV UTF-8 atau XLSX, maksimum 5 MB dan 1.000 baris data. Sheet XLSX dideteksi otomatis dari baris header.
                 </p>
               </>
             ) : (
@@ -646,7 +656,7 @@ export default function ImportContentPlanPage() {
 
                 <div className="rounded-xl p-3" style={{ backgroundColor: "#111", border: "1px solid #1e1e1e" }}>
                   <p className="text-[11px] font-semibold mb-1" style={{ color: "#aaa" }}>Tanggal</p>
-                  <p className="text-[11px]" style={{ color: "#666" }}>Prefer DD-MM-YYYY. YYYY-MM-DD, DD/MM/YYYY, and YYYY/MM/DD are also accepted. Defaults to 09:00 WIB.</p>
+                  <p className="text-[11px]" style={{ color: "#666" }}>Prefer DD-MM-YYYY. YYYY-MM-DD, DD/MM/YYYY, and YYYY/MM/DD are also accepted. Excel date cells are supported. Defaults to 09:00 WIB.</p>
                 </div>
               </>
             )}
@@ -660,7 +670,7 @@ export default function ImportContentPlanPage() {
             <div className="flex-shrink-0 px-6 py-4" style={{ borderBottom: "1px solid #1e1e1e", backgroundColor: "#0d0d1a" }}>
               <div className="flex items-center gap-3">
                 <div className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent animate-spin flex-shrink-0" style={{ borderColor: "#5b63d3", borderTopColor: "transparent" }} />
-                <span className="text-sm font-medium" style={{ color: "#818cf8" }}>Checking CSV…</span>
+                <span className="text-sm font-medium" style={{ color: "#818cf8" }}>Checking file…</span>
               </div>
               <p className="text-xs mt-2" style={{ color: "#444" }}>Validasi kolom, tanggal, platform, dan duplikat.</p>
             </div>
@@ -713,8 +723,8 @@ export default function ImportContentPlanPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               <div className="text-center">
-                <p className="text-sm font-medium" style={{ color: "#444" }}>No CSV loaded yet</p>
-                <p className="text-xs mt-1" style={{ color: "#333" }}>Upload a file or paste CSV on the left</p>
+                <p className="text-sm font-medium" style={{ color: "#444" }}>No file loaded yet</p>
+                <p className="text-xs mt-1" style={{ color: "#333" }}>Upload CSV/XLSX or paste CSV on the left</p>
               </div>
             </div>
           )}
@@ -729,11 +739,20 @@ export default function ImportContentPlanPage() {
                 <Stat label="Selected" value={selectedCount} color="#818cf8" />
               </div>
 
-              {preview.file.subHeaderRow && (
+              {preview.file.format === "xlsx" ? (
                 <div className="flex-shrink-0 mx-6 mt-4 rounded-xl p-3 text-xs" style={{ backgroundColor: "#111", border: "1px solid #1e1e1e", color: "#888" }}>
-                  Header terdeteksi di baris {preview.file.headerRow} dan {preview.file.subHeaderRow}. Delimiter: <code style={{ color: "#818cf8" }}>{preview.file.delimiter}</code>.
+                  Sheet terpilih: <code style={{ color: "#818cf8" }}>{preview.file.sheetName}</code>. Header di baris {preview.file.headerRow}
+                  {preview.file.subHeaderRow ? ` dan ${preview.file.subHeaderRow}` : ""}.
+                  {preview.file.candidateSheets.length > 1 && (
+                    <> Sheet kandidat: {preview.file.candidateSheets.join(", ")}.</>
+                  )}
                 </div>
-              )}
+              ) : preview.file.subHeaderRow ? (
+                <div className="flex-shrink-0 mx-6 mt-4 rounded-xl p-3 text-xs" style={{ backgroundColor: "#111", border: "1px solid #1e1e1e", color: "#888" }}>
+                  Header terdeteksi di baris {preview.file.headerRow} dan {preview.file.subHeaderRow}.
+                  {preview.file.delimiter && <> Delimiter: <code style={{ color: "#818cf8" }}>{preview.file.delimiter}</code>.</>}
+                </div>
+              ) : null}
 
               <div className="overflow-x-auto lg:flex-1 lg:overflow-y-auto mt-4">
                 <table className="w-full text-xs" style={{ borderCollapse: "separate", borderSpacing: 0 }}>

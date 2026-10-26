@@ -1,25 +1,31 @@
-# Content Plan CSV Import (MVP)
+# Content Plan CSV / XLSX Import (MVP)
 
 Backend import for the marketing content plan. Valid rows become **draft** `PostJob` records so they appear on the calendar. Nothing is queued or published automatically.
 
 ## File requirements
 
-- Format: `.csv` (`.xlsx` / `.xls` are rejected)
-- Encoding: UTF-8 (BOM allowed)
-- Delimiter: comma or semicolon (auto-detected)
+- Format: `.csv` or `.xlsx` (legacy `.xls` and macro-enabled `.xlsm` are rejected)
+- CSV encoding: UTF-8 (BOM allowed)
+- CSV delimiter: comma or semicolon (auto-detected)
+- XLSX: one sheet is selected automatically based on the required headers
 - Maximum size: 5 MB
 - Maximum data rows: 1,000
-- One sheet per file
+- Maximum XLSX sheets scanned: 50
 
 ### Export instructions
 
-Excel:
+XLSX:
+
+1. Upload the workbook directly.
+2. The importer scans visible sheets and selects the one with `Content Title`, `Post Date`, and `Platform` headers. The selected sheet is shown in preview.
+
+CSV from Excel:
 
 1. Open the sheet that contains the content plan (`Worksheet` / `Worksheet 2` in the client file).
 2. `File > Save As > CSV UTF-8 (Comma delimited) (*.csv)`.
 3. Upload the resulting `.csv`.
 
-Google Sheets:
+CSV from Google Sheets:
 
 1. Open the content-plan sheet.
 2. `File > Download > Comma-separated values (.csv)`.
@@ -60,13 +66,15 @@ Media is **not** in the Excel/CSV. The import leaves `content.mediaUrls` empty. 
 
 - Preferred: `DD-MM-YYYY`
 - Also accepted: `YYYY-MM-DD`, `DD/MM/YYYY`, `YYYY/MM/DD`
+- XLSX date cells and raw Excel date serials are converted to a full date. Time is ignored.
 - Ambiguous dates such as `01-02-2026` or `01/02/2026` are read as `DD-MM-YYYY` with a warning.
+- Two-digit years such as `17/08/26` are rejected; use a four-digit year.
 - No time column: default is **09:00 WIB**.
 - Past dates are imported as archive drafts with a warning.
 
 ## Platform rules
 
-| CSV value | Stored platforms |
+| CSV / XLSX value | Stored platforms |
 |---|---|
 | `LinkedIn` / `LI` | `linkedin` |
 | `Instagram` / `IG` | `instagram` |
@@ -90,15 +98,18 @@ Content-Type: multipart/form-data
 
 Field:
 
-- `file`: CSV file
+- `file`: CSV or XLSX file
 
 Response:
 
 ```json
 {
   "file": {
-    "name": "content-plan.csv",
-    "delimiter": ",",
+    "name": "content-plan.xlsx",
+    "format": "xlsx",
+    "delimiter": null,
+    "sheetName": "Content Plan",
+    "candidateSheets": ["Content Plan"],
     "headerRow": 1,
     "subHeaderRow": 2
   },
@@ -148,7 +159,7 @@ Content-Type: multipart/form-data
 
 Fields:
 
-- `file`: the same CSV file used for preview
+- `file`: the same CSV or XLSX file used for preview
 - `sourceRows` (optional): JSON array or comma-separated row numbers, e.g. `[73,74]` or `73,74`
 
 The server re-parses and re-validates the file. It does not trust the preview payload. If `sourceRows` is omitted, all valid non-duplicate rows are imported.
@@ -208,9 +219,11 @@ The content JSON also stores:
   "sourceStatus": "Published",
   "sourceRow": 73,
   "importSource": {
-    "fileName": "content-plan.csv",
+    "fileName": "content-plan.xlsx",
     "importedAt": "2026-10-22T12:00:00.000Z",
-    "delimiter": ","
+    "format": "xlsx",
+    "delimiter": null,
+    "sheetName": "Content Plan"
   }
 }
 ```
@@ -265,13 +278,14 @@ await fetch(`${API_BASE}/jobs/import/commit`, {
 
 - Route: `/jobs/import` (`apps/web/src/app/jobs/import/page.tsx`).
 - Entry points: sidebar **Import Plan** and the **Import Plan** button on `/jobs`.
-- Upload or paste a CSV, preview valid/invalid/duplicate rows, select valid rows, then commit the selection.
+- Upload a CSV/XLSX or paste CSV, preview valid/invalid/duplicate rows, select valid rows, then commit the selection.
 - Warnings and skipped rows stay visible in the preview table after commit.
 
 ## Out of scope
 
 - Direct Google Sheets API integration
-- `.xlsx` parsing
+- Legacy `.xls` and macro-enabled `.xlsm` support
+- Importing more than one XLSX sheet at once
 - Caption generation
 - Downloading media from Figma/Drive
 - Automatic scheduling or publishing

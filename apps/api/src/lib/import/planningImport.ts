@@ -4,6 +4,8 @@ import { CsvParseError, parseCsvWithDelimiters, type CsvDelimiter } from "./csv.
 export const MAX_IMPORT_ROWS = 1000;
 export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 
+export type PlanningImportFormat = "csv" | "xlsx";
+
 type PlanningField =
   | "title"
   | "pillar"
@@ -106,8 +108,19 @@ export interface PlanningParseResult {
   invalidRows: PlanningInvalidRow[];
   duplicates: PlanningDuplicateRow[];
   header: PlanningHeader;
-  delimiter: CsvDelimiter;
+  format: PlanningImportFormat;
+  delimiter: CsvDelimiter | null;
+  sheetName: string | null;
+  candidateSheets: string[];
   totalDataRows: number;
+}
+
+export interface PlanningRowsParseOptions {
+  format: PlanningImportFormat;
+  delimiter: CsvDelimiter | null;
+  sheetName?: string | null;
+  candidateSheets?: string[];
+  rowWarnings?: (sourceRow: number, row: string[]) => string[];
 }
 
 function normalizeHeader(value: string): string {
@@ -167,6 +180,31 @@ function looksLikeDataRow(row: string[], columns: Partial<Record<PlanningField, 
 }
 
 /**
+ * Client workbooks repeat the required header labels in the second header row:
+ *
+ *   Category | Content Title | Post Date | Platform
+ *   Content Pillar | Content Title | Post Date | Platform
+ *
+ * That row looks populated, so detect it by its recognized header cells instead
+ * of treating it as the first data row.
+ */
+function looksLikeSubHeaderRow(
+  row: string[],
+  columns: Partial<Record<PlanningField, number>>,
+): boolean {
+  const requiredColumns = [columns.title, columns.postDate, columns.platform].filter(
+    (column): column is number => column !== undefined,
+  );
+
+  const recognized = requiredColumns.filter((column) => {
+    const header = normalizeHeader(row[column] ?? "");
+    return header !== "" && FIELD_BY_ALIAS.has(header);
+  }).length;
+
+  return recognized >= 2;
+}
+
+/**
  * Supports both a normal one-row header and the client's two-row header:
  *
  *   Category | ... | Content Review | ...
@@ -190,7 +228,9 @@ export function findPlanningHeader(rows: string[][]): PlanningHeader | null {
     if (nextRow) {
       const nextColumns = mapHeaderColumns(nextRow);
       const nextHasHeaders = Object.keys(nextColumns).length > 0;
-      useSubHeader = nextHasHeaders && !looksLikeDataRow(nextRow, baseColumns);
+      useSubHeader =
+        nextHasHeaders &&
+        (!looksLikeDataRow(nextRow, baseColumns) || looksLikeSubHeaderRow(nextRow, baseColumns));
     }
 
     const columns = useSubHeader
@@ -343,44 +383,11 @@ function nullable(value: string): string | null {
   return cleaned === "" ? null : cleaned;
 }
 
-export function parsePlanningCsv(input: string): PlanningParseResult {
-  const attempts = parseCsvWithDelimiters(input);
-  let selected: {
-    delimiter: CsvDelimiter;
-    rows: string[][];
-    header: PlanningHeader;
-    score: number;
-  } | null = null;
-  let firstError: CsvParseError | null = null;
-
-  for (const attempt of attempts) {
-    if (attempt.error) {
-      firstError ??= attempt.error;
-      continue;
-    }
-
-    const header = findPlanningHeader(attempt.rows);
-    if (!header) continue;
-
-    const score = header.recognizedColumns + header.dataStart;
-    if (!selected || score > selected.score) {
-      selected = {
-        delimiter: attempt.delimiter,
-        rows: attempt.rows,
-        header,
-        score,
-      };
-    }
-  }
-
-  if (!selected) {
-    if (firstError) throw firstError;
-    throw new CsvHeaderError(
-      "Kolom wajib tidak ditemukan. File harus memiliki header Content Title, Post Date, dan Platform.",
-    );
-  }
-
-  const { rows, header, delimiter } = selected;
+export function parsePlanningRows(
+  rows: string[][],
+  header: PlanningHeader,
+  options: PlanningRowsParseOptions,
+): PlanningParseResult {
   const dataRows = rows.slice(header.dataStart);
   const nonBlankRows = dataRows.filter((row) => !isBlankRow(row));
 
@@ -416,11 +423,13 @@ export function parsePlanningCsv(input: string): PlanningParseResult {
     const parsedPlatforms = parsePlatforms(platformRaw);
     if (parsedPlatforms.error) errors.push(parsedPlatforms.error);
 
+    const extraWarnings = options.rowWarnings?.(sourceRow, row) ?? [];
+
     if (errors.length > 0 || !parsedDate) {
       invalidRows.push({
         sourceRow,
         title,
-        reason: errors.join(" "),
+        reason: [...errors, ...extraWarnings].join(" "),
       });
       continue;
     }
@@ -438,6 +447,8 @@ export function parsePlanningCsv(input: string): PlanningParseResult {
     if (sourceStatus && /^published$/i.test(sourceStatus)) {
       warnings.push("Status sumber Published; di Posthive tetap disimpan sebagai draft.");
     }
+
+    if (extraWarnings.length > 0) warnings.push(...extraWarnings);
 
     const contentReview = nullable(cleanCell(getCell(row, header.columns, "contentReview")));
     const approvedBy = nullable(cleanCell(getCell(row, header.columns, "approvedBy")));
@@ -487,7 +498,55 @@ export function parsePlanningCsv(input: string): PlanningParseResult {
     invalidRows,
     duplicates,
     header,
-    delimiter,
+    format: options.format,
+    delimiter: options.delimiter,
+    sheetName: options.sheetName ?? null,
+    candidateSheets: options.candidateSheets ?? [],
     totalDataRows: nonBlankRows.length,
   };
+}
+
+export function parsePlanningCsv(input: string): PlanningParseResult {
+  const attempts = parseCsvWithDelimiters(input);
+  let selected: {
+    delimiter: CsvDelimiter;
+    rows: string[][];
+    header: PlanningHeader;
+    score: number;
+  } | null = null;
+  let firstError: CsvParseError | null = null;
+
+  for (const attempt of attempts) {
+    if (attempt.error) {
+      firstError ??= attempt.error;
+      continue;
+    }
+
+    const header = findPlanningHeader(attempt.rows);
+    if (!header) continue;
+
+    const score = header.recognizedColumns + header.dataStart;
+    if (!selected || score > selected.score) {
+      selected = {
+        delimiter: attempt.delimiter,
+        rows: attempt.rows,
+        header,
+        score,
+      };
+    }
+  }
+
+  if (!selected) {
+    if (firstError) throw firstError;
+    throw new CsvHeaderError(
+      "Kolom wajib tidak ditemukan. File harus memiliki header Content Title, Post Date, dan Platform.",
+    );
+  }
+
+  return parsePlanningRows(selected.rows, selected.header, {
+    format: "csv",
+    delimiter: selected.delimiter,
+    sheetName: null,
+    candidateSheets: [],
+  });
 }

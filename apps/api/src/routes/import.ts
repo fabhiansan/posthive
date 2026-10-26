@@ -10,8 +10,10 @@ import {
   MAX_IMPORT_BYTES,
   parsePlanningCsv,
   type PlanningDuplicateRow,
+  type PlanningImportFormat,
   type PlanningRow,
 } from "../lib/import/planningImport.js";
+import { XlsxParseError, parsePlanningXlsx } from "../lib/import/planningXlsx.js";
 
 class ImportUploadError extends Error {
   readonly statusCode: number;
@@ -29,6 +31,7 @@ interface ImportUpload {
   buffer: Buffer;
   filename: string;
   mimetype: string;
+  format: PlanningImportFormat;
   sourceRows?: number[];
 }
 
@@ -73,7 +76,7 @@ function parseSourceRows(raw: string): number[] {
 
 async function readUpload(req: FastifyRequest): Promise<ImportUpload> {
   if (!req.isMultipart()) {
-    throw new ImportUploadError("Upload file CSV sebagai multipart/form-data dengan field 'file'.");
+    throw new ImportUploadError("Upload file CSV atau XLSX sebagai multipart/form-data dengan field 'file'.");
   }
 
   let file: { buffer: Buffer; filename: string; mimetype: string } | null = null;
@@ -87,7 +90,7 @@ async function readUpload(req: FastifyRequest): Promise<ImportUpload> {
       }
       if (file) {
         part.file.resume();
-        throw new ImportUploadError("Hanya satu file CSV yang boleh diunggah.");
+        throw new ImportUploadError("Hanya satu file CSV/XLSX yang boleh diunggah.");
       }
 
       const chunks: Buffer[] = [];
@@ -118,26 +121,31 @@ async function readUpload(req: FastifyRequest): Promise<ImportUpload> {
   }
 
   if (!file) {
-    throw new ImportUploadError("File CSV wajib diunggah pada field 'file'.");
+    throw new ImportUploadError("File CSV atau XLSX wajib diunggah pada field 'file'.");
   }
 
   const filename = file.filename.toLowerCase();
-  if (filename.endsWith(".xlsx") || filename.endsWith(".xls")) {
+  let format: PlanningImportFormat;
+
+  if (filename.endsWith(".xlsx")) {
+    format = "xlsx";
+  } else if (filename.endsWith(".xls") || filename.endsWith(".xlsm")) {
     throw new ImportUploadError(
-      "File Excel (.xlsx/.xls) belum didukung. Export sheet ke CSV UTF-8 terlebih dahulu.",
+      "File Excel lama (.xls/.xlsm) belum didukung. Simpan ulang sebagai .xlsx atau CSV UTF-8.",
       415,
       "UNSUPPORTED_FILE_TYPE",
     );
-  }
-  if (!filename.endsWith(".csv")) {
+  } else if (filename.endsWith(".csv")) {
+    format = "csv";
+  } else {
     throw new ImportUploadError(
-      "Format file harus .csv. Export sheet marketing ke CSV UTF-8 terlebih dahulu.",
+      "Format file harus .csv atau .xlsx.",
       415,
       "UNSUPPORTED_FILE_TYPE",
     );
   }
 
-  return { ...file, sourceRows };
+  return { ...file, format, sourceRows };
 }
 
 function resolveTargets(platforms: string[], accounts: ImportAccount[]): {
@@ -201,8 +209,10 @@ function previewRow(row: PlanningRow, targets: ResolvedTarget[], targetWarnings:
 
 async function prepareImport(workspaceId: string, req: FastifyRequest) {
   const upload = await readUpload(req);
-  const text = decodeUtf8(upload.buffer);
-  const parsed = parsePlanningCsv(text);
+  const parsed =
+    upload.format === "xlsx"
+      ? await parsePlanningXlsx(upload.buffer)
+      : parsePlanningCsv(decodeUtf8(upload.buffer));
 
   const importKeys = parsed.rows.map((row) => row.importKey);
   const existing = importKeys.length > 0
@@ -238,6 +248,9 @@ function importError(reply: { status: (code: number) => { send: (body: unknown) 
   if (error instanceof ImportUploadError) {
     return reply.status(error.statusCode).send({ error: error.message, code: error.code });
   }
+  if (error instanceof XlsxParseError) {
+    return reply.status(400).send({ error: error.message, code: error.code });
+  }
   if (error instanceof CsvParseError || error instanceof CsvHeaderError) {
     return reply.status(400).send({ error: error.message, code: "INVALID_CSV" });
   }
@@ -262,7 +275,10 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
         return reply.send({
           file: {
             name: upload.filename,
+            format: parsed.format,
             delimiter: parsed.delimiter,
+            sheetName: parsed.sheetName,
+            candidateSheets: parsed.candidateSheets,
             headerRow: parsed.header.headerRow,
             subHeaderRow: parsed.header.subHeaderRow,
           },
@@ -357,7 +373,9 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
             importSource: {
               fileName: upload.filename,
               importedAt,
+              format: parsed.format,
               delimiter: parsed.delimiter,
+              sheetName: parsed.sheetName,
             },
           };
 
