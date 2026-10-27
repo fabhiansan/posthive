@@ -13,6 +13,7 @@ import { DatePicker } from "../../components/DatePicker";
 import { formatDateTime, formatTime, minKeyForInterval, wibDateKey } from "../../lib/datetime";
 import { useAuth } from "../../context/AuthContext";
 import { useWorkspace } from "../../context/WorkspaceContext";
+import { canEditContent, canReview as roleCanReview } from "../../lib/permissions";
 import type { Account, PerAccountOverride } from "../../components/PlatformPreview";
 
 interface Target {
@@ -213,7 +214,7 @@ function RejectModal({ job, onClose, onConfirm }: {
   );
 }
 
-function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, selected, onToggleSelect, canReview, canSubmitOwn, isOwn, onApprove, onReject, onSubmitOwn }: {
+function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, selected, onToggleSelect, canReview, canSubmitOwn, canEditContentAccess = true, isOwn, onApprove, onReject, onSubmitOwn }: {
   job: Job;
   onEdit: () => void;
   onDelete: () => void;
@@ -224,6 +225,7 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
   onToggleSelect?: () => void;
   canReview?: boolean;
   canSubmitOwn?: boolean;
+  canEditContentAccess?: boolean;
   isOwn?: boolean;
   onApprove?: () => void;
   onReject?: () => void;
@@ -320,7 +322,7 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
                   🔁 {job.repeatInterval}
                 </span>
               )}
-              {hasFailedTargets && (
+              {canEditContentAccess && hasFailedTargets && (
                 <button
                   onClick={async () => { setRetrying(true); try { await onRetry(); } finally { setRetrying(false); } }}
                   disabled={retrying}
@@ -332,7 +334,7 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
                   </svg>
                 </button>
               )}
-              {canEdit && (
+              {canEditContentAccess && canEdit && (
                 <button onClick={onEdit} className="job-action-btn" title="Edit post">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -365,13 +367,15 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
                   </svg>
                 </button>
               )}
-              <button onClick={onDuplicate} className="job-action-btn" title="Duplicate post">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-              </button>
-              {(job.status === "done" || job.status === "comment_done") && !job.repeatInterval && (
+              {canEditContentAccess && (
+                <button onClick={onDuplicate} className="job-action-btn" title="Duplicate post">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                </button>
+              )}
+              {canEditContentAccess && (job.status === "done" || job.status === "comment_done") && !job.repeatInterval && (
                 <button onClick={onRepeat} className="job-action-btn" title="Repeat this post">
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}>
                     <path d="M17 1l4 4-4 4" /><path d="M3 11V9a4 4 0 0 1 4-4h14" />
@@ -379,12 +383,14 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
                   </svg>
                 </button>
               )}
-              <button onClick={onDelete} className="job-action-btn job-action-btn--danger" title="Delete post">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
+              {canEditContentAccess && (
+                <button onClick={onDelete} className="job-action-btn job-action-btn--danger" title="Delete post">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              )}
             </div>
             {job.dryRun && (
               <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold"
@@ -517,9 +523,12 @@ export default function JobsPage() {
   const [platformFilter, setPlatformFilter] = useState<string>("all");
 
   // Design-approval flow — owner/admin/designer review; members submit for review
-  const role = activeWorkspace?.role ?? "member";
-  const canReview = role === "owner" || role === "admin" || role === "designer";
+  const role = activeWorkspace?.role ?? user?.role;
+  const canReview = roleCanReview(role);
   const canSubmitOwn = (activeWorkspace?.approvalRequired ?? false) && !canReview;
+  const canEditContentAccess = canEditContent(role);
+  // Review-only roles never create drafts, so they get no Drafts tab
+  const showDraftTab = canEditContentAccess;
 
   // Bulk select state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -985,30 +994,34 @@ export default function JobsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <button onClick={() => router.push("/jobs/import")}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl transition-colors hover:opacity-80"
-            style={{ backgroundColor: "#1a1a1a", color: "#888", border: "1px solid #2a2a2a" }}>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-            </svg>
-            <span className="hidden sm:inline">Import Plan</span>
-          </button>
-          <button onClick={() => router.push("/bulk")}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl transition-colors hover:opacity-80"
-            style={{ backgroundColor: "#1a1a1a", color: "#888", border: "1px solid #2a2a2a" }}>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            <span className="hidden sm:inline">Bulk</span>
-          </button>
-          <a href="/compose"
-            className="inline-flex items-center gap-1.5 px-3 md:px-4 py-2 text-sm font-semibold rounded-xl transition-colors hover:bg-gray-100"
-            style={{ backgroundColor: "#ffffff", color: "#0a0a0a" }}>
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            <span className="hidden sm:inline">New Post</span>
-          </a>
+          {canEditContentAccess && (
+            <>
+              <button onClick={() => router.push("/jobs/import")}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl transition-colors hover:opacity-80"
+                style={{ backgroundColor: "#1a1a1a", color: "#888", border: "1px solid #2a2a2a" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+                <span className="hidden sm:inline">Import Plan</span>
+              </button>
+              <button onClick={() => router.push("/bulk")}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-xl transition-colors hover:opacity-80"
+                style={{ backgroundColor: "#1a1a1a", color: "#888", border: "1px solid #2a2a2a" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                <span className="hidden sm:inline">Bulk</span>
+              </button>
+              <a href="/compose"
+                className="inline-flex items-center gap-1.5 px-3 md:px-4 py-2 text-sm font-semibold rounded-xl transition-colors hover:bg-gray-100"
+                style={{ backgroundColor: "#ffffff", color: "#0a0a0a" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                <span className="hidden sm:inline">New Post</span>
+              </a>
+            </>
+          )}
         </div>
       </div>
 
@@ -1037,7 +1050,7 @@ export default function JobsPage() {
             <div className="flex gap-1.5 flex-wrap">
           {([
             { id: "all",     label: "All",       dot: null,       activeColor: "#ededed", activeBg: "#2a2a2a" },
-            { id: "draft",   label: "Drafts",    dot: "#6b7280",  activeColor: "#9ca3af", activeBg: "#1a1a1a" },
+            ...(showDraftTab ? ([{ id: "draft", label: "Drafts",   dot: "#6b7280",  activeColor: "#9ca3af", activeBg: "#1a1a1a" }] as const) : []),
             ...(canReview ? ([{ id: "review", label: "In review", dot: "#818cf8", activeColor: "#a5b4fc", activeBg: "#1c1a24" }] as const) : []),
             { id: "pending", label: "Scheduled",  dot: "#f59e0b", activeColor: "#fbbf24", activeBg: "#1c1a10" },
             { id: "done",    label: "Published",  dot: "#22c55e", activeColor: "#4ade80", activeBg: "#0a1f12" },
@@ -1077,8 +1090,8 @@ export default function JobsPage() {
         )}
       </div>
 
-      {/* Bulk action bar */}
-      {viewTab === "list" && (
+      {/* Bulk action bar — content creation roles only */}
+      {viewTab === "list" && canEditContentAccess && (
         <div className="flex items-center gap-3 px-4 md:px-8 py-2.5 flex-shrink-0 flex-wrap" style={{ borderBottom: "1px solid #1e1e1e", backgroundColor: "#0d0d0d" }}>
           {/* Select all / deselect */}
           <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -1154,7 +1167,7 @@ export default function JobsPage() {
           <div className="rounded-2xl shadow-sm p-6" style={{ backgroundColor: "#111111", border: "1px solid #2a2a2a" }}>
             {loading
               ? <div className="text-center py-20 text-sm" style={{ color: "#888888" }}>Loading…</div>
-              : <CalendarView jobs={filteredJobs} onReschedule={reschedule} onEdit={setEditingJob} />
+              : <CalendarView jobs={filteredJobs} onReschedule={reschedule} onEdit={setEditingJob} readOnly={!canEditContentAccess} />
             }
           </div>
         )}
@@ -1196,7 +1209,7 @@ export default function JobsPage() {
                 <div className="flex items-center gap-2 mb-3">
                   <span className="w-2 h-2 rounded-full bg-gray-500" />
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                    {filter === "review" ? "In review" : "Drafts"} · {drafts.length}
+                    {filter === "review" || !showDraftTab ? "In review" : "Drafts"} · {drafts.length}
                   </p>
                 </div>
                 <div className="space-y-3">
@@ -1211,6 +1224,7 @@ export default function JobsPage() {
                       onToggleSelect={() => toggleSelect(job.id)}
                       canReview={canReview}
                       canSubmitOwn={canSubmitOwn}
+                      canEditContentAccess={canEditContentAccess}
                       isOwn={!!user && job.userId === user.id}
                       onApprove={() => approveJob(job)}
                       onReject={() => setRejectingJob(job)}
@@ -1237,7 +1251,8 @@ export default function JobsPage() {
                       onDuplicate={() => duplicateJob(job)}
                       onRepeat={() => setRepeatingJob(job)}
                       selected={selectedIds.has(job.id)}
-                      onToggleSelect={() => toggleSelect(job.id)} />
+                      onToggleSelect={() => toggleSelect(job.id)}
+                      canEditContentAccess={canEditContentAccess} />
                   ))}
                 </div>
               </section>
@@ -1260,7 +1275,8 @@ export default function JobsPage() {
                       onDuplicate={() => duplicateJob(job)}
                       onRepeat={() => setRepeatingJob(job)}
                       selected={selectedIds.has(job.id)}
-                      onToggleSelect={() => toggleSelect(job.id)} />
+                      onToggleSelect={() => toggleSelect(job.id)}
+                      canEditContentAccess={canEditContentAccess} />
                   ))}
                 </div>
               </section>

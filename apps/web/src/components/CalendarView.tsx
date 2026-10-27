@@ -25,6 +25,8 @@ interface Props {
   jobs: Job[];
   onReschedule: (jobId: string, newDate: Date) => Promise<void>;
   onEdit?: (job: Job) => void;
+  /** True when the viewer cannot reschedule/edit content (e.g. Tim Desain read-only). */
+  readOnly?: boolean;
 }
 
 function jobDisplayTitle(content: { text?: string; title?: string }): string {
@@ -325,7 +327,7 @@ const DARK_CSS = `
   }
 `;
 
-export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
+export function CalendarView({ jobs, onReschedule, onEdit, readOnly = false }: Props) {
   const calendarRef = useRef<FullCalendar>(null);
   const dragNavTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDragging = useRef(false);
@@ -343,7 +345,7 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
       start: job.scheduledFor!,
       backgroundColor: "transparent",
       borderColor: "transparent",
-      editable: job.status === "pending",
+      editable: readOnly ? false : job.status === "pending",
       extendedProps: { job },
     };
   });
@@ -405,7 +407,7 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
         }}
         buttonText={{ month: "Month", week: "Week", day: "Day", today: "Today" }}
         events={events}
-        editable={!isTouchDevice}
+        editable={!readOnly && !isTouchDevice}
         eventDragStart={() => { isDragging.current = true; }}
         eventDragStop={() => {
           isDragging.current = false;
@@ -413,6 +415,7 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
         }}
         eventDrop={handleEventDrop}
         eventClick={(info) => {
+          if (readOnly) return;
           const job = info.event.extendedProps.job as Job;
           if ((job.status === "pending" || job.status === "draft") && onEdit) onEdit(job);
         }}
@@ -432,7 +435,7 @@ export function CalendarView({ jobs, onReschedule, onEdit }: Props) {
           if (job.status !== "pending") info.el.style.opacity = "0.8";
         }}
       />
-      {isTouchDevice && (
+      {isTouchDevice && !readOnly && (
         <p style={{
           textAlign: "center", fontSize: 12, color: "#555",
           marginTop: 12, marginBottom: 0,
