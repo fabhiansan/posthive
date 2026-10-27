@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { prisma } from "../lib/prisma.js";
-import { getWorkspaceId, getUser, withAuth } from "../lib/auth/withAuth.js";
+import { getWorkspaceId, getUser, withAuth, requireContentEditorRole } from "../lib/auth/withAuth.js";
 import {
   CsvParseError,
   decodeUtf8,
@@ -262,7 +262,12 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     "/jobs/import/preview",
     { preHandler: [withAuth], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (req, reply) => {
+      const { id: userId } = getUser(req);
       const workspaceId = getWorkspaceId(req);
+
+      // Import is Admin + Marketing only (docs/role-access-matrix.md US-09)
+      const roleBlocked = await requireContentEditorRole(userId, workspaceId);
+      if (roleBlocked) return reply.status(403).send(roleBlocked);
 
       try {
         const { upload, parsed, rows, duplicates, accounts } = await prepareImport(workspaceId, req);
@@ -304,6 +309,10 @@ export async function importRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { id: userId } = getUser(req);
       const workspaceId = getWorkspaceId(req);
+
+      // Import is Admin + Marketing only (docs/role-access-matrix.md US-09)
+      const roleBlocked = await requireContentEditorRole(userId, workspaceId);
+      if (roleBlocked) return reply.status(403).send(roleBlocked);
 
       try {
         const { upload, parsed, rows, duplicates, accounts } = await prepareImport(workspaceId, req);

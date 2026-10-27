@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 
@@ -6,7 +7,7 @@ import { prisma } from "../lib/prisma.js";
 const sseConnections = new Map<string, number>();
 const SSE_MAX_PER_USER = 3;
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
-import { withAuth, getUser, getWorkspaceId, getWorkspaceRole, isManageRole, requireManageRole, ACCESS_COOKIE_NAME } from "../lib/auth/withAuth.js";
+import { withAuth, getUser, getWorkspaceId, getWorkspaceRole, isManageRole, requireManageRole, isContentEditorRole, requireContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN, ACCESS_COOKIE_NAME } from "../lib/auth/withAuth.js";
 import { authProvider } from "../lib/auth/index.js";
 import { enforcePlan } from "../lib/enforcePlan.js";
 import { getPlan } from "../lib/plans.js";
@@ -71,6 +72,10 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
   app.post("/jobs/bulk", { preHandler: [withAuth], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
     const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
+
+    // Tim Desain is read-only on content (docs/role-access-matrix.md)
+    const roleBlocked = await requireContentEditorRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
 
     const bulkItemSchema = z.object({
       scheduledFor: z.string().datetime(),
@@ -228,6 +233,10 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
 
+    // Tim Desain is read-only on content (docs/role-access-matrix.md)
+    const roleBlocked = await requireContentEditorRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
+
     const parsed = createJobBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
 
@@ -364,11 +373,16 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     });
     const streamWorkspaceId = dbUser?.activeWorkspaceId ?? dbUser?.workspaceMembers[0]?.workspaceId ?? null;
 
+    // Draft visibility — see jobVisibilityWhere; secure default for non-members
+    const streamRole = streamWorkspaceId ? await getWorkspaceRole(userId, streamWorkspaceId) : null;
+
     reply.raw.writeHead(200, sseHeaders);
 
     const fetchJobs = async () => {
       const jobs = await prisma.postJob.findMany({
-        where: streamWorkspaceId ? { workspaceId: streamWorkspaceId } : { userId },
+        where: streamWorkspaceId
+          ? { workspaceId: streamWorkspaceId, ...jobVisibilityWhere(streamRole, userId) }
+          : { userId },
         orderBy: { scheduledFor: "desc" },
         take: 20,
         select: {
@@ -407,15 +421,19 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     await new Promise<void>((resolve) => req.raw.on("close", resolve));
   });
 
-  // List jobs for current workspace — cursor-paginated
+  // List jobs for current workspace — cursor-paginated.
+  // Plain drafts are hidden from owner/admin (they only see their own); in-review
+  // items stay visible to approvers; Marketing sees everything.
   app.get("/jobs", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
     const query = req.query as { cursor?: string; limit?: string; status?: string; review?: string };
     const limit = Math.min(Number(query.limit ?? 50), 100);
     const cursor = query.cursor ?? undefined;
     const statusFilter = query.status;
 
-    const where: { workspaceId: string; status?: { in: string[] }; approvalStatus?: string } = { workspaceId };
+    const role = await getWorkspaceRole(userId, workspaceId);
+    const where: Prisma.PostJobWhereInput = { workspaceId, ...jobVisibilityWhere(role, userId) };
     if (statusFilter) {
       const statusMap: Record<string, string[]> = {
         draft: ["draft"],
@@ -426,7 +444,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       const statuses = statusMap[statusFilter] ?? [statusFilter];
       where.status = { in: statuses };
     }
-    // Review queue — drafts awaiting design approval
+    // Review queue — drafts awaiting design approval (always visible to approvers)
     if (query.review === "pending") {
       where.status = { in: ["draft"] };
       where.approvalStatus = "pending";
@@ -454,15 +472,19 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     return reply.send({ items, nextCursor, hasMore });
   });
 
-  // Single job detail — scoped to workspace
+  // Single job detail — scoped to workspace. Hidden drafts 404 so they can't
+  // be probed by URL (no existence leak).
   app.get("/jobs/:id", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
+    const role = await getWorkspaceRole(userId, workspaceId);
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
       include: { targets: { select: TARGET_SELECT } },
     });
     if (!job) return reply.status(404).send({ error: "Job not found" });
+    if (!isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
     return reply.send(job);
   });
 
@@ -500,7 +522,11 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       return reply.status(409).send({ error: `Cannot edit a job with status "${job.status}"` });
     }
     const role = await getWorkspaceRole(userId, workspaceId);
-    if (!["owner", "admin"].includes(role ?? "") && job.userId !== userId) {
+    // Tim Desain (and unknown roles) cannot edit content — read-only + approve/reject
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
+    if ((role !== "owner" && role !== "admin") && job.userId !== userId) {
       return reply.status(403).send({ error: "You can only edit your own posts.", code: "FORBIDDEN" });
     }
 
@@ -620,11 +646,14 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const body = z.object({ scheduledFor: z.string().datetime() }).safeParse(req.body);
     if (!body.success) return reply.status(400).send({ error: "scheduledFor is required" });
 
-    const forbidden = await requireManageRole(userId, workspaceId);
-    if (forbidden) return reply.status(403).send(forbidden);
+    const role = await getWorkspaceRole(userId, workspaceId);
+    if (!isManageRole(role)) {
+      return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
+    }
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true } });
-    if (!job) return reply.status(404).send({ error: "Job not found" });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true } });
+    // Other people's plain drafts are hidden from approvers — only in-review ones can be promoted
+    if (!job || !isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only draft jobs can be scheduled" });
 
     const blocked = await enforcePlan(userId, workspaceId, "scheduling");
@@ -692,7 +721,9 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (job.status !== "draft") return reply.status(409).send({ error: "Only drafts can be submitted for review" });
     if (job.approvalStatus === "pending") return reply.status(409).send({ error: "Already awaiting review" });
     const role = await getWorkspaceRole(userId, workspaceId);
-    if (job.userId !== userId && !isManageRole(role)) {
+    // Submitting is a content-editor action (designer reviews, never submits)
+    if (!isContentEditorRole(role)) return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    if (job.userId !== userId && role !== "owner" && role !== "admin") {
       return reply.status(403).send({ error: "You can only submit your own posts.", code: "FORBIDDEN" });
     }
 
@@ -704,16 +735,25 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     return reply.send(updated);
   });
 
-  // Retry only the failed targets on a partially-failed job
+  // Retry only the failed targets on a partially-failed job.
+  // Tim Desain cannot retry (matrix US-16: Admin/Marketing); Marketing only retries own posts.
   app.post("/jobs/:id/retry-failed", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
 
+    const role = await getWorkspaceRole(userId, workspaceId);
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
       include: { targets: { select: { id: true, status: true } } },
     });
     if (!job) return reply.status(404).send({ error: "Job not found" });
+    if (role === "member" && job.userId !== userId) {
+      return reply.status(403).send({ error: "You can only retry your own posts.", code: "FORBIDDEN" });
+    }
     if (job.status === "running") return reply.status(409).send({ error: "Job is currently running" });
 
     const failedTargetIds = job.targets
@@ -752,7 +792,11 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (!job) return reply.status(404).send({ error: "Job not found" });
     if (job.status === "running") return reply.status(409).send({ error: "Cannot delete a job that is currently running" });
     const role = await getWorkspaceRole(userId, workspaceId);
-    if (!["owner", "admin"].includes(role ?? "") && job.userId !== userId) {
+    // Tim Desain is read-only on content (docs/role-access-matrix.md)
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
+    if ((role !== "owner" && role !== "admin") && job.userId !== userId) {
       return reply.status(403).send({ error: "You can only delete your own posts.", code: "FORBIDDEN" });
     }
 
@@ -796,7 +840,11 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     });
 
     const role = await getWorkspaceRole(userId, workspaceId);
-    const isAdmin = ["owner", "admin"].includes(role ?? "");
+    // Tim Desain is read-only on content (docs/role-access-matrix.md)
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
+    const isAdmin = role === "owner" || role === "admin";
 
     const deletableIds: string[] = [];
     const mediaUrlsToDelete: string[] = [];

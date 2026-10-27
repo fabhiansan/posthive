@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { prisma } from "../lib/prisma.js";
-import { withAuth, getWorkspaceId } from "../lib/auth/withAuth.js";
+import { withAuth, getUser, getWorkspaceId, requireAdminRole } from "../lib/auth/withAuth.js";
 
 export async function accountGroupRoutes(app: FastifyInstance) {
   // GET /account-groups — list groups for current workspace
@@ -17,10 +17,13 @@ export async function accountGroupRoutes(app: FastifyInstance) {
     return groups.map((g) => ({ id: g.id, name: g.name, accountIds: g.members.map((m: { accountId: string }) => m.accountId) }));
   });
 
-  // POST /account-groups — create group
+  // POST /account-groups — create group (owner/admin; accounts are Admin's domain)
   app.post("/account-groups", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
     if (!workspaceId) return reply.status(400).send({ error: "No active workspace" });
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
 
     const { name, accountIds = [] } = req.body as { name: string; accountIds?: string[] };
     if (!name?.trim()) return reply.status(400).send({ error: "name required" });
@@ -44,10 +47,13 @@ export async function accountGroupRoutes(app: FastifyInstance) {
     return reply.status(201).send({ id: group.id, name: group.name, accountIds: group.members.map((m: { accountId: string }) => m.accountId) });
   });
 
-  // PATCH /account-groups/:id — rename + update members
+  // PATCH /account-groups/:id — rename + update members (owner/admin)
   app.patch("/account-groups/:id", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
     if (!workspaceId) return reply.status(400).send({ error: "No active workspace" });
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
 
     const { id } = req.params as { id: string };
     const group = await prisma.accountGroup.findFirst({ where: { id, workspaceId } });
@@ -79,10 +85,13 @@ export async function accountGroupRoutes(app: FastifyInstance) {
     return { id: updated.id, name: updated.name, accountIds: updated.members.map((m: { accountId: string }) => m.accountId) };
   });
 
-  // DELETE /account-groups/:id
+  // DELETE /account-groups/:id (owner/admin)
   app.delete("/account-groups/:id", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
     if (!workspaceId) return reply.status(400).send({ error: "No active workspace" });
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
 
     const { id } = req.params as { id: string };
     const group = await prisma.accountGroup.findFirst({ where: { id, workspaceId } });

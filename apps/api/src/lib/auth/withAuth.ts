@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { authProvider } from "./index.js";
 import type { AuthUser } from "./types.js";
 import { prisma } from "../prisma.js";
@@ -182,4 +183,63 @@ export async function requireManageRole(userId: string, workspaceId: string): Pr
     return { error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" };
   }
   return null;
+}
+
+// ── Content-role gates (docs/role-access-matrix.md) ──────────────────────────────
+
+// Roles allowed to create/edit/delete content: Admin (owner/admin) + Marketing (member).
+// Per spec, designer read-only: approve/reject only. Unknown/null roles are treated
+// like designer — they may still see their OWN drafts (jobVisibilityWhere).
+export function isContentEditorRole(role: string | null | undefined): boolean {
+  return role === "owner" || role === "admin" || role === "member";
+}
+
+export const CONTENT_EDITOR_FORBIDDEN_MSG = "Content is created and edited by Admin and Marketing only.";
+export const CONTENT_EDITOR_FORBIDDEN = { error: CONTENT_EDITOR_FORBIDDEN_MSG, code: "FORBIDDEN" } as const;
+
+/** Returns 403 payload if the user may not create/edit content, null if allowed. */
+export async function requireContentEditorRole(userId: string, workspaceId: string): Promise<{ error: string; code: string } | null> {
+  const role = await getWorkspaceRole(userId, workspaceId);
+  return isContentEditorRole(role) ? null : CONTENT_EDITOR_FORBIDDEN;
+}
+
+// Template library (US-07): only Tim Desain uploads, replaces and deletes templates.
+// Admin and Marketing view and pick only.
+export const TEMPLATE_MANAGER_FORBIDDEN = { error: "Templates are managed by the design team only.", code: "FORBIDDEN" } as const;
+
+/** Returns 403 payload if the user may not manage templates, null if allowed. */
+export async function requireTemplateManagerRole(userId: string, workspaceId: string): Promise<{ error: string; code: string } | null> {
+  const role = await getWorkspaceRole(userId, workspaceId);
+  return role === "designer" ? null : TEMPLATE_MANAGER_FORBIDDEN;
+}
+
+// ── Draft visibility ────────────────────────────────────────────────────────
+
+// Only Marketing (member) sees other people's plain drafts. Owner/admin see their
+// own drafts; everyone still sees content in review (approvalStatus "pending")
+// plus scheduled/published/failed posts, so the approve/reject flow keeps working.
+// Unknown roles (null membership) get the restricted filter — secure default.
+export interface DraftVisibilityJob {
+  status: string;
+  approvalStatus?: string | null;
+  userId: string;
+}
+
+export function isDraftVisibleTo(role: string | null | undefined, viewerId: string, job: DraftVisibilityJob): boolean {
+  if (job.status !== "draft") return true;
+  if (job.userId === viewerId) return true;               // own drafts are always visible
+  if (job.approvalStatus === "pending") return true;      // in review — approvers must see it
+  return role === "member";                               // other plain drafts are Marketing-only
+}
+
+/** Prisma where-fragment that excludes drafts the role may not see. */
+export function jobVisibilityWhere(role: string | null | undefined, viewerId: string): Prisma.PostJobWhereInput {
+  if (role === "member") return {};
+  return {
+    OR: [
+      { status: { not: "draft" } },
+      { approvalStatus: "pending" },
+      { userId: viewerId },
+    ],
+  };
 }

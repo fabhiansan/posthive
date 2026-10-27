@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { withApiKey } from "../lib/auth/withApiKey.js";
-import { isManageRole } from "../lib/auth/withAuth.js";
+import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN } from "../lib/auth/withAuth.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
@@ -50,6 +51,10 @@ export async function publicApiRoutes(
   // POST /api/v1/posts — schedule or draft a post
   app.post("/api/v1/posts", { preHandler }, async (req, reply) => {
     const { id: userId, workspaceId, role, approvalRequired } = req.apiKeyUser!;
+    // Content creation is Admin + Marketing (Tim Desain is read-only)
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
     const body = req.body as {
       content: string;
       accountIds: string[];
@@ -150,7 +155,7 @@ export async function publicApiRoutes(
 
   // GET /api/v1/posts — list scheduled/completed posts
   app.get("/api/v1/posts", { preHandler }, async (req, reply) => {
-    const { workspaceId } = req.apiKeyUser!;
+    const { workspaceId, id: userId, role } = req.apiKeyUser!;
     const { status, limit: limitStr, cursor } = req.query as {
       status?: string;
       limit?: string;
@@ -178,11 +183,18 @@ export async function publicApiRoutes(
       }
     }
 
+    // Restricted roles (admin/designer/null) must not see other people's plain drafts.
+    // Cursor and visibility both carry top-level OR clauses — combine them under AND.
+    const visibility = jobVisibilityWhere(role, userId) as Prisma.PostJobWhereInput;
+    const andClauses: Prisma.PostJobWhereInput[] = [];
+    if (cursor) andClauses.push(cursorFilter as Prisma.PostJobWhereInput);
+    if (visibility.OR) andClauses.push({ OR: visibility.OR });
+
     const jobs = await prisma.postJob.findMany({
       where: {
         workspaceId,
         ...(statusFilter ? { status: statusFilter } : {}),
-        ...cursorFilter,
+        ...(andClauses.length ? { AND: andClauses } : {}),
       },
       orderBy: [{ scheduledFor: "desc" }, { id: "desc" }],
       take,
@@ -206,9 +218,9 @@ export async function publicApiRoutes(
     });
   });
 
-  // GET /api/v1/posts/:id — get a single post
+  // GET /api/v1/posts/:id — get a single post (hidden drafts 404 — no existence leak)
   app.get("/api/v1/posts/:id", { preHandler }, async (req, reply) => {
-    const { workspaceId } = req.apiKeyUser!;
+    const { workspaceId, id: userId, role } = req.apiKeyUser!;
     const { id } = req.params as { id: string };
 
     const job = await prisma.postJob.findFirst({
@@ -216,6 +228,7 @@ export async function publicApiRoutes(
       include: { targets: { select: { id: true, accountId: true, status: true, error: true, platformPostId: true } } },
     });
     if (!job) return reply.status(404).send({ error: "Post not found" });
+    if (!isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Post not found" });
 
     return reply.send({
       id: job.id,
@@ -231,7 +244,7 @@ export async function publicApiRoutes(
 
   // PATCH /api/v1/posts/:id — reschedule or update a pending post
   app.patch("/api/v1/posts/:id", { preHandler }, async (req, reply) => {
-    const { workspaceId, role, approvalRequired } = req.apiKeyUser!;
+    const { workspaceId, id: userId, role, approvalRequired } = req.apiKeyUser!;
     const { id } = req.params as { id: string };
     const body = req.body as {
       scheduledFor?: string;
@@ -249,6 +262,14 @@ export async function publicApiRoutes(
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "pending")
       return reply.status(409).send({ error: `Cannot update a post with status "${job.status}"` });
+
+    // Tim Desain (and unknown roles) cannot edit content
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
+    if (role !== "owner" && role !== "admin" && job.userId !== userId) {
+      return reply.status(403).send({ error: "You can only edit your own posts.", code: "FORBIDDEN" });
+    }
 
     // Design-approval gate — approved posts are frozen for member keys
     if (approvalRequired && !isManageRole(role)) {
@@ -336,13 +357,21 @@ export async function publicApiRoutes(
 
   // DELETE /api/v1/posts/:id — cancel a pending or draft post
   app.delete("/api/v1/posts/:id", { preHandler }, async (req, reply) => {
-    const { workspaceId } = req.apiKeyUser!;
+    const { workspaceId, id: userId, role } = req.apiKeyUser!;
     const { id } = req.params as { id: string };
 
     const job = await prisma.postJob.findFirst({ where: { id, workspaceId } });
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "pending" && job.status !== "draft") {
       return reply.status(400).send({ error: `Cannot delete a post with status "${job.status}". Only pending or draft posts can be deleted.` });
+    }
+
+    // Tim Desain is read-only on content (docs/role-access-matrix.md)
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
+    if (role !== "owner" && role !== "admin" && job.userId !== userId) {
+      return reply.status(403).send({ error: "You can only delete your own posts.", code: "FORBIDDEN" });
     }
 
     await prisma.postJob.delete({ where: { id } });
@@ -390,8 +419,12 @@ export async function publicApiRoutes(
   });
 
   // POST /api/v1/posts/:id/duplicate — clone a post as a new draft
+  // Content creation is Admin + Marketing (Tim Desain is read-only)
   app.post("/api/v1/posts/:id/duplicate", { preHandler }, async (req, reply) => {
-    const { id: userId, workspaceId } = req.apiKeyUser!;
+    const { id: userId, workspaceId, role } = req.apiKeyUser!;
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
     const { id } = req.params as { id: string };
 
     const job = await prisma.postJob.findFirst({
@@ -399,6 +432,7 @@ export async function publicApiRoutes(
       include: { targets: { select: { accountId: true } } },
     });
     if (!job) return reply.status(404).send({ error: "Post not found" });
+    if (!isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Post not found" });
 
     const duplicate = await prisma.postJob.create({
       data: {
@@ -445,6 +479,10 @@ export async function publicApiRoutes(
   // POST /api/v1/templates/:id/use — create a post from a template
   app.post("/api/v1/templates/:id/use", { preHandler }, async (req, reply) => {
     const { id: userId, workspaceId, role, approvalRequired } = req.apiKeyUser!;
+    // Content creation is Admin + Marketing (Tim Desain is read-only)
+    if (!isContentEditorRole(role)) {
+      return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    }
     const { id } = req.params as { id: string };
     const body = req.body as {
       accountIds: string[];

@@ -22,7 +22,7 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
 import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
-import { isManageRole } from "../lib/auth/withAuth.js";
+import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -391,6 +391,8 @@ async function handleTool(
   // Design-approval gate — member API keys in approval-enabled workspaces
   // cannot schedule directly or approve drafts; everything goes to review.
   const forcedDraft = !isManageRole(ctx.role) && ctx.approvalRequired;
+  // Draft visibility — admins/designers see others' drafts only when in review
+  const visibleWhere = jobVisibilityWhere(ctx.role, userId);
 
   switch (name) {
     case "list_accounts": {
@@ -403,6 +405,8 @@ async function handleTool(
     }
 
     case "create_post": {
+      // Content creation is Admin + Marketing (designer is read-only)
+      if (!isContentEditorRole(ctx.role)) throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
       const scheduleDirectly = args.schedule_directly === true;
       const scheduledTimeStr = args.scheduled_time as string | undefined;
 
@@ -488,6 +492,7 @@ async function handleTool(
         },
       });
       if (!job || job.workspaceId !== workspaceId) throw new Error("Post not found");
+      if (!isDraftVisibleTo(ctx.role, userId, job as DraftVisibilityJob)) throw new Error("Post not found");
 
       const parsed = (() => { try { return JSON.parse(job.content) as Record<string, unknown>; } catch { return {}; } })();
       return ok({
@@ -513,7 +518,11 @@ async function handleTool(
       const status = args.status as string | undefined;
       const take = Math.min(Number(args.limit ?? 20), 100);
       const jobs = await prisma.postJob.findMany({
-        where: { workspaceId, ...(status ? { status } : {}) },
+        where: {
+          workspaceId,
+          ...(status ? { status } : {}),
+          ...(visibleWhere.OR ? { AND: [{ OR: visibleWhere.OR }] } : {}),
+        },
         orderBy: { scheduledFor: "desc" },
         take,
         include: {
@@ -556,6 +565,9 @@ async function handleTool(
       if (job.status !== "draft") {
         throw new Error(`Post status is '${job.status}' — only drafts can be approved`);
       }
+      if (!isManageRole(ctx.role) && job.userId !== userId) {
+        throw new Error("You can only approve your own drafts.");
+      }
 
       const updated = await prisma.postJob.update({
         where: { id: postId },
@@ -584,12 +596,19 @@ async function handleTool(
       if (job.status !== "pending" && job.status !== "draft") {
         throw new Error(`Cannot update a post with status '${job.status}'. Only pending or draft posts can be updated.`);
       }
+      // Tim Desain (and unknown roles) cannot edit content
+      if (!isContentEditorRole(ctx.role)) {
+        throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
+      }
 
       // Design-approval gate — member keys may only edit their own drafts,
       // and editing resets the review when the draft was pending/rejected.
       if (forcedDraft) {
         if (job.userId !== userId) throw new Error("Member API keys can only edit their own posts.");
         if (job.status !== "draft") throw new Error("Approved posts are frozen for member keys — duplicate the post instead.");
+      }
+      if (!forcedDraft && ctx.role === "member" && job.userId !== userId) {
+        throw new Error("You can only edit your own posts.");
       }
 
       const existing = (() => { try { return JSON.parse(job.content) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
@@ -627,11 +646,16 @@ async function handleTool(
 
     case "duplicate_post": {
       const postId = args.post_id as string;
+      // Content creation is Admin + Marketing (Tim Desain is read-only)
+      if (!isContentEditorRole(ctx.role)) {
+        throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
+      }
       const job = await prisma.postJob.findUnique({
         where: { id: postId },
         include: { targets: { select: { accountId: true } } },
       });
       if (!job || job.workspaceId !== workspaceId) throw new Error("Post not found");
+      if (!isDraftVisibleTo(ctx.role, userId, job as DraftVisibilityJob)) throw new Error("Post not found");
 
       const duplicate = await prisma.postJob.create({
         data: {
@@ -664,9 +688,13 @@ async function handleTool(
       if (job.status !== "pending" && job.status !== "draft") {
         throw new Error(`Cannot delete a post with status '${job.status}'. Only pending or draft posts can be deleted.`);
       }
+      if (!isContentEditorRole(ctx.role)) throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
       // Design-approval gate — member keys may only delete their own drafts
       if (forcedDraft && (job.userId !== userId || job.status !== "draft")) {
         throw new Error("Member API keys can only delete their own drafts.");
+      }
+      if (ctx.role === "member" && job.userId !== userId) {
+        throw new Error("You can only delete your own posts.");
       }
       await prisma.postJob.delete({ where: { id: postId } });
       return ok({ ok: true, deleted: postId });
@@ -694,6 +722,7 @@ async function handleTool(
     }
 
     case "create_from_template": {
+      if (!isContentEditorRole(ctx.role)) throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
       const templateId = args.template_id as string;
       const template = await prisma.template.findFirst({ where: { id: templateId, workspaceId } });
       if (!template) throw new Error("Template not found");

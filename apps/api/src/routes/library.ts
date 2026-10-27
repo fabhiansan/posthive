@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import * as Sentry from "@sentry/node";
 import { prisma } from "../lib/prisma.js";
-import { withAuth, getUser, getWorkspaceId } from "../lib/auth/withAuth.js";
+import { withAuth, getUser, getWorkspaceId, requireAdminRole } from "../lib/auth/withAuth.js";
 import { getPlan } from "../lib/plans.js";
 
 const MAX_CSV_ROWS = 500;
@@ -101,10 +101,12 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // POST /library — create a new library
+  // POST /library — create a new library (owner/admin only; content stock is not a member/designer surface)
   app.post("/library", { preHandler: [withAuth] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id: userId } = getUser(req);
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
 
     const parsed = libraryCreateSchema.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.flatten() });
@@ -184,9 +186,12 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(library);
   });
 
-  // PATCH /library/:id — update settings
+  // PATCH /library/:id — update settings (owner/admin)
   app.patch("/library/:id", { preHandler: [withAuth] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
+    const { id: userId } = getUser(req);
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
     const { id } = req.params as { id: string };
 
     const parsed = libraryUpdateSchema.safeParse(req.body);
@@ -232,9 +237,12 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // DELETE /library/:id
+  // DELETE /library/:id (owner/admin)
   app.delete("/library/:id", { preHandler: [withAuth] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
+    const { id: userId } = getUser(req);
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
     const { id } = req.params as { id: string };
     const library = await prisma.contentLibrary.findFirst({ where: { id, workspaceId } });
     if (!library) return reply.status(404).send({ error: "Library not found" });
@@ -275,10 +283,13 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ items: page, nextCursor: hasMore ? page[page.length - 1].id : null, hasMore });
   });
 
-  // POST /library/:id/items — add items from CSV payload
+  // POST /library/:id/items — add items from CSV payload (owner/admin)
   // Expects { items: [{ text, commentText?, mediaUrls? }] }
   app.post("/library/:id/items", { preHandler: [withAuth] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
+    const { id: userId } = getUser(req);
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
     const { id } = req.params as { id: string };
 
     const library = await prisma.contentLibrary.findFirst({ where: { id, workspaceId }, select: { id: true } });
@@ -355,9 +366,12 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(201).send({ created });
   });
 
-  // DELETE /library/:id/items — delete specific items by IDs
+  // DELETE /library/:id/items — delete specific items by IDs (owner/admin)
   app.delete("/library/:id/items", { preHandler: [withAuth] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
+    const { id: userId } = getUser(req);
+    const roleBlocked = await requireAdminRole(userId, workspaceId);
+    if (roleBlocked) return reply.status(403).send(roleBlocked);
     const { id } = req.params as { id: string };
 
     const parsed = z.object({
