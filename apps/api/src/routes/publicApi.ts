@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { withApiKey } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN } from "../lib/auth/withAuth.js";
+import { postContentFromTemplate, templateNeedsCopy, slideCopyError } from "../lib/templates.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
@@ -398,6 +399,8 @@ export async function publicApiRoutes(
     const job = await prisma.postJob.findFirst({ where: { id, workspaceId } });
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: `Post status is '${job.status}' — only drafts can be approved` });
+    const copyError = slideCopyError(job.content);
+    if (copyError) return reply.status(400).send({ error: copyError });
 
     const updated = await prisma.postJob.update({
       where: { id },
@@ -501,6 +504,8 @@ export async function publicApiRoutes(
     const tc = (() => { try { return JSON.parse(template.content) as Record<string, unknown>; } catch { return {}; } })();
 
     const isDraft = body.draft !== false && !body.scheduledFor;
+    if (!isDraft && templateNeedsCopy(tc))
+      return reply.status(400).send({ error: "This template needs copywriting per slide — create it as a draft and fill it in Posthive." });
     // Design-approval gate — member keys stay in the review queue
     const needsReview = !isDraft && approvalRequired && !isManageRole(role);
     const staysDraft = isDraft || needsReview;
@@ -526,7 +531,7 @@ export async function publicApiRoutes(
         scheduledFor,
         status: staysDraft ? "draft" : "pending",
         approvalStatus: needsReview ? "pending" : null,
-        content: JSON.stringify({ ...tc, text, commentText }),
+        content: JSON.stringify(postContentFromTemplate(template.id, tc, text, commentText)),
         commentText,
         dryRun: false,
         targets: { create: body.accountIds.map((accountId) => ({ accountId })) },

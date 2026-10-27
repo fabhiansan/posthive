@@ -23,6 +23,7 @@ import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
 import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
+import { postContentFromTemplate, templateNeedsCopy, slideCopyError } from "../lib/templates.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -568,6 +569,8 @@ async function handleTool(
       if (!isManageRole(ctx.role) && job.userId !== userId) {
         throw new Error("You can only approve your own drafts.");
       }
+      const copyError = slideCopyError(job.content);
+      if (copyError) throw new Error(copyError);
 
       const updated = await prisma.postJob.update({
         where: { id: postId },
@@ -735,6 +738,9 @@ async function handleTool(
       if (scheduleDirectly && !scheduledTimeStr) {
         throw new Error("scheduled_time is required when schedule_directly is true");
       }
+      if (scheduleDirectly && templateNeedsCopy(tc)) {
+        throw new Error("This template needs copywriting per slide — create it as a draft and fill it in Posthive.");
+      }
 
       let scheduledFor: Date;
       if (scheduleDirectly && scheduledTimeStr) {
@@ -759,11 +765,7 @@ async function handleTool(
       const text = (args.content_override as string | undefined) ?? (tc.text as string) ?? "";
       const commentText = (args.first_comment_override as string | undefined) ?? (tc.commentText as string | undefined) ?? null;
 
-      const contentPayload = JSON.stringify({
-        ...tc,
-        text,
-        commentText,
-      });
+      const contentPayload = JSON.stringify(postContentFromTemplate(template.id, tc, text, commentText));
 
       const job = await prisma.postJob.create({
         data: {

@@ -7,6 +7,7 @@ import {
 import { withAuth, getUser } from "../lib/auth/withAuth.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { prisma } from "../lib/prisma.js";
+import { withoutTemplateMedia } from "../lib/templates.js";
 
 const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/mov"];
 const MAX_VIDEO_SIZE_BYTES = 100_000_000; // 100 MB (Instagram Reels limit)
@@ -24,6 +25,8 @@ export async function uploadRoutes(
     // Verify ownership before touching storage
     const record = await prisma.upload.findFirst({ where: { url, userId } });
     if (!record) return reply.status(404).send({ error: "Upload not found" });
+    // Template designs are shared by every post made from the template — keep them
+    if ((await withoutTemplateMedia([url])).length === 0) return reply.status(204).send();
     try {
       await storage.delete(url);
       await prisma.upload.deleteMany({ where: { url, userId } });

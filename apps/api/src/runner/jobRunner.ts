@@ -22,6 +22,7 @@ import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
 import type { PostResult, CommentResult } from "../adapters/types.js";
 import type { StorageAdapter } from "../lib/storage.js";
+import { withoutTemplateMedia } from "../lib/templates.js";
 
 const MAX_ATTEMPTS = 3;
 
@@ -256,7 +257,8 @@ export async function runJob(
       ...(content.mediaUrls ?? []),
       ...(content.youtubeThumbnailUrl ? [content.youtubeThumbnailUrl] : []),
     ];
-    const ownedUrls = urlsToClean.filter((url) => storage.ownsUrl(url));
+    // Template designs are shared across posts — never clean them up here
+    const ownedUrls = await withoutTemplateMedia(urlsToClean.filter((url) => storage.ownsUrl(url)));
     if (ownedUrls.length) {
       await Promise.allSettled(
         ownedUrls.map((url) => {
