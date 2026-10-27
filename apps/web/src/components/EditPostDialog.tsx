@@ -26,20 +26,27 @@ interface EditableJob {
   targets: Array<{ accountId: string }>;
 }
 
+// Copywriting per design slide when the post came from a template (docs/content-types.md)
+export interface SlideCopy {
+  label: string;
+  text: string;
+}
+
 interface Props {
   open: boolean;
   job: EditableJob;
   accounts: Account[];
   submitLabel?: string;
-  onSave: (text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[], perAccount: Record<string, PerAccountOverride>, mediaType?: "post" | "reel" | "story", youtubeType?: "short" | "video", youtubeVideoMode?: "upload" | "url", youtubeVideoUrl?: string, youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private", youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean, linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string) => Promise<void>;
+  onSave: (text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[], perAccount: Record<string, PerAccountOverride>, mediaType?: "post" | "reel" | "story", youtubeType?: "short" | "video", youtubeVideoMode?: "upload" | "url", youtubeVideoUrl?: string, youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private", youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean, linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string, slides?: SlideCopy[]) => Promise<void>;
   onClose: () => void;
 }
 
 export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClose }: Props) {
-  const parsedContent = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: "post" | "reel" | "story"; youtubeType?: "short" | "video"; youtubeVideoMode?: "upload" | "url"; youtubeVideoUrl?: string; youtubeThumbnailUrl?: string; perAccount?: Record<string, PerAccountOverride>; pixelfedSensitive?: boolean; pixelfedVisibility?: "public" | "unlisted" | "private"; linkedinVisibility?: "PUBLIC" | "CONNECTIONS"; blueskyContentWarning?: string };
+  const parsedContent = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: "post" | "reel" | "story"; youtubeType?: "short" | "video"; youtubeVideoMode?: "upload" | "url"; youtubeVideoUrl?: string; youtubeThumbnailUrl?: string; perAccount?: Record<string, PerAccountOverride>; pixelfedSensitive?: boolean; pixelfedVisibility?: "public" | "unlisted" | "private"; linkedinVisibility?: "PUBLIC" | "CONNECTIONS"; blueskyContentWarning?: string; slides?: SlideCopy[] };
 
   const [text, setText] = useState(parsedContent.text);
   const [commentText, setCommentText] = useState(job.commentText ?? "");
+  const [slides, setSlides] = useState<SlideCopy[]>(parsedContent.slides ?? []);
   const isDraft = job.status === "draft";
   const [scheduledFor, setScheduledFor] = useState(
     job.scheduledFor ? toWibInput(new Date(job.scheduledFor)) : toWibInput(new Date(Date.now() + 60 * 60 * 1000))
@@ -300,7 +307,7 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
     try {
       const hasLinkedin = selectedAccounts.some(a => a.platform === "linkedin");
       const hasBluesky = selectedAccounts.some(a => a.platform === "bluesky");
-      await onSave(text.trim(), commentText.trim(), date, mediaUrls, selectedIds, cleanOverrides, hasInstagram ? igMediaType : undefined, hasYoutube ? youtubeType : undefined, hasYoutube ? youtubeVideoMode : undefined, hasYoutube ? (youtubeVideoMode === "url" ? youtubeVideoUrl.trim() : "") : undefined, hasYoutube && youtubeThumbnailUrl ? youtubeThumbnailUrl : undefined, pixelfedSelected ? pixelfedSensitive : undefined, pixelfedSelected ? pixelfedVisibility : undefined, hasYoutube ? youtubeVisibility : undefined, hasYoutube && youtubeTags.trim() ? youtubeTags.split(",").map(t => t.trim()).filter(Boolean) : undefined, hasYoutube ? youtubeMadeForKids : undefined, hasLinkedin ? linkedinVisibility : undefined, hasBluesky ? (blueskyContentWarning || undefined) : undefined);
+      await onSave(text.trim(), commentText.trim(), date, mediaUrls, selectedIds, cleanOverrides, hasInstagram ? igMediaType : undefined, hasYoutube ? youtubeType : undefined, hasYoutube ? youtubeVideoMode : undefined, hasYoutube ? (youtubeVideoMode === "url" ? youtubeVideoUrl.trim() : "") : undefined, hasYoutube && youtubeThumbnailUrl ? youtubeThumbnailUrl : undefined, pixelfedSelected ? pixelfedSensitive : undefined, pixelfedSelected ? pixelfedVisibility : undefined, hasYoutube ? youtubeVisibility : undefined, hasYoutube && youtubeTags.trim() ? youtubeTags.split(",").map(t => t.trim()).filter(Boolean) : undefined, hasYoutube ? youtubeMadeForKids : undefined, hasLinkedin ? linkedinVisibility : undefined, hasBluesky ? (blueskyContentWarning || undefined) : undefined, slides.length > 0 ? slides : undefined);
       onClose();
     } catch (e) {
       setSaveError(e instanceof Error ? e.message.replace(/^API PATCH.*→ \d+: /, "") : "Save failed");
@@ -503,6 +510,24 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
               <p className="mt-2 text-xs" style={{ color: "#ef4444" }}>Select at least one account</p>
             )}
           </div>
+
+          {/* Copywriting per slide — fixing a rejected template post */}
+          {slides.length > 0 && (
+            <div className="px-6 py-5" style={{ borderBottom: "1px solid #1e1e1e" }}>
+              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#444" }}>Copywriting per slide</span>
+              <div className="mt-2 space-y-2.5">
+                {slides.map((slide, i) => (
+                  <label key={i} className="block">
+                    <span className="block text-xs font-semibold" style={{ color: "#ededed" }}>{slide.label}</span>
+                    <textarea value={slide.text} rows={2}
+                      onChange={(e) => { const copy = e.target.value.slice(0, 2000); setSlides((prev) => prev.map((x, j) => (j === i ? { ...x, text: copy } : x))); }}
+                      className="w-full mt-1 rounded-xl border px-3 py-2 text-sm focus:outline-none resize-y"
+                      style={{ backgroundColor: "#111111", borderColor: "#2a2a2a", color: "#ededed" }} />
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Caption */}
           <div className="px-6 py-5" style={{ display: noPostTextNeeded ? "none" : undefined }}>

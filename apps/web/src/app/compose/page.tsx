@@ -26,6 +26,9 @@ import { fromWibInput, toWibInput, wibDateKey } from "../../lib/datetime";
 import { MediaSection } from "../../components/composer/MediaSection";
 import { RepeatPicker } from "../../components/RepeatPicker";
 import { useWorkspace } from "../../context/WorkspaceContext";
+import { toMediaItems } from "../../components/MediaStage";
+import { parseTemplate, formatSummary, type RawTemplate, type TemplateKit } from "../../lib/templates";
+import Link from "next/link";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -86,19 +89,20 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   const [allowReels, setAllowReels] = useState(true); // optimistic; corrected after fetch
   const [maxImagesPerPost, setMaxImagesPerPost] = useState(10); // optimistic; corrected after fetch
   const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
-  const [templates, setTemplates] = useState<{ id: string; name: string; content: string }[]>([]);
+  const [templates, setTemplates] = useState<RawTemplate[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
+  // Template kit in use: its designs are attached and Marketing types the copy per slide
+  const [appliedTemplate, setAppliedTemplate] = useState<TemplateKit | null>(null);
+  const [slideCopy, setSlideCopy] = useState<{ label: string; guide: string; text: string }[]>([]);
+  // Template designs belong to the template — never delete them from storage here
+  const templateMediaRef = useRef<Set<string>>(new Set());
   const [showReorder, setShowReorder] = useState(false);
   const [accountOrder, setAccountOrder] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem("posthive_account_order") ?? "[]"); } catch { return []; }
   });
   const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [savingTemplate, setSavingTemplate] = useState(false);
-  const [saveTemplateDialog, setSaveTemplateDialog] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [showAiMenu, setShowAiMenu] = useState(false);
-  const [saveTemplateName, setSaveTemplateName] = useState("");
-  const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<{ id: string; name: string } | null>(null);
   const templatesRef = useRef<HTMLDivElement>(null);
   const aiMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -167,6 +171,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     return () => {
       mediaItemsRef.current.forEach(m => {
         URL.revokeObjectURL(m.previewUrl);
+        if (templateMediaRef.current.has(m.url)) return;
         fetch(`${API_BASE}/upload`, { method: "DELETE", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: m.url }) }).catch(() => {});
       });
     };
@@ -203,8 +208,15 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
       .then((data) => setGroups(data))
       .catch(() => {});
 
-    apiFetch<{ templates: { id: string; name: string; content: string }[] }>("/templates")
-      .then((data) => setTemplates(data.templates))
+    apiFetch<{ templates: RawTemplate[] }>("/templates")
+      .then((data) => {
+        setTemplates(data.templates);
+        // Opened from the Template Library: /compose?template=<id>
+        const requested = new URLSearchParams(window.location.search).get("template");
+        const tpl = requested ? data.templates.find((t) => t.id === requested) : undefined;
+        if (tpl) applyTemplate(tpl);
+        if (requested) window.history.replaceState(null, "", "/compose");
+      })
       .catch(() => {});
   }, []);
 
@@ -283,6 +295,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     e.preventDefault(); uploadFiles(files);
   }
   function deleteFromStorage(url: string) {
+    if (templateMediaRef.current.has(url)) return;
     fetch(`${API_BASE}/upload`, { method: "DELETE", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) }).catch(() => {});
   }
 
@@ -355,6 +368,10 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   }
 
   function removeMediaItem(i: number) {
+    if (templateMediaRef.current.has(mediaItems[i]?.url)) {
+      toastWarning("Template designs stay with the post. Remove the template to drop them.");
+      return;
+    }
     setMediaItems((prev) => {
       const item = prev[i];
       URL.revokeObjectURL(item.previewUrl);
@@ -382,6 +399,8 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   }
 
   function validateBeforeSubmit(): string | null {
+    const emptySlides = slideCopy.filter((s) => !s.text.trim()).map((s) => s.label);
+    if (emptySlides.length) return `Fill in the copywriting for: ${emptySlides.join(", ")}.`;
     if (selectedIds.length === 0) return "Select at least one account to post to.";
 
     const hasInstagram = selectedAccounts.some((a) => a.platform === "instagram");
@@ -435,57 +454,52 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     return null;
   }
 
-  async function saveTemplate() {
-    const name = saveTemplateName.trim();
-    if (!name) return;
-    if (templates.some(t => t.name.toLowerCase() === name.toLowerCase())) {
-      toastError(`A template named "${name}" already exists.`);
+  function applyTemplate(raw: RawTemplate) {
+    const kit = parseTemplate(raw);
+    setShowTemplates(false);
+    if (!kit.category) {
+      // Caption-only template saved before the template kit
+      const content = (() => { try { return JSON.parse(raw.content) as { youtubeTitle?: string; youtubeDescription?: string; youtubeType?: "short" | "video"; pinterestTitle?: string; pinterestDescription?: string }; } catch { return {}; } })();
+      setText(kit.text);
+      if (kit.commentText !== undefined) setCommentText(kit.commentText);
+      if (content.youtubeTitle !== undefined) setYoutubeTitle(content.youtubeTitle);
+      if (content.youtubeDescription !== undefined) setYoutubeDescription(content.youtubeDescription);
+      if (content.youtubeType) setYoutubeType(content.youtubeType);
+      if (content.pinterestTitle !== undefined) setPinterestTitle(content.pinterestTitle);
+      if (content.pinterestDescription !== undefined) setPinterestDescription(content.pinterestDescription);
+      toastSuccess(`Template "${kit.name}" loaded.`);
       return;
     }
-    setSavingTemplate(true);
-    setSaveTemplateDialog(false);
-    setSaveTemplateName("");
-    try {
-      const res = await apiFetch<{ template: { id: string; name: string; content: string } }>("/templates", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          content: { text, commentText: commentText || undefined, mediaUrls: mediaItems.map(m => m.url), altTexts: altTexts.some(Boolean) ? altTexts : undefined, youtubeTitle: youtubeTitle || undefined, youtubeDescription: youtubeDescription || undefined, youtubeType },
-        }),
-      });
-      setTemplates(prev => [res.template, ...prev]);
-      toastSuccess("Template saved!");
-    } catch {
-      toastError("Failed to save template.");
-    } finally {
-      setSavingTemplate(false);
-    }
+    // Swap any attached media for the template designs
+    mediaItemsRef.current.forEach((m) => { URL.revokeObjectURL(m.previewUrl); deleteFromStorage(m.url); });
+    templateMediaRef.current = new Set(kit.mediaUrls);
+    setMediaItems(toMediaItems(kit.mediaUrls));
+    setAltTexts(kit.mediaUrls.map(() => ""));
+    setIgMediaType("post");
+    setText(kit.text);
+    setCommentText(kit.commentText ?? "");
+    setAppliedTemplate(kit);
+    setSlideCopy(kit.slides.map((s) => ({ label: s.label, guide: s.guide, text: "" })));
+    toastSuccess(`Template "${kit.name}" applied. Type the copy for each slide.`);
   }
 
-  function loadTemplate(tpl: { id: string; name: string; content: string }) {
-    const content = JSON.parse(tpl.content) as { text?: string; commentText?: string; youtubeTitle?: string; youtubeDescription?: string; youtubeType?: "short" | "video"; pinterestTitle?: string; pinterestDescription?: string };
-    if (content.text !== undefined) setText(content.text);
-    if (content.commentText !== undefined) setCommentText(content.commentText);
-    if (content.youtubeTitle !== undefined) setYoutubeTitle(content.youtubeTitle);
-    if (content.youtubeDescription !== undefined) setYoutubeDescription(content.youtubeDescription);
-    if (content.youtubeType) setYoutubeType(content.youtubeType);
-    if (content.pinterestTitle !== undefined) setPinterestTitle(content.pinterestTitle);
-    if (content.pinterestDescription !== undefined) setPinterestDescription(content.pinterestDescription);
-    setShowTemplates(false);
-    toastSuccess(`Template "${tpl.name}" loaded.`);
+  function removeTemplate() {
+    const urls = templateMediaRef.current;
+    templateMediaRef.current = new Set();
+    setMediaItems((prev) => prev.filter((m) => !urls.has(m.url)));
+    setAltTexts((prev) => prev.filter((_, i) => !urls.has(mediaItems[i]?.url)));
+    setAppliedTemplate(null);
+    setSlideCopy([]);
   }
 
-  async function deleteTemplate() {
-    if (!deleteTemplateTarget) return;
-    const { id, name } = deleteTemplateTarget;
-    setDeleteTemplateTarget(null);
-    try {
-      await apiFetch(`/templates/${id}`, { method: "DELETE" });
-      setTemplates(prev => prev.filter(t => t.id !== id));
-      toastSuccess(`Template "${name}" deleted.`);
-    } catch {
-      toastError("Failed to delete template.");
-    }
+  // Template fields sent with the post (docs/content-types.md)
+  function templateContent() {
+    if (!appliedTemplate) return {};
+    return {
+      templateId: appliedTemplate.id,
+      category: appliedTemplate.category,
+      slides: slideCopy.map(({ label, text: copy }) => ({ label, text: copy })),
+    };
   }
 
   function resetForm() {
@@ -504,6 +518,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     setPerAccountOverrides({}); setShowCustomize(false); setUploadError(null);
     mediaItems.forEach(m => URL.revokeObjectURL(m.previewUrl));
     setMediaItems([]); setAltTexts([]);
+    templateMediaRef.current = new Set(); setAppliedTemplate(null); setSlideCopy([]);
     setRepeatInterval(""); setRepeatEndsAt("");
   }
 
@@ -536,6 +551,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
             ...(linkedinSelected ? { linkedinVisibility } : {}),
             ...(blueskySelected && blueskyContentWarning ? { blueskyContentWarning } : {}),
             ...(Object.keys(cleanOverrides).length > 0 ? { perAccount: cleanOverrides } : {}),
+            ...templateContent(),
           },
           commentText: commentText.trim() || undefined,
           accountIds: selectedIds,
@@ -582,6 +598,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
             ...(linkedinSelected ? { linkedinVisibility } : {}),
             ...(blueskySelected && blueskyContentWarning ? { blueskyContentWarning } : {}),
             ...(Object.keys(cleanOverrides).length > 0 ? { perAccount: cleanOverrides } : {}),
+            ...templateContent(),
           },
           commentText: commentText.trim() || undefined,
           accountIds: selectedIds,
@@ -755,61 +772,6 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     <><div className="flex flex-col h-full overflow-hidden">
       <TrialUrgentBanner />
 
-      {/* Save template dialog */}
-      {saveTemplateDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: "rgba(0,0,0,0.6)" }}>
-          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl" style={{ backgroundColor: "#111111", border: "1px solid #2a2a2a" }}>
-            <div className="px-5 py-4" style={{ borderBottom: "1px solid #2a2a2a" }}>
-              <h3 className="text-sm font-bold" style={{ color: "#ededed" }}>Save as template</h3>
-              <p className="text-xs mt-0.5" style={{ color: "#888" }}>Give this template a name to reuse it later.</p>
-            </div>
-            <div className="px-5 py-4">
-              <input
-                autoFocus
-                value={saveTemplateName}
-                onChange={e => setSaveTemplateName(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") saveTemplate(); if (e.key === "Escape") setSaveTemplateDialog(false); }}
-                placeholder="e.g. Weekly update, Product launch…"
-                className="w-full rounded-xl border px-3 py-2.5 text-sm focus:outline-none"
-                style={{ backgroundColor: "#0d0d0d", borderColor: "#2a2a2a", color: "#ededed" }}
-              />
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 pb-4">
-              <button type="button" onClick={() => setSaveTemplateDialog(false)}
-                className="px-4 py-2 rounded-xl text-sm font-medium hover:opacity-70 transition-opacity"
-                style={{ color: "#888" }}>Cancel</button>
-              <button type="button" onClick={saveTemplate} disabled={!saveTemplateName.trim()}
-                className="px-4 py-2 rounded-xl text-sm font-semibold transition-colors hover:bg-gray-100 disabled:opacity-40"
-                style={{ backgroundColor: "#ffffff", color: "#0a0a0a" }}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Delete template confirm dialog */}
-      {deleteTemplateTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: "rgba(0,0,0,0.6)" }}>
-          <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl" style={{ backgroundColor: "#111111", border: "1px solid #2a2a2a" }}>
-            <div className="px-5 py-4" style={{ borderBottom: "1px solid #2a2a2a" }}>
-              <h3 className="text-sm font-bold" style={{ color: "#ededed" }}>Delete template</h3>
-            </div>
-            <div className="px-5 py-4">
-              <p className="text-sm" style={{ color: "#888" }}>
-                Delete <span className="font-semibold" style={{ color: "#ededed" }}>&ldquo;{deleteTemplateTarget.name}&rdquo;</span>? This cannot be undone.
-              </p>
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 pb-4">
-              <button type="button" onClick={() => setDeleteTemplateTarget(null)}
-                className="px-4 py-2 rounded-xl text-sm font-medium hover:opacity-70 transition-opacity"
-                style={{ color: "#888" }}>Cancel</button>
-              <button type="button" onClick={deleteTemplate}
-                className="px-4 py-2 rounded-xl text-sm font-semibold transition-colors hover:opacity-90"
-                style={{ backgroundColor: "#ef4444", color: "#fff" }}>Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Top bar */}
       <div className="flex items-center justify-between pl-16 pr-4 md:px-8" style={{ height: 65, borderBottom: "1px solid #2a2a2a", backgroundColor: "#0a0a0a" }}>
         <div>
@@ -973,6 +935,49 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
             </div>
           )}
 
+          {/* Template copy — Marketing types the copywriting for each design slide */}
+          {appliedTemplate && !loadingAccounts && (
+            <div className="px-6 py-5" style={{ borderBottom: "1px solid #1e1e1e" }}>
+              <div className="flex items-start gap-3 mb-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold" style={{ color: "#ededed" }}>Copywriting per slide</p>
+                  <p className="text-xs mt-0.5" style={{ color: "#888" }}>
+                    {appliedTemplate.name}. {appliedTemplate.category}{appliedTemplate.pillar ? `, ${appliedTemplate.pillar} pillar` : ""}.
+                  </p>
+                </div>
+                <button type="button" onClick={removeTemplate}
+                  className="text-xs font-medium px-2.5 py-1 rounded-lg hover:bg-white/5 flex-shrink-0"
+                  style={{ color: "#888", border: "1px solid #2a2a2a" }}>
+                  Remove template
+                </button>
+              </div>
+              <ol className="space-y-2.5">
+                {slideCopy.map((slide, i) => {
+                  const design = toMediaItems(appliedTemplate.mediaUrls.slice(i, i + 1))[0];
+                  return (
+                    <li key={i} className="flex gap-3">
+                      {design && (
+                        <a href={design.previewUrl} target="_blank" rel="noopener noreferrer" className="flex-shrink-0" aria-label={`Open the ${slide.label} design`}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={design.previewUrl} alt="" className="rounded-lg object-cover" style={{ width: 56, height: 70, border: "1px solid #2a2a2a" }} />
+                        </a>
+                      )}
+                      <label className="flex-1 min-w-0">
+                        <span className="block text-xs font-semibold" style={{ color: "#ededed" }}>{slide.label}</span>
+                        {slide.guide && <span className="block text-xs mt-0.5" style={{ color: "#888" }}>{slide.guide}</span>}
+                        <textarea value={slide.text} rows={2}
+                          onChange={(e) => { const copy = e.target.value.slice(0, 2000); setSlideCopy((prev) => prev.map((x, j) => (j === i ? { ...x, text: copy } : x))); }}
+                          placeholder="Paste or type the copy for this slide"
+                          className="w-full mt-1.5 rounded-xl border px-3 py-2 text-sm focus:outline-none resize-y"
+                          style={{ backgroundColor: "#111111", borderColor: "#2a2a2a", color: "#ededed" }} />
+                      </label>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+
           {/* Text editor */}
           <div className="px-6 py-5" style={{ display: (loadingAccounts || noPostTextNeeded) ? "none" : undefined }}>
             <div className="flex items-center justify-between mb-2">
@@ -1012,37 +1017,38 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
                       </svg>
                       Templates
                     </button>
-                    {canReview && (
-                      <button type="button" onClick={() => { setSaveTemplateName(""); setSaveTemplateDialog(true); }} disabled={savingTemplate || !text.trim()}
-                        className="text-[11px] font-medium transition-opacity hover:opacity-80 disabled:opacity-30"
-                        style={{ color: "#5b63d3" }}>
-                        {savingTemplate ? "Saving…" : "+ Save"}
-                      </button>
-                    )}
                     {showTemplates && (
-                      <div className="absolute top-6 right-0 z-30 w-56 rounded-xl overflow-hidden shadow-xl"
+                      <div className="absolute top-6 right-0 z-30 w-72 rounded-xl overflow-hidden shadow-xl"
                         style={{ backgroundColor: "#161616", border: "1px solid #2a2a2a" }}>
-                        <div className="px-3 py-2 border-b" style={{ borderColor: "#2a2a2a" }}>
-                          <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#555" }}>Templates</span>
-                        </div>
                         {templates.length === 0 ? (
-                          <p className="px-3 py-4 text-xs text-center" style={{ color: "#555" }}>No templates yet. Write something and click + Save.</p>
+                          <p className="px-3 py-4 text-xs text-center" style={{ color: "#888" }}>No templates yet. The design team adds them in Templates.</p>
                         ) : (
-                          <ul className="max-h-64 overflow-y-auto">
-                            {templates.map(tpl => (
-                              <li key={tpl.id} className="flex items-center group px-3 py-2.5 border-b last:border-0 hover:bg-white/5 transition-colors cursor-pointer"
-                                style={{ borderColor: "#1f1f1f" }}
-                                onClick={() => loadTemplate(tpl)}>
-                                <span className="flex-1 text-xs font-medium truncate" style={{ color: "#ededed" }}>{tpl.name}</span>
-                                {canReview && (
-                                  <button type="button" onClick={(e) => { e.stopPropagation(); setShowTemplates(false); setDeleteTemplateTarget({ id: tpl.id, name: tpl.name }); }}
-                                    className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-xs hover:text-red-400"
-                                    style={{ color: "#555" }}>✕</button>
-                                )}
-                              </li>
-                            ))}
+                          <ul className="max-h-72 overflow-y-auto">
+                            {templates.map(raw => {
+                              const kit = parseTemplate(raw);
+                              return (
+                                <li key={raw.id}>
+                                  <button type="button" onClick={() => applyTemplate(raw)}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-white/5 transition-colors">
+                                    {kit.mediaUrls[0] ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img src={toMediaItems(kit.mediaUrls.slice(0, 1))[0].previewUrl} alt="" className="w-8 h-10 rounded object-cover flex-shrink-0" style={{ border: "1px solid #2a2a2a" }} />
+                                    ) : (
+                                      <span className="w-8 h-10 rounded flex-shrink-0" style={{ border: "1px solid #2a2a2a" }} />
+                                    )}
+                                    <span className="min-w-0">
+                                      <span className="block text-xs font-medium truncate" style={{ color: "#ededed" }}>{kit.name}</span>
+                                      <span className="block text-[11px] truncate" style={{ color: "#888" }}>{kit.category ?? "No category"}, {formatSummary(kit).toLowerCase()}</span>
+                                    </span>
+                                  </button>
+                                </li>
+                              );
+                            })}
                           </ul>
                         )}
+                        <Link href="/templates" className="block px-3 py-2 text-xs font-medium hover:bg-white/5" style={{ color: "#ededed", borderTop: "1px solid #2a2a2a" }}>
+                          Browse all templates
+                        </Link>
                       </div>
                     )}
                   </div>

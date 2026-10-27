@@ -56,7 +56,7 @@ pnpm db:migrate   # Run pending migrations
 | `routes/publicApi.ts` | `/api/v1` | Public REST API — accounts, posts, upload, templates |
 | `routes/mcp.ts` | `/mcp` | MCP Streamable HTTP server (Bearer + key-in-URL) |
 | `routes/oauth.ts` | `/oauth`, `/.well-known` | OAuth 2.0 + PKCE server for Claude.ai MCP connector |
-| `routes/templates.ts` | `/templates` | Post template CRUD |
+| `routes/templates.ts` | `/templates` | Template kit CRUD (designs + per-slide copy guide + caption draft); write = designer only |
 
 ### Platform Adapters — `src/adapters/`
 Each adapter implements `PlatformAdapter` from `types.ts`:
@@ -119,6 +119,7 @@ All 10 tools mirror the HTTP MCP server: `list_accounts`, `create_post`, `get_po
 | `/` | `app/page.tsx` | Landing page (public) |
 | `/compose` | `app/compose/page.tsx` | Compose — write post, pick accounts, schedule |
 | `/jobs` | `app/jobs/page.tsx` | Posts — list + calendar view |
+| `/templates` | `app/templates/page.tsx` | Template Library — design kits per content category (Design manages, Marketing uses) |
 | `/accounts` | `app/accounts/page.tsx` | Connect/disconnect social accounts |
 | `/billing` | `app/billing/page.tsx` | Plan status + upgrade |
 | `/docs` | `app/docs/page.tsx` | Documentation (includes full MCP section) |
