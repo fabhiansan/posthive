@@ -6,6 +6,7 @@ import { apiFetch } from "../../lib/api";
 import { CalendarView } from "../../components/CalendarView";
 import { PlatformIcon } from "../../components/PlatformIcon";
 import { EditPostDialog } from "../../components/EditPostDialog";
+import { ReviewDialog } from "../../components/ReviewDialog";
 import { DeleteConfirmDialog } from "../../components/DeleteConfirmDialog";
 import { useToast } from "../../components/Toast";
 import { TrialUrgentBanner } from "../../components/TrialUrgentBanner";
@@ -166,55 +167,7 @@ function RepeatModal({ job, onClose, onConfirm }: {
   );
 }
 
-// Send a post back to its creator with a review note (design-approval flow)
-function RejectModal({ job, onClose, onConfirm }: {
-  job: Job;
-  onClose: () => void;
-  onConfirm: (note: string) => Promise<void>;
-}) {
-  const [note, setNote] = useState("");
-  const [saving, setSaving] = useState(false);
-  const content = JSON.parse(job.content) as { text: string; title?: string };
-  const displayTitle = contentDisplayTitle(content);
-
-  async function submit() {
-    if (!note.trim()) return;
-    setSaving(true);
-    try { await onConfirm(note.trim()); } finally { setSaving(false); }
-  }
-
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background: "#111111", border: "1px solid #2a2a2a", borderRadius: 16, padding: 24, width: 420, maxWidth: "calc(100vw - 32px)" }}>
-        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#ededed", marginBottom: 4 }}>Reject & send back</h3>
-        <p style={{ fontSize: 13, color: "#666", marginBottom: 20 }} className="line-clamp-2">{displayTitle}</p>
-
-        <label style={{ fontSize: 12, fontWeight: 600, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-          Review note — what should be fixed?
-        </label>
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          autoFocus
-          rows={4}
-          placeholder="e.g. Replace the header image with the new brand template, and shorten the copy."
-          className="w-full mt-2" style={{ background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 10, padding: "10px 12px", fontSize: 14, color: "#ededed", resize: "vertical", outline: "none" }}
-        />
-
-        <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-          <button onClick={onClose} style={{ flex: 1, padding: "9px 0", borderRadius: 10, border: "1px solid #2a2a2a", background: "transparent", color: "#888", fontSize: 14, cursor: "pointer" }}>Cancel</button>
-          <button onClick={submit} disabled={saving || !note.trim()}
-            style={{ flex: 1, padding: "9px 0", borderRadius: 10, border: "none", background: "#7f1d1d", color: "#fca5a5", fontSize: 14, fontWeight: 600, cursor: saving || !note.trim() ? "not-allowed" : "pointer", opacity: saving || !note.trim() ? 0.6 : 1 }}>
-            {saving ? "Rejecting…" : "Reject & send back"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, selected, onToggleSelect, canReview, canSubmitOwn, canEditContentAccess = true, isOwn, onApprove, onReject, onSubmitOwn }: {
+function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, selected, onToggleSelect, canReview, canSubmitOwn, canEditContentAccess = true, isOwn, onReview, onSubmitOwn }: {
   job: Job;
   onEdit: () => void;
   onDelete: () => void;
@@ -227,8 +180,7 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
   canSubmitOwn?: boolean;
   canEditContentAccess?: boolean;
   isOwn?: boolean;
-  onApprove?: () => void;
-  onReject?: () => void;
+  onReview?: () => void;
   onSubmitOwn?: () => void;
 }) {
   const [retrying, setRetrying] = useState(false);
@@ -241,6 +193,7 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
   const isToday = scheduled ? wibDateKey(scheduled) === wibDateKey(new Date()) : false;
   const canEdit = job.status === "pending" || isDraft;
   const hasFailedTargets = job.targets.some((t) => t.status === "post_failed");
+  const reviewable = !!canReview && !!onReview && isDraft && job.approvalStatus === "pending";
 
   function formatScheduled() {
     if (!scheduled) return "No date set";
@@ -255,7 +208,13 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
         backgroundColor: selected ? "#12121f" : "#111111",
         border: selected ? "1px solid #3730a340" : "1px solid transparent",
         outline: selected ? "1px solid #3730a3" : undefined,
+        cursor: reviewable ? "pointer" : undefined,
       }}
+      // In-review cards open the full review; inner controls keep their own behaviour
+      onClick={reviewable ? (e) => {
+        if ((e.target as HTMLElement).closest("button, input, a, video")) return;
+        onReview?.();
+      } : undefined}
     >
       <div className="p-5">
 
@@ -342,20 +301,11 @@ function JobCard({ job, onEdit, onDelete, onRetry, onDuplicate, onRepeat, select
                   </svg>
                 </button>
               )}
-              {canReview && isDraft && job.approvalStatus === "pending" && (
-                <button onClick={onApprove} className="job-action-btn" title="Approve & schedule"
-                  style={{ color: "#4ade80" }}>
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </button>
-              )}
-              {canReview && isDraft && job.approvalStatus === "pending" && (
-                <button onClick={onReject} className="job-action-btn" title="Reject & send back"
-                  style={{ color: "#f87171" }}>
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+              {reviewable && (
+                <button onClick={onReview} title="Open the full post to approve or reject"
+                  className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors hover:bg-gray-100"
+                  style={{ backgroundColor: "#ffffff", color: "#0a0a0a" }}>
+                  Review
                 </button>
               )}
               {canSubmitOwn && isOwn && isDraft && (job.approvalStatus === null || job.approvalStatus === undefined || job.approvalStatus === "rejected") && (
@@ -519,7 +469,7 @@ export default function JobsPage() {
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [deletingJob, setDeletingJob] = useState<Job | null>(null);
   const [repeatingJob, setRepeatingJob] = useState<Job | null>(null);
-  const [rejectingJob, setRejectingJob] = useState<Job | null>(null);
+  const [reviewingJob, setReviewingJob] = useState<Job | null>(null);
   const [platformFilter, setPlatformFilter] = useState<string>("all");
 
   // Design-approval flow — owner/admin/designer review; members submit for review
@@ -611,7 +561,7 @@ export default function JobsPage() {
       applyJobUpdate(updated);
       success("Approved — post is scheduled.");
       window.dispatchEvent(new CustomEvent("ph:post-scheduled"));
-    } catch (err) { toastError(String(err)); }
+    } catch (err) { toastError(String(err)); throw err; }
   }
 
   async function rejectJob(job: Job, note: string) {
@@ -929,15 +879,13 @@ export default function JobsPage() {
         />
       )}
 
-      {/* Reject (send back) modal */}
-      {rejectingJob && (
-        <RejectModal
-          job={rejectingJob}
-          onClose={() => setRejectingJob(null)}
-          onConfirm={async (note) => {
-            const job = rejectingJob;
-            try { await rejectJob(job, note); setRejectingJob(null); } catch { /* modal keeps input */ }
-          }}
+      {/* Full review (approve / reject with note) */}
+      {reviewingJob && (
+        <ReviewDialog
+          job={reviewingJob}
+          onClose={() => setReviewingJob(null)}
+          onApprove={async () => { await approveJob(reviewingJob); setReviewingJob(null); }}
+          onReject={async (note) => { await rejectJob(reviewingJob, note); setReviewingJob(null); }}
         />
       )}
 
@@ -1226,8 +1174,7 @@ export default function JobsPage() {
                       canSubmitOwn={canSubmitOwn}
                       canEditContentAccess={canEditContentAccess}
                       isOwn={!!user && job.userId === user.id}
-                      onApprove={() => approveJob(job)}
-                      onReject={() => setRejectingJob(job)}
+                      onReview={() => setReviewingJob(job)}
                       onSubmitOwn={() => submitForReview(job)} />
                   ))}
                 </div>
