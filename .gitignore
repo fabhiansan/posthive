@@ -49,3 +49,7 @@ Thumbs.db
 .claude/worktrees/
 
 posthive-daily-playbook.md
+
+# Local deployment — Caddy reverse proxy + quick-tunnel demo doc (laptop only)
+Caddyfile
+docs/quick-tunnel-demo.md

@@ -389,13 +389,13 @@ const FEATURES: Record<string, FeatureData> = {
     how: [
       {
         n: "01",
-        title: "Prepare your CSV",
-        desc: "Create a spreadsheet with columns: scheduled_for, text, accounts, comment, image_urls. Save as CSV. Each row becomes one scheduled post.",
+        title: "Prepare your file",
+        desc: "Create a spreadsheet with the required columns: Content Title, Post Date, and Platform. Save as CSV or XLSX. Each row becomes one planned post.",
       },
       {
         n: "02",
         title: "Upload and preview",
-        desc: "Open Bulk CSV from the Posts page or Compose page. Upload your file or paste the CSV. Click Preview to validate every row before scheduling.",
+        desc: "Open Import Plan from the Posts page. Upload your CSV or XLSX file, or paste the CSV. Click Preview to validate every row against the columns, dates, and platforms before importing.",
       },
       {
         n: "03",

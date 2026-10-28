@@ -45,7 +45,6 @@ export interface NavGroup {
 
 const ICONS: Record<string, React.ReactNode> = {
   posts: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>,
-  bulk: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>,
   importPlan: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>,
   templates: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="13" height="16" rx="2" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7v12a2 2 0 01-2 2H8M7 8h5M7 12h5" /></svg>,
   library: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>,
@@ -64,7 +63,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/jobs", label: "Posts", icon: ICONS.posts },
       { href: "/templates", label: "Templates", icon: ICONS.templates },
-      { href: "/bulk", label: "Bulk CSV", icon: ICONS.bulk },
       { href: "/jobs/import", label: "Import Plan", icon: ICONS.importPlan },
       { href: "/library", label: "Library", icon: ICONS.library },
       { href: "/analytics", label: "Analytics", icon: ICONS.analytics },
@@ -104,7 +102,6 @@ const PAGE_ACCESS: Record<string, readonly AppRole[]> = {
   "/jobs": ["owner", "admin", "designer", "member"],
   "/templates": ["owner", "admin", "designer", "member"],
   "/compose": ["owner", "admin", "member"],
-  "/bulk": ["owner", "admin", "member"],
   "/jobs/import": ["owner", "admin", "member"],
   "/analytics": ["owner", "admin", "member"],
   "/library": ["owner", "admin"],

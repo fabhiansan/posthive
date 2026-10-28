@@ -91,7 +91,7 @@ const NAV = [
       { label: "Scheduling posts", id: "scheduling-posts" },
       { label: "Repeat posts", id: "repeat-posts" },
       { label: "Post templates", id: "post-templates" },
-      { label: "Bulk CSV scheduling", id: "bulk-csv" },
+      { label: "Import Plan", id: "import-plan" },
       { label: "Calendar view", id: "calendar-view" },
       { label: "First comment", id: "first-comment" },
       { label: "Per-platform overrides", id: "per-platform-overrides" },
@@ -1089,48 +1089,69 @@ TIKTOK_REDIRECT_URI="https://your-domain.com/auth/tiktok/callback"`}</pre>
                 Hover over a template in the dropdown and click the <strong>✕</strong> that appears on the right. A confirmation dialog will ask you to confirm before deleting.
               </p>
 
-              {/* ── Bulk CSV ── */}
-              <h3 className="doc-h2" id="bulk-csv">Bulk CSV scheduling</h3>
+              {/* ── Import Plan ── */}
+              <h3 className="doc-h2" id="import-plan">Import Plan</h3>
               <p className="doc-p">
-                Bulk scheduling lets you upload a CSV file to schedule tens or hundreds of posts at once. Available from both the <strong>Posts page</strong> (Bulk button in the top bar) and the <strong>Compose page</strong> (Bulk CSV button next to Schedule).
+                Import Plan turns a content planning spreadsheet into planned posts in Posthive. Open it from the <strong>Posts page</strong> (Import Plan button in the top bar).
               </p>
-              <h4 className="doc-h3">CSV format</h4>
-              <p className="doc-p">The CSV must have a header row with these columns (in order):</p>
-              <CopyCode>{`scheduled_for,text,accounts,comment,image_urls`}</CopyCode>
-              <ul className="doc-ul">
-                <li className="doc-li"><span className="doc-inline-code">scheduled_for</span> — date and time in <span className="doc-inline-code">YYYY-MM-DD HH:MM</span> format (WIB, 24-hour clock) or ISO 8601. Must be in the future.</li>
-                <li className="doc-li"><span className="doc-inline-code">text</span> — post body text (required).</li>
-                <li className="doc-li"><span className="doc-inline-code">accounts</span> — which platforms to post to (see below).</li>
-                <li className="doc-li"><span className="doc-inline-code">comment</span> — first comment text (optional, leave blank).</li>
-                <li className="doc-li"><span className="doc-inline-code">image_urls</span> — public image URLs separated by <span className="doc-inline-code">;</span> (optional, up to 4).</li>
-              </ul>
-              <h4 className="doc-h3">Accounts column syntax</h4>
-              <ul className="doc-ul">
-                <li className="doc-li"><span className="doc-inline-code">all</span> — post to all connected accounts (excluding YouTube).</li>
-                <li className="doc-li"><span className="doc-inline-code">bluesky|mastodon</span> — post to specific platforms, separated by <span className="doc-inline-code">|</span>.</li>
-                <li className="doc-li"><span className="doc-inline-code">!instagram</span> — post to all platforms except Instagram (and YouTube).</li>
-                <li className="doc-li"><span className="doc-inline-code">all|!instagram|!linkedin</span> — all except Instagram and LinkedIn.</li>
-              </ul>
+              <Callout type="warn">
+                Import Plan creates <strong>drafts</strong>, not scheduled posts. Every row lands in the Posts page as a draft with a title and date
+                — publish time defaults to 09:00 WIB. Media is still attached manually before scheduling.
+              </Callout>
+              <h4 className="doc-h3">Supported files</h4>
               <p className="doc-p">
-                Supported platform names: <span className="doc-inline-code">bluesky</span>, <span className="doc-inline-code">threads</span>, <span className="doc-inline-code">instagram</span>, <span className="doc-inline-code">linkedin</span>, <span className="doc-inline-code">mastodon</span>, <span className="doc-inline-code">facebook</span>, <span className="doc-inline-code">telegram</span>. YouTube is not supported in bulk scheduling — it requires a video file. Use the Compose page for YouTube posts.
+                CSV (UTF-8) or <span className="doc-inline-code">.xlsx</span>, up to 5 MB and 1.000 data rows. For XLSX the header row is detected automatically, so extra
+                title rows above the data are fine. Download a ready-made template from the <strong>Format Guide</strong> tab on the Import Plan page.
+              </p>
+              <h4 className="doc-h3">Required columns</h4>
+              <ul className="doc-ul">
+                <li className="doc-li"><span className="doc-inline-code">Content Title</span> — the post title, used in the calendar.</li>
+                <li className="doc-li"><span className="doc-inline-code">Post Date</span> — publish date. DD-MM-YYYY is preferred; YYYY-MM-DD, DD/MM/YYYY and YYYY/MM/DD are also accepted. Time defaults to 09:00 WIB.</li>
+                <li className="doc-li"><span className="doc-inline-code">Platform</span> — LinkedIn, Instagram, Website, or Mirroring (LI&amp;Ig).</li>
+              </ul>
+              <h4 className="doc-h3">Platform values</h4>
+              <ul className="doc-ul">
+                <li className="doc-li"><span className="doc-inline-code">LinkedIn</span> or <span className="doc-inline-code">LI</span> — LinkedIn.</li>
+                <li className="doc-li"><span className="doc-inline-code">Instagram</span> or <span className="doc-inline-code">IG</span> — Instagram.</li>
+                <li className="doc-li"><span className="doc-inline-code">Mirroring (LI&amp;Ig)</span> — LinkedIn and Instagram together.</li>
+                <li className="doc-li"><span className="doc-inline-code">Website</span> — saved as a draft without a social target.</li>
+              </ul>
+              <h4 className="doc-h3">Optional columns</h4>
+              <p className="doc-p">
+                All optional, and all can be left empty: <span className="doc-inline-code">Content Pillar</span>, <span className="doc-inline-code">Content Category</span>,
+                <span className="doc-inline-code">Link Copywrite</span> (design copy), <span className="doc-inline-code">Caption</span> (final caption),
+                <span className="doc-inline-code">Aset Pendukung</span>, <span className="doc-inline-code">PIC Content</span>,
+                <span className="doc-inline-code">Content Review / Acc by</span>, <span className="doc-inline-code">PIC Design</span>,
+                <span className="doc-inline-code">Progress Content</span>, <span className="doc-inline-code">Link Output</span>, and <span className="doc-inline-code">Status</span>.
               </p>
               <p className="doc-p">
-                Instagram rows must include at least one URL in <span className="doc-inline-code">image_urls</span>. Rows missing an image for Instagram will show an error in the preview and be skipped.
+                <span className="doc-inline-code">Link Copywrite</span> is stored raw as the design copy and <span className="doc-inline-code">Caption</span> as the caption.
+                Keep them separate from the start rather than reusing one column for both.
+              </p>
+              <h4 className="doc-h3">Two-row headers</h4>
+              <p className="doc-p">
+                Client workbooks often repeat the required labels on a second row, for example <span className="doc-inline-code">Category</span> above
+                <span className="doc-inline-code">Content Pillar</span> and <span className="doc-inline-code">Content Category</span>. Both rows are read together,
+                so that layout is supported without editing the file.
               </p>
               <h4 className="doc-h3">Example CSV</h4>
-              <CopyCode>{`scheduled_for,text,accounts,comment,image_urls
-2026-08-01 09:00,Good morning 🌅,all,,
-2026-08-02 14:30,Check the blog post,bluesky|mastodon,Link in first comment,
-2026-08-03 18:00,LinkedIn update,linkedin,,https://example.com/image.jpg
-2026-08-04 10:00,Skip Instagram today,!instagram,,
-2026-08-05 12:00,Two images 🖼️,bluesky|threads,,https://img1.jpg;https://img2.jpg`}</CopyCode>
-              <h4 className="doc-h3">Preview and scheduling</h4>
+              <CopyCode>{`Content Title,Post Date,Platform
+Slope Stability Before the Rain Peaks,22-10-2026,Mirroring (LI&Ig)
+Q4 Marketing Campaign Highlights,30-10-2026,LinkedIn / LI
+Summer Vacation Photos,25-10-2026,Instagram / IG
+Website Refresh Announcement,12-11-2026,Website`}</CopyCode>
+              <h4 className="doc-h3">Preview and importing</h4>
               <ol className="doc-ul" style={{ listStyle: "decimal" }}>
-                <li className="doc-li">Paste your CSV or upload a <span className="doc-inline-code">.csv</span> file.</li>
-                <li className="doc-li">Click <strong>Preview</strong> — each row is validated and shown in a table with its status (✓ Ready or ✕ error).</li>
-                <li className="doc-li">Review the results. Error rows are skipped automatically.</li>
-                <li className="doc-li">Click <strong>Schedule N posts</strong> to enqueue all valid rows. Posts are scheduled one at a time with a progress bar.</li>
+                <li className="doc-li">Drop a CSV or XLSX file, or paste CSV into the editor on the left.</li>
+                <li className="doc-li">Click <strong>Preview CSV</strong> — every row is validated against columns, dates, platforms, and duplicates.</li>
+                <li className="doc-li">Review the table. Rows are marked ready, invalid, or duplicate; duplicates inside the same file are caught automatically.</li>
+                <li className="doc-li">Select the rows you want and click <strong>Import</strong>. Selected valid rows become drafts on the Posts page.</li>
               </ol>
+              <p className="doc-p">
+                Dates already in the past are kept as archived drafts, and rows marked <span className="doc-inline-code">Published</span> in the source file are still
+                imported as drafts — nothing is published automatically.
+              </p>
+
 
               {/* ── Calendar view ── */}
               <h3 className="doc-h2" id="calendar-view">Calendar view</h3>

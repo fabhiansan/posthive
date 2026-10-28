@@ -1433,12 +1433,12 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
         <div className="w-full md:w-auto flex gap-2">
           <button
             type="button"
-            onClick={() => router.push("/bulk")}
+            onClick={() => router.push("/jobs/import")}
             className="flex-1 md:flex-none px-4 py-2.5 font-semibold rounded-xl text-sm transition-colors hover:opacity-80"
             style={{ backgroundColor: "#1a1a1a", color: "#aaa", border: "1px solid #2a2a2a" }}
-            title="Bulk schedule from CSV"
+            title="Import content plan from CSV or XLSX"
           >
-            Bulk CSV
+            Import Plan
           </button>
           <button
             type="button"
