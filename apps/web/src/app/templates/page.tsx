@@ -7,17 +7,18 @@ import { useToast } from "../../components/Toast";
 import { useAuth } from "../../context/AuthContext";
 import { useWorkspace } from "../../context/WorkspaceContext";
 import { canEditContent, canManageTemplates } from "../../lib/permissions";
-import { PILLARS, type Pillar } from "../../lib/contentTypes";
-import { formatSummary, parseTemplate, type RawTemplate, type TemplateKit } from "../../lib/templates";
-import { MediaStage, toMediaItems } from "../../components/MediaStage";
+import { PILLARS, categoriesFor, type Category, type Pillar } from "../../lib/contentTypes";
+import { fileHref, isIncomplete, templatesByCategory, type DesignTemplate } from "../../lib/templates";
 import { TemplateEditor } from "../../components/TemplateEditor";
+import { DesignReferenceCard } from "../../components/DesignReferenceCard";
+import { contentTypeLabel } from "../../components/ContentTypeSelects";
 
 const BG = "#0a0a0a";
 const BORDER = "#2a2a2a";
 const TEXT = "#ededed";
 const MUTED = "#888888";
 
-type Group = Pillar | "Other";
+type Group = Pillar | "No pillar";
 
 // One-line pillar definitions from docs/content-types.md
 const GROUP_SUMMARY: Record<Group, string> = {
@@ -25,14 +26,11 @@ const GROUP_SUMMARY: Record<Group, string> = {
   Educational: "Geospatial insight, articles and how-tos that position Braga as a thought leader.",
   Entertainment: "Lighter, human moments such as CSR and behind the scenes, kept professional.",
   Conversational: "Polls, trend responses, events and commemorations that invite a reply.",
-  Other: "Ask Me Anything and caption-only templates without a category.",
+  "No pillar": "Ask Me Anything sits outside the four pillars.",
 };
 
-const GROUPS: Group[] = [...PILLARS, "Other"];
-
-function groupOf(t: TemplateKit): Group {
-  return (t.pillar as Pillar | null) ?? "Other";
-}
+const GROUPS: Group[] = [...PILLARS, "No pillar"];
+const categoriesOf = (g: Group) => categoriesFor(g === "No pillar" ? null : g);
 
 export default function TemplatesPage() {
   const router = useRouter();
@@ -43,51 +41,45 @@ export default function TemplatesPage() {
   const canUse = canEditContent(role);
   const { success: toastSuccess, error: toastError } = useToast();
 
-  const [templates, setTemplates] = useState<TemplateKit[]>([]);
+  const [templates, setTemplates] = useState<DesignTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const [pillar, setPillar] = useState<Group | "all">("all");
-  const [format, setFormat] = useState<"all" | "carousel" | "poster">("all");
-  const [viewing, setViewing] = useState<TemplateKit | null>(null);
-  const [editing, setEditing] = useState<TemplateKit | "new" | null>(null);
-  const [deleting, setDeleting] = useState<TemplateKit | null>(null);
+  const [group, setGroup] = useState<Group | "all">("all");
+  const [viewing, setViewing] = useState<DesignTemplate | null>(null);
+  const [editing, setEditing] = useState<{ template: DesignTemplate | null; category?: Category } | null>(null);
+  const [deleting, setDeleting] = useState<DesignTemplate | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
     setLoadError(false);
-    apiFetch<{ templates: RawTemplate[] }>("/templates")
-      .then((d) => setTemplates(d.templates.map(parseTemplate)))
+    apiFetch<{ templates: DesignTemplate[] }>("/templates")
+      .then((d) => setTemplates(d.templates))
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { load(); }, [load, activeWorkspace?.id]);
 
-  const visible = useMemo(() => templates.filter((t) =>
-    (pillar === "all" || groupOf(t) === pillar) &&
-    (format === "all" || (t.mediaUrls.length > 0 && t.format === format))), [templates, pillar, format]);
+  const byCategory = useMemo(() => templatesByCategory(templates), [templates]);
+  const taken = useMemo(() => new Set(byCategory.keys()), [byCategory]);
+  const sections = GROUPS.filter((g) => group === "all" || g === group);
 
-  const sections = GROUPS
-    .map((g) => ({ group: g, items: visible.filter((t) => groupOf(t) === g) }))
-    .filter((s) => s.items.length > 0);
-
-  function saved(raw: RawTemplate) {
-    const kit = parseTemplate(raw);
-    setTemplates((prev) => [kit, ...prev.filter((t) => t.id !== kit.id)]);
-    toastSuccess(editing === "new" ? `Template "${kit.name}" saved.` : `Template "${kit.name}" updated.`);
+  function saved(template: DesignTemplate) {
+    setTemplates((prev) => [template, ...prev.filter((t) => t.id !== template.id)]);
+    toastSuccess(editing?.template ? `Template for ${template.category} updated.` : `Template for ${template.category} saved.`);
     setEditing(null);
     setViewing(null);
   }
 
   async function remove() {
     if (!deleting) return;
-    const { id, name } = deleting;
+    const { id, category } = deleting;
     setRemoving(true);
     try {
       await apiFetch(`/templates/${id}`, { method: "DELETE" });
       setTemplates((prev) => prev.filter((t) => t.id !== id));
-      toastSuccess(`Template "${name}" deleted.`);
+      toastSuccess(`Template for ${category} deleted.`);
       setViewing(null);
     } catch {
       toastError("Couldn't delete the template.");
@@ -104,12 +96,12 @@ export default function TemplatesPage() {
           <h1 className="text-lg font-bold">Templates</h1>
           <p className="text-xs mt-0.5 hidden sm:block truncate" style={{ color: MUTED }}>
             {canManage
-              ? "Upload the designs for each content type. Marketing picks one and types in the copy."
-              : "Designs from the design team for each content type. Pick one and type in the copy."}
+              ? "One design per content category. Marketing opens it as a reference when making a post."
+              : "The design team's reference design for each content category."}
           </p>
         </div>
         {canManage && (
-          <button type="button" onClick={() => setEditing("new")}
+          <button type="button" onClick={() => setEditing({ template: null })}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition-colors hover:bg-gray-100 flex-shrink-0"
             style={{ backgroundColor: "#ffffff", color: "#0a0a0a" }}>
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -124,24 +116,14 @@ export default function TemplatesPage() {
         <style>{`.template-tile:focus-visible { outline: 2px solid #5b63d3; outline-offset: 3px; border-radius: 14px; }
           .template-tile:hover .template-cover { border-color: #444; }`}</style>
 
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-3 mb-8">
-          <div role="tablist" aria-label="Content pillar" className="flex flex-wrap gap-1">
-            {(["all", ...GROUPS] as const).map((g) => (
-              <button key={g} type="button" role="tab" aria-selected={pillar === g} onClick={() => setPillar(g)}
-                className="px-3 py-1.5 rounded-lg text-sm font-medium"
-                style={{ color: pillar === g ? TEXT : MUTED, background: pillar === g ? "#1a1a1a" : "transparent", border: `1px solid ${pillar === g ? BORDER : "transparent"}` }}>
-                {g === "all" ? "All pillars" : g}
-              </button>
-            ))}
-          </div>
-          <select value={format} onChange={(e) => setFormat(e.target.value as typeof format)} aria-label="Format"
-            className="ml-auto text-sm rounded-lg px-3 py-1.5"
-            style={{ background: BG, border: `1px solid ${BORDER}`, color: TEXT }}>
-            <option value="all">All formats</option>
-            <option value="carousel">Carousel</option>
-            <option value="poster">Poster</option>
-          </select>
+        <div role="tablist" aria-label="Content pillar" className="flex flex-wrap gap-1 mb-8">
+          {(["all", ...GROUPS] as const).map((g) => (
+            <button key={g} type="button" role="tab" aria-selected={group === g} onClick={() => setGroup(g)}
+              className="px-3 py-1.5 rounded-lg text-sm font-medium"
+              style={{ color: group === g ? TEXT : MUTED, background: group === g ? "#1a1a1a" : "transparent", border: `1px solid ${group === g ? BORDER : "transparent"}` }}>
+              {g === "all" ? "All pillars" : g}
+            </button>
+          ))}
         </div>
 
         {loading && <p className="text-sm" style={{ color: MUTED }}>Loading templates…</p>}
@@ -154,37 +136,31 @@ export default function TemplatesPage() {
           </div>
         )}
 
-        {!loading && !loadError && sections.length === 0 && (
-          <div className="text-center py-16 max-w-sm mx-auto">
-            <p className="text-sm mb-4" style={{ color: MUTED }}>
-              {templates.length > 0
-                ? "No templates match these filters."
-                : canManage
-                  ? "No templates yet. Upload the first design so Marketing can start from it."
-                  : "No templates yet. The design team uploads them here."}
-            </p>
-            {canManage && templates.length === 0 && (
-              <button type="button" onClick={() => setEditing("new")} className="px-4 py-2 rounded-xl text-sm font-semibold transition-colors hover:bg-gray-100"
-                style={{ backgroundColor: "#ffffff", color: "#0a0a0a" }}>Upload the first template</button>
-            )}
+        {!loading && !loadError && (
+          <div className="space-y-12">
+            {sections.map((g) => {
+              const categories = categoriesOf(g);
+              const filled = categories.filter((c) => byCategory.has(c)).length;
+              return (
+                <section key={g} aria-labelledby={`pillar-${g}`}>
+                  <div className="mb-4" style={{ maxWidth: "68ch" }}>
+                    <h2 id={`pillar-${g}`} className="text-base font-bold">
+                      {g} <span className="text-sm font-normal" style={{ color: MUTED }}>{filled} of {categories.length}</span>
+                    </h2>
+                    <p className="text-sm mt-0.5" style={{ color: MUTED }}>{GROUP_SUMMARY[g]}</p>
+                  </div>
+                  <ul className="grid gap-x-5 gap-y-7 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
+                    {categories.map((c) => {
+                      const t = byCategory.get(c);
+                      if (t) return <TemplateTile key={c} template={t} onOpen={() => setViewing(t)} />;
+                      return <EmptySlot key={c} category={c} canManage={canManage} onUpload={() => setEditing({ template: null, category: c })} />;
+                    })}
+                  </ul>
+                </section>
+              );
+            })}
           </div>
         )}
-
-        <div className="space-y-12">
-          {sections.map(({ group, items }) => (
-            <section key={group} aria-labelledby={`pillar-${group}`}>
-              <div className="mb-4" style={{ maxWidth: "68ch" }}>
-                <h2 id={`pillar-${group}`} className="text-base font-bold">
-                  {group} <span className="text-sm font-normal" style={{ color: MUTED }}>{items.length}</span>
-                </h2>
-                <p className="text-sm mt-0.5" style={{ color: MUTED }}>{GROUP_SUMMARY[group]}</p>
-              </div>
-              <ul className="grid gap-x-5 gap-y-7 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
-                {items.map((t) => <TemplateTile key={t.id} template={t} onOpen={() => setViewing(t)} />)}
-              </ul>
-            </section>
-          ))}
-        </div>
       </div>
 
       {/* Hidden while the editor or delete confirm is on top, so Esc only closes that layer */}
@@ -195,12 +171,13 @@ export default function TemplatesPage() {
           canUse={canUse}
           onClose={() => setViewing(null)}
           onUse={() => router.push(`/compose?template=${viewing.id}`)}
-          onEdit={() => setEditing(viewing)}
+          onEdit={() => setEditing({ template: viewing })}
           onDelete={() => setDeleting(viewing)}
         />
       )}
       {editing && (
-        <TemplateEditor template={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={saved} />
+        <TemplateEditor template={editing.template} presetCategory={editing.category} takenCategories={taken}
+          onClose={() => setEditing(null)} onSaved={saved} />
       )}
       {deleting && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.7)" }}
@@ -209,7 +186,8 @@ export default function TemplatesPage() {
             className="w-full max-w-sm rounded-2xl p-5" style={{ background: "#111111", border: `1px solid ${BORDER}` }}>
             <h2 id="delete-template-title" className="text-sm font-bold">Delete template</h2>
             <p className="text-sm mt-2 leading-relaxed" style={{ color: MUTED }}>
-              Delete <span style={{ color: TEXT }}>&ldquo;{deleting.name}&rdquo;</span>? Marketing can no longer pick it. Posts already made from it keep their designs.
+              Delete the template for <span style={{ color: TEXT }}>{deleting.category}</span>? Its design file is removed and
+              Marketing no longer sees a design reference for this category. Existing posts are not changed.
             </p>
             <div className="flex gap-2 mt-5">
               <button type="button" onClick={() => setDeleting(null)} disabled={removing} autoFocus
@@ -226,37 +204,73 @@ export default function TemplatesPage() {
   );
 }
 
-// The cover design is the tile — no card chrome around it.
-function TemplateTile({ template, onOpen }: { template: TemplateKit; onOpen: () => void }) {
-  const cover = toMediaItems(template.mediaUrls.slice(0, 1))[0];
-  const stacked = template.mediaUrls.length > 1;
+function TemplateCover({ template }: { template: DesignTemplate }) {
+  if (template.previewUrl) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={fileHref(template.previewUrl)} alt="" className="w-full h-full object-cover" loading="lazy" />;
+  }
+  return (
+    <span className="flex flex-col items-center gap-2 px-4 text-center">
+      <span className="text-xs font-bold px-2 py-1 rounded" style={{ background: "#1f1f1f", color: TEXT }}>
+        {template.fileUrl ? "FIG" : "LINK"}
+      </span>
+      <span className="text-xs" style={{ color: MUTED }}>No preview</span>
+    </span>
+  );
+}
+
+function TemplateTile({ template, onOpen }: { template: DesignTemplate; onOpen: () => void }) {
+  const incomplete = isIncomplete(template);
+  const parts = [template.fileUrl && "Figma file", template.linkUrl && "link"].filter(Boolean).join(" + ");
   return (
     <li>
       <button type="button" onClick={onOpen} className="template-tile w-full text-left">
-        <div className="relative" style={{ paddingRight: stacked ? 6 : 0, paddingTop: stacked ? 6 : 0 }}>
-          {/* Offset edge hints that a carousel has more slides behind the cover */}
-          {stacked && <div aria-hidden className="absolute rounded-xl" style={{ inset: "0 0 6px 6px", border: `1px solid ${BORDER}`, background: "#141414" }} />}
-          <div className="template-cover relative rounded-xl overflow-hidden flex items-center justify-center transition-colors"
-            style={{ aspectRatio: "4 / 5", border: `1px solid ${BORDER}`, background: "#111111" }}>
-            {cover ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={cover.previewUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
-            ) : (
-              <span className="text-xs px-4 text-center" style={{ color: MUTED }}>Caption only</span>
-            )}
-          </div>
+        <div className="template-cover relative rounded-xl overflow-hidden flex items-center justify-center transition-colors"
+          style={{ aspectRatio: "4 / 5", border: `1px solid ${BORDER}`, background: "#111111" }}>
+          <TemplateCover template={template} />
+          {incomplete && (
+            <span className="absolute top-2 left-2 text-[11px] font-semibold px-1.5 py-0.5 rounded" style={{ background: "#422006", color: "#fbbf24" }}>
+              Incomplete
+            </span>
+          )}
         </div>
-        <p className="text-sm font-semibold mt-2.5 leading-snug line-clamp-2">{template.name}</p>
+        <p className="text-sm font-semibold mt-2.5 leading-snug line-clamp-2">{template.category}</p>
         <p className="text-xs mt-0.5" style={{ color: MUTED }}>
-          {template.category ?? "No category"}, {formatSummary(template).toLowerCase()}
+          {incomplete ? "Needs a design file or link" : parts.charAt(0).toUpperCase() + parts.slice(1)}
         </p>
       </button>
     </li>
   );
 }
 
+function EmptySlot({ category, canManage, onUpload }: { category: Category; canManage: boolean; onUpload: () => void }) {
+  const box = (
+    <div className="rounded-xl flex flex-col items-center justify-center gap-1 px-3 text-center"
+      style={{ aspectRatio: "4 / 5", border: `1px dashed ${BORDER}` }}>
+      {canManage
+        ? <span className="text-sm font-medium" style={{ color: TEXT }}>+ Upload</span>
+        : <span className="text-xs" style={{ color: MUTED }}>No template yet</span>}
+    </div>
+  );
+  return (
+    <li>
+      {canManage ? (
+        <button type="button" onClick={onUpload} className="template-tile w-full text-left" aria-label={`Upload the template for ${category}`}>
+          {box}
+          <p className="text-sm font-semibold mt-2.5 leading-snug line-clamp-2" style={{ color: MUTED }}>{category}</p>
+        </button>
+      ) : (
+        <>
+          {box}
+          <p className="text-sm font-semibold mt-2.5 leading-snug line-clamp-2" style={{ color: MUTED }}>{category}</p>
+        </>
+      )}
+    </li>
+  );
+}
+
 function TemplateDetail({ template, canManage, canUse, onClose, onUse, onEdit, onDelete }: {
-  template: TemplateKit;
+  template: DesignTemplate;
   canManage: boolean;
   canUse: boolean;
   onClose: () => void;
@@ -264,80 +278,45 @@ function TemplateDetail({ template, canManage, canUse, onClose, onUse, onEdit, o
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const media = toMediaItems(template.mediaUrls);
-  const [index, setIndex] = useState(0);
-  const labels = template.slides.length === media.length ? template.slides.map((s) => s.label) : undefined;
-
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const updated = template.updatedAt ? new Date(template.updatedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Jakarta" }) : null;
+
   return (
     <div className="fixed inset-0 z-[900] flex items-center justify-center p-4"
       style={{ background: "rgba(0,0,0,0.75)" }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <style>{`.template-detail :focus-visible { outline: 2px solid #5b63d3; outline-offset: 2px; }`}</style>
-      <div role="dialog" aria-modal="true" aria-label={template.name}
-        className="template-detail flex flex-col md:flex-row overflow-hidden"
-        style={{ background: "#111111", border: `1px solid ${BORDER}`, borderRadius: 16, width: "min(1120px, 100%)", height: "min(90vh, 860px)" }}>
-        {media.length > 0 && (
-          <div className="flex flex-col md:flex-[3] min-h-0 h-[45vh] md:h-auto flex-shrink-0 md:flex-shrink" style={{ borderRight: `1px solid ${BORDER}` }}>
-            <MediaStage media={media} index={index} onIndexChange={setIndex} labels={labels} />
+      <div role="dialog" aria-modal="true" aria-label={`Template for ${template.category}`}
+        className="template-detail flex flex-col sm:flex-row overflow-hidden w-full"
+        style={{ background: "#111111", border: `1px solid ${BORDER}`, borderRadius: 16, maxWidth: 760, maxHeight: "90vh" }}>
+        <div className="sm:w-[42%] flex-shrink-0 flex items-center justify-center p-4" style={{ background: BG, borderRight: `1px solid ${BORDER}` }}>
+          <div className="w-full rounded-xl overflow-hidden flex items-center justify-center" style={{ aspectRatio: "4 / 5", border: `1px solid ${BORDER}`, maxHeight: "40vh" }}>
+            <TemplateCover template={template} />
           </div>
-        )}
+        </div>
 
-        <div className={`flex flex-col min-h-0 ${media.length > 0 ? "md:flex-[2]" : "flex-1"}`} style={{ minWidth: 0 }}>
+        <div className="flex flex-col min-h-0 flex-1" style={{ minWidth: 0 }}>
           <div className="flex items-start gap-3 px-5 pt-5 pb-4 flex-shrink-0" style={{ borderBottom: `1px solid ${BORDER}` }}>
             <div className="flex-1 min-w-0">
-              <h2 className="text-base font-bold leading-snug" style={{ color: TEXT }}>{template.name}</h2>
+              <h2 className="text-base font-bold leading-snug" style={{ color: TEXT }}>{template.category}</h2>
               <p className="text-xs mt-1" style={{ color: MUTED }}>
-                {template.category
-                  ? `${template.category}${template.pillar ? `, ${template.pillar} pillar` : ""}`
-                  : "No category"}
+                {contentTypeLabel(template.category, template.pillar)}{updated ? `. Updated ${updated}` : ""}
               </p>
-              <p className="text-xs mt-0.5" style={{ color: MUTED }}>{formatSummary(template)}</p>
             </div>
             <button type="button" onClick={onClose} aria-label="Close"
               className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
               style={{ color: MUTED, border: `1px solid ${BORDER}` }}>✕</button>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5" style={{ maxWidth: "68ch" }}>
-            {template.slides.length > 0 && (
-              <section>
-                <h3 className="text-xs font-semibold mb-1.5" style={{ color: MUTED }}>Copy each slide needs</h3>
-                <ol className="space-y-1.5">
-                  {template.slides.map((s, i) => {
-                    const active = labels !== undefined && i === index;
-                    return (
-                      <li key={i}>
-                        <button type="button" onClick={() => setIndex(i)} aria-current={active}
-                          className="w-full text-left rounded-xl px-3 py-2.5"
-                          style={{ background: active ? "#1a1a1a" : "transparent", border: `1px solid ${active ? "#5b63d3" : BORDER}` }}>
-                          <span className="block text-xs font-semibold" style={{ color: active ? TEXT : MUTED }}>{s.label}</span>
-                          <span className="block text-sm leading-relaxed whitespace-pre-wrap break-words mt-0.5" style={{ color: s.guide ? TEXT : MUTED }}>
-                            {s.guide || "No guidance"}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ol>
-              </section>
-            )}
-            <section>
-              <h3 className="text-xs font-semibold mb-1.5" style={{ color: MUTED }}>Caption draft</h3>
-              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words" style={{ color: template.text ? TEXT : MUTED }}>
-                {template.text || "No caption draft"}
-              </p>
-            </section>
-            {template.commentText && (
-              <section>
-                <h3 className="text-xs font-semibold mb-1.5" style={{ color: MUTED }}>First comment</h3>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words" style={{ color: TEXT }}>{template.commentText}</p>
-              </section>
+          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3">
+            <DesignReferenceCard template={template} category={template.category} />
+            {isIncomplete(template) && canManage && (
+              <p className="text-xs" style={{ color: "#fbbf24" }}>Add the .fig file or a link so Marketing can open the design.</p>
             )}
           </div>
 
