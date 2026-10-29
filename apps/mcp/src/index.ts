@@ -236,14 +236,17 @@ const TOOLS = [
   },
   {
     name: "list_templates",
-    description: "List all saved post templates in this Posthive workspace.",
+    description:
+      "List the design templates in this Posthive workspace — one reference design per content category " +
+      "(pillar + category), with a Figma file and/or link. Templates carry no caption or post media.",
     inputSchema: { type: "object" as const, properties: {}, required: [] },
   },
   {
     name: "create_from_template",
     description:
-      "Create a draft post using a saved template as the base content. " +
-      "You can override the text before saving. Use list_templates to get template IDs.",
+      "Create a draft post for a template's content type: the post gets the template's pillar and category, " +
+      "and the template's design file/link is returned as a reference. Design files are never attached to the post. " +
+      "Use list_templates to get template IDs.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -253,11 +256,11 @@ const TOOLS = [
           items: { type: "string" },
           description: "Account IDs to post to. Use list_accounts to get IDs.",
         },
-        content_override: { type: "string", description: "Override the template text. Leave blank to use template text as-is." },
-        first_comment_override: { type: "string", description: "Override the template first comment." },
+        content_override: { type: "string", description: "The post caption. Required when schedule_directly is true." },
+        first_comment_override: { type: "string", description: "First comment for the post." },
         schedule_directly: {
           type: "boolean",
-          description: "When true, schedule immediately instead of saving as draft. Requires scheduled_time.",
+          description: "When true, schedule immediately instead of saving as draft. Requires scheduled_time and content_override.",
         },
         scheduled_time: { type: "string", description: "ISO 8601 publish time. Required when schedule_directly is true." },
       },
@@ -391,6 +394,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (scheduleDirectly && !scheduledTime) {
           throw new Error("scheduled_time is required when schedule_directly is true");
         }
+        if (scheduleDirectly && !(a.content_override as string | undefined)?.trim()) {
+          throw new Error("content_override is required when schedule_directly is true — a template is a design reference and has no caption.");
+        }
 
         const body: Record<string, unknown> = {
           accountIds: a.account_ids,
@@ -403,9 +409,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const data = await apiCall("POST", `/api/v1/templates/${a.template_id as string}/use`, body);
         return ok({
           ...(data as object),
-          _note: scheduleDirectly
-            ? "Post created from template and scheduled."
-            : "Post created from template as DRAFT. Use approve_draft to schedule it.",
+          _note: (scheduleDirectly
+            ? "Post created and scheduled."
+            : "Post created as DRAFT. Add the caption and design, then use approve_draft to schedule it.") +
+            " The template's design file/link (designReference) is a reference only; attach the finished design yourself.",
         });
       }
 

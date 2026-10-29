@@ -135,8 +135,8 @@ const HELP = {
     "posts:approve": "Approve a draft and schedule it. posts:approve <post_id> --schedule <ISO>",
     "posts:duplicate": "Clone a post as a new draft. posts:duplicate <post_id>",
     "posts:delete": "Delete a pending/draft post. posts:delete <post_id>",
-    "templates:list": "List saved post templates",
-    "templates:use": "Create a post from a template. templates:use <template_id> --accounts <id,id> [--content <override>] [--schedule <ISO>]",
+    "templates:list": "List design templates (one reference design per content category)",
+    "templates:use": "Create a post for a template's pillar + category (design files are not attached). templates:use <template_id> --accounts <id,id> [--content <caption>] [--schedule <ISO> (requires --content)]",
     "upload": "Upload an image or video. upload <file_path> — returns a media URL for posts:create --media",
     "help": "Show this help",
   },
@@ -289,6 +289,7 @@ switch (command) {
     if (!accounts?.length) fail("--accounts is required (comma-separated account IDs)");
 
     const schedule = str(flags, "schedule");
+    if (schedule && !str(flags, "content")?.trim()) fail("--content is required with --schedule (a template has no caption)");
     const body: Record<string, unknown> = {
       accountIds: accounts,
       draft: !schedule,
@@ -299,7 +300,8 @@ switch (command) {
     const data = await api("POST", `/api/v1/templates/${encodeURIComponent(id)}/use`, body);
     out({
       ...(data as object),
-      _note: schedule ? "Post created from template and scheduled." : "Post created from template as DRAFT.",
+      _note: (schedule ? "Post created and scheduled." : "Post created as DRAFT.") +
+        " The template's design file/link (designReference) is a reference only.",
     });
     break;
   }

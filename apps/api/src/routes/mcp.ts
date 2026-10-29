@@ -23,7 +23,7 @@ import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
 import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
-import { postContentFromTemplate, templateNeedsCopy, slideCopyError } from "../lib/templates.js";
+import { TEMPLATE_SELECT, designReference } from "../lib/templates.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -312,7 +312,9 @@ const TOOLS = [
   },
   {
     name: "list_templates",
-    description: "List all saved post templates in this Posthive workspace.",
+    description:
+      "List the design templates in this Posthive workspace — one reference design per content category " +
+      "(pillar + category), with a Figma file and/or link. Templates carry no caption or post media.",
     inputSchema: { type: "object" as const, properties: {}, required: [] },
     outputSchema: {
       type: "object" as const,
@@ -324,8 +326,13 @@ const TOOLS = [
             properties: {
               id:           { type: "string" },
               name:         { type: "string" },
-              text:         { type: "string" },
-              firstComment: { type: ["string", "null"] },
+              pillar:       { type: ["string", "null"] },
+              category:     { type: "string" },
+              fileUrl:      { type: ["string", "null"] },
+              fileName:     { type: ["string", "null"] },
+              fileSize:     { type: ["number", "null"] },
+              linkUrl:      { type: ["string", "null"] },
+              previewUrl:   { type: ["string", "null"] },
               createdAt:    { type: "string" },
               updatedAt:    { type: "string" },
             },
@@ -338,8 +345,8 @@ const TOOLS = [
   {
     name: "create_from_template",
     description:
-      "Create a draft post using a saved template as the base content. " +
-      "You can override the text and other fields before saving. " +
+      "Create a draft post for a template's content type: the post gets the template's pillar and category, " +
+      "and the template's design file/link is returned as a reference. Design files are never attached to the post. " +
       "Use list_templates to get template IDs.",
     inputSchema: {
       type: "object" as const,
@@ -350,11 +357,11 @@ const TOOLS = [
           items: { type: "string" },
           description: "Account IDs to post to. Use list_accounts to get IDs.",
         },
-        content_override: { type: "string", description: "Override the template text. Leave blank to use template text as-is." },
-        first_comment_override: { type: "string", description: "Override the template first comment." },
+        content_override: { type: "string", description: "The post caption. Required when schedule_directly is true." },
+        first_comment_override: { type: "string", description: "First comment for the post." },
         schedule_directly: {
           type: "boolean",
-          description: "When true, schedule immediately instead of saving as draft. Requires scheduled_time.",
+          description: "When true, schedule immediately instead of saving as draft. Requires scheduled_time and content_override.",
         },
         scheduled_time: { type: "string", description: "ISO 8601 publish time. Required when schedule_directly is true." },
       },
@@ -368,6 +375,18 @@ const TOOLS = [
         draft:        { type: "boolean" },
         scheduledFor: { type: ["string", "null"] },
         templateUsed: { type: "string" },
+        pillar:       { type: ["string", "null"] },
+        category:     { type: "string" },
+        designReference: {
+          type: "object",
+          properties: {
+            fileUrl:    { type: ["string", "null"] },
+            fileName:   { type: ["string", "null"] },
+            fileSize:   { type: ["number", "null"] },
+            linkUrl:    { type: ["string", "null"] },
+            previewUrl: { type: ["string", "null"] },
+          },
+        },
         targets:      { type: "array", items: { type: "object", properties: { id: { type: "string" }, accountId: { type: "string" }, status: { type: "string" } } } },
         _note:        { type: "string" },
       },
@@ -569,8 +588,6 @@ async function handleTool(
       if (!isManageRole(ctx.role) && job.userId !== userId) {
         throw new Error("You can only approve your own drafts.");
       }
-      const copyError = slideCopyError(job.content);
-      if (copyError) throw new Error(copyError);
 
       const updated = await prisma.postJob.update({
         where: { id: postId },
@@ -705,41 +722,41 @@ async function handleTool(
 
     case "list_templates": {
       const templates = await prisma.template.findMany({
-        where: { workspaceId },
-        orderBy: { updatedAt: "desc" },
-        select: { id: true, name: true, content: true, createdAt: true, updatedAt: true },
+        where: { workspaceId, category: { not: null } },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        select: TEMPLATE_SELECT,
       });
       return ok({
-        templates: templates.map((t) => {
-          const c = (() => { try { return JSON.parse(t.content) as Record<string, unknown>; } catch { return {}; } })();
-          return {
-            id: t.id,
-            name: t.name,
-            text: (c.text as string) ?? "",
-            firstComment: (c.commentText as string) ?? null,
-            createdAt: t.createdAt,
-            updatedAt: t.updatedAt,
-          };
-        }),
+        templates: templates.map((t) => ({
+          id: t.id,
+          name: t.name,
+          pillar: t.pillar,
+          category: t.category,
+          ...designReference(t),
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        })),
       });
     }
 
     case "create_from_template": {
       if (!isContentEditorRole(ctx.role)) throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
       const templateId = args.template_id as string;
-      const template = await prisma.template.findFirst({ where: { id: templateId, workspaceId } });
+      const template = await prisma.template.findFirst({
+        where: { id: templateId, workspaceId, category: { not: null } },
+        select: TEMPLATE_SELECT,
+      });
       if (!template) throw new Error("Template not found");
-
-      const tc = (() => { try { return JSON.parse(template.content) as Record<string, unknown>; } catch { return {}; } })();
 
       const scheduleDirectly = args.schedule_directly === true;
       const scheduledTimeStr = args.scheduled_time as string | undefined;
+      const text = (args.content_override as string | undefined) ?? "";
 
       if (scheduleDirectly && !scheduledTimeStr) {
         throw new Error("scheduled_time is required when schedule_directly is true");
       }
-      if (scheduleDirectly && templateNeedsCopy(tc)) {
-        throw new Error("This template needs copywriting per slide — create it as a draft and fill it in Posthive.");
+      if (scheduleDirectly && !text.trim()) {
+        throw new Error("content_override is required when schedule_directly is true — a template is a design reference and has no caption.");
       }
 
       let scheduledFor: Date;
@@ -762,10 +779,10 @@ async function handleTool(
       }
 
       const isDraft = !scheduleDirectly || forcedDraft;
-      const text = (args.content_override as string | undefined) ?? (tc.text as string) ?? "";
-      const commentText = (args.first_comment_override as string | undefined) ?? (tc.commentText as string | undefined) ?? null;
+      const commentText = (args.first_comment_override as string | undefined) ?? null;
 
-      const contentPayload = JSON.stringify(postContentFromTemplate(template.id, tc, text, commentText));
+      // Only the content type comes from the template — never its design files
+      const contentPayload = JSON.stringify({ text, mediaUrls: [], pillar: template.pillar, category: template.category });
 
       const job = await prisma.postJob.create({
         data: {
@@ -791,12 +808,16 @@ async function handleTool(
         pendingReview: forcedDraft,
         scheduledFor: isDraft ? null : job.scheduledFor,
         templateUsed: template.name,
+        pillar: template.pillar,
+        category: template.category,
+        designReference: designReference(template),
         targets: job.targets,
-        _note: isDraft
+        _note: (isDraft
           ? forcedDraft
-            ? "Post created from template as DRAFT awaiting review. A designer must promote it before it publishes."
-            : "Post created from template as DRAFT. Use approve_draft to schedule it."
-          : "Post created from template and scheduled.",
+            ? "Post created as DRAFT awaiting review. A designer must promote it before it publishes."
+            : "Post created as DRAFT. Add the caption and design, then use approve_draft to schedule it."
+          : "Post created and scheduled.") +
+          " The template's design file/link is a reference only; attach the finished design yourself.",
       });
     }
 

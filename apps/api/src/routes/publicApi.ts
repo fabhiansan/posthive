@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { withApiKey } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN } from "../lib/auth/withAuth.js";
-import { postContentFromTemplate, templateNeedsCopy, slideCopyError } from "../lib/templates.js";
+import { TEMPLATE_SELECT, designReference } from "../lib/templates.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
@@ -399,8 +399,6 @@ export async function publicApiRoutes(
     const job = await prisma.postJob.findFirst({ where: { id, workspaceId } });
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: `Post status is '${job.status}' — only drafts can be approved` });
-    const copyError = slideCopyError(job.content);
-    if (copyError) return reply.status(400).send({ error: copyError });
 
     const updated = await prisma.postJob.update({
       where: { id },
@@ -460,26 +458,36 @@ export async function publicApiRoutes(
     });
   });
 
-  // GET /api/v1/templates — list saved templates
+  // GET /api/v1/templates — list design templates (one per content category).
+  // Templates are design references: text/firstComment stay empty for older integrations.
   app.get("/api/v1/templates", { preHandler }, async (req, reply) => {
     const { workspaceId } = req.apiKeyUser!;
     const { limit: limitStr } = req.query as { limit?: string };
     const take = Math.min(Number(limitStr ?? 100), 100);
     const templates = await prisma.template.findMany({
-      where: { workspaceId },
-      orderBy: { updatedAt: "desc" },
+      where: { workspaceId, category: { not: null } },
+      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take,
-      select: { id: true, name: true, content: true, createdAt: true, updatedAt: true },
+      select: TEMPLATE_SELECT,
     });
     return reply.send({
-      templates: templates.map((t) => {
-        const c = (() => { try { return JSON.parse(t.content) as Record<string, unknown>; } catch { return {}; } })();
-        return { id: t.id, name: t.name, text: (c.text as string) ?? "", firstComment: (c.commentText as string) ?? null, createdAt: t.createdAt, updatedAt: t.updatedAt };
-      }),
+      templates: templates.map((t) => ({
+        id: t.id,
+        name: t.name,
+        pillar: t.pillar,
+        category: t.category,
+        ...designReference(t),
+        text: "",
+        firstComment: null,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      })),
     });
   });
 
-  // POST /api/v1/templates/:id/use — create a post from a template
+  // POST /api/v1/templates/:id/use — create a post for the template's content type.
+  // Only pillar + category are taken; the design files are returned as a reference
+  // and never attached to the post.
   app.post("/api/v1/templates/:id/use", { preHandler }, async (req, reply) => {
     const { id: userId, workspaceId, role, approvalRequired } = req.apiKeyUser!;
     // Content creation is Admin + Marketing (Tim Desain is read-only)
@@ -498,14 +506,13 @@ export async function publicApiRoutes(
     if (!Array.isArray(body.accountIds) || body.accountIds.length === 0)
       return reply.status(400).send({ error: "accountIds must be a non-empty array" });
 
-    const template = await prisma.template.findFirst({ where: { id, workspaceId } });
+    const template = await prisma.template.findFirst({ where: { id, workspaceId, category: { not: null } }, select: TEMPLATE_SELECT });
     if (!template) return reply.status(404).send({ error: "Template not found" });
 
-    const tc = (() => { try { return JSON.parse(template.content) as Record<string, unknown>; } catch { return {}; } })();
-
+    const text = body.contentOverride ?? "";
     const isDraft = body.draft !== false && !body.scheduledFor;
-    if (!isDraft && templateNeedsCopy(tc))
-      return reply.status(400).send({ error: "This template needs copywriting per slide — create it as a draft and fill it in Posthive." });
+    if (!isDraft && !text.trim())
+      return reply.status(400).send({ error: "contentOverride is required to schedule — a template is a design reference and has no caption." });
     // Design-approval gate — member keys stay in the review queue
     const needsReview = !isDraft && approvalRequired && !isManageRole(role);
     const staysDraft = isDraft || needsReview;
@@ -521,8 +528,7 @@ export async function publicApiRoutes(
     if (accounts.length !== body.accountIds.length)
       return reply.status(400).send({ error: "One or more accountIds are invalid" });
 
-    const text = body.contentOverride ?? (tc.text as string) ?? "";
-    const commentText = body.firstCommentOverride ?? (tc.commentText as string | undefined) ?? null;
+    const commentText = body.firstCommentOverride ?? null;
 
     const job = await prisma.postJob.create({
       data: {
@@ -531,7 +537,7 @@ export async function publicApiRoutes(
         scheduledFor,
         status: staysDraft ? "draft" : "pending",
         approvalStatus: needsReview ? "pending" : null,
-        content: JSON.stringify(postContentFromTemplate(template.id, tc, text, commentText)),
+        content: JSON.stringify({ text, mediaUrls: [], pillar: template.pillar, category: template.category }),
         commentText,
         dryRun: false,
         targets: { create: body.accountIds.map((accountId) => ({ accountId })) },
@@ -548,6 +554,9 @@ export async function publicApiRoutes(
       pendingReview: needsReview,
       scheduledFor: isDraft ? null : job.scheduledFor,
       templateUsed: template.name,
+      pillar: template.pillar,
+      category: template.category,
+      designReference: designReference(template),
       targets: job.targets,
     });
   });

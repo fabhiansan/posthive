@@ -85,8 +85,8 @@ Set `POSTHIVE_API_URL` to your own API URL (e.g. `http://localhost:3001`). Omit 
 | `update_post` | Edit content or scheduled time of a pending post |
 | `duplicate_post` | Clone a post as a new draft |
 | `delete_post` | Delete a pending or draft post |
-| `list_templates` | List saved post templates |
-| `create_from_template` | Create a post from a template |
+| `list_templates` | List design templates (one reference design per content category) |
+| `create_from_template` | Create a draft post for a template's pillar + category; returns the design file/link as a reference |
 
 ### Draft-first by default
 
