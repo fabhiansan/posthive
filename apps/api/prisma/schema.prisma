@@ -1,6 +1,4 @@
-// Targeting SQLite for local dev, Postgres for production.
-// Avoid any SQLite-only features so this schema works with both.
-// To switch: change provider to "postgresql" and update DATABASE_URL.
+// PostgreSQL in every environment (migrations use Postgres SQL).
 
 generator client {
   provider      = "prisma-client-js"
@@ -327,20 +325,37 @@ model ApiKey {
   @@index([keyHash])
 }
 
-// Saved post template — reusable content for compose.
+// Design template — the reference design for one content type (docs/content-types.md).
+// One per workspace + category; never copied into a post.
 model Template {
   id          String     @id @default(cuid())
   userId      String
   user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceId String?
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  name        String
-  content     String // JSON: { text, commentText, mediaUrls, altTexts, mediaType, youtubeType }
+  name        String // derived from category
+  pillar      String? // derived from category; null for Ask Me Anything
+  category    String? // one of CATEGORIES; becomes required once legacy rows are cleaned up
+  fileUrl     String? // editable design file (.fig)
+  fileName    String?
+  fileSize    Int?
+  linkUrl     String? // https link to the design (e.g. Figma)
+  previewUrl  String? // optional preview image, shown in the library and compose only
+  content     String     @default("{}") // DEPRECATED: legacy template-kit JSON, no longer written
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
   @@index([userId])
   @@index([workspaceId])
+  @@index([fileUrl])
+  @@index([previewUrl])
+}
+
+// Media files of legacy template kits. Posts made from a kit share these files,
+// so post cleanup must never delete them, even after the kit itself is gone.
+model LegacyTemplateMedia {
+  url       String   @id
+  createdAt DateTime @default(now())
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.
