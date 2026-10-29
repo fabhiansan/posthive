@@ -29,11 +29,34 @@ const EXT_MAP: Record<string, string> = {
   "video/mp4": ".mp4",
   "video/quicktime": ".mov",
   "video/mov": ".mov",
+  "application/x-figma": ".fig",
 };
 
+/** Filesystem- and URL-safe version of a user-supplied file name (keeps the extension). */
+export function safeFileName(name: string): string {
+  const ext = path.extname(name).replace(/[^\w.]/g, "").slice(0, 10);
+  const base = path.basename(name, path.extname(name))
+    .normalize("NFKD")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 100);
+  return `${base || "file"}${ext}`;
+}
+
+/** `<folder>/<uuid><ext>`, or `<folder>/<uuid>/<name>` when the original file name should survive download. */
+function objectKey(mimeType: string, folder?: string, fileName?: string): string {
+  const id = crypto.randomUUID();
+  const name = fileName ? `${id}/${safeFileName(fileName)}` : `${id}${EXT_MAP[mimeType] ?? ".bin"}`;
+  return folder ? `${folder}/${name}` : name;
+}
+
 export interface StorageAdapter {
-  /** Persist a file and return a URL the client and job runner can use. */
-  upload(buffer: Buffer, mimeType: string, folder?: string): Promise<string>;
+  /**
+   * Persist a file and return a URL the client and job runner can use.
+   * Pass fileName to keep it as the last URL segment (readable download name).
+   */
+  upload(buffer: Buffer, mimeType: string, folder?: string, fileName?: string): Promise<string>;
 
   /** Read a file back as a Buffer so adapters can upload it to platforms. */
   getBuffer(url: string): Promise<Buffer>;
@@ -51,13 +74,12 @@ export interface StorageAdapter {
 export class LocalDiskStorage implements StorageAdapter {
   constructor(private readonly uploadsDir: string) {}
 
-  async upload(buffer: Buffer, mimeType: string, folder?: string): Promise<string> {
-    const dir = folder ? path.join(this.uploadsDir, folder) : this.uploadsDir;
-    await fs.mkdir(dir, { recursive: true });
-    const ext = EXT_MAP[mimeType] ?? ".bin";
-    const filename = `${crypto.randomUUID()}${ext}`;
-    await fs.writeFile(path.join(dir, filename), buffer);
-    return folder ? `/uploads/${folder}/${filename}` : `/uploads/${filename}`;
+  async upload(buffer: Buffer, mimeType: string, folder?: string, fileName?: string): Promise<string> {
+    const key = objectKey(mimeType, folder, fileName);
+    const filepath = path.join(this.uploadsDir, key);
+    await fs.mkdir(path.dirname(filepath), { recursive: true });
+    await fs.writeFile(filepath, buffer);
+    return `/uploads/${key}`;
   }
 
   async getBuffer(url: string): Promise<Buffer> {
@@ -122,11 +144,8 @@ export class SupabaseStorage implements StorageAdapter {
     return { Authorization: `Bearer ${this.serviceKey}`, apikey: this.serviceKey };
   }
 
-  async upload(buffer: Buffer, mimeType: string, folder?: string): Promise<string> {
-    const ext = EXT_MAP[mimeType] ?? ".bin";
-    const filename = folder
-      ? `${folder}/${crypto.randomUUID()}${ext}`
-      : `${crypto.randomUUID()}${ext}`;
+  async upload(buffer: Buffer, mimeType: string, folder?: string, fileName?: string): Promise<string> {
+    const filename = objectKey(mimeType, folder, fileName);
     const res = await fetch(this.storageUrl(filename), {
       method: "POST",
       headers: { ...this.headers(), "Content-Type": mimeType },
@@ -200,11 +219,8 @@ export class R2Storage implements StorageAdapter {
     });
   }
 
-  async upload(buffer: Buffer, mimeType: string, folder?: string): Promise<string> {
-    const ext = EXT_MAP[mimeType] ?? ".bin";
-    const key = folder
-      ? `${folder}/${crypto.randomUUID()}${ext}`
-      : `${crypto.randomUUID()}${ext}`;
+  async upload(buffer: Buffer, mimeType: string, folder?: string, fileName?: string): Promise<string> {
+    const key = objectKey(mimeType, folder, fileName);
     await this.client.send(new PutObjectCommand({
       Bucket: this.bucket,
       Key: key,

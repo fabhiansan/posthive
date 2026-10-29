@@ -14,6 +14,7 @@ import cron from "node-cron";
 import { prisma } from "./prisma.js";
 import type { StorageAdapter } from "./storage.js";
 import { sendCleanupSummaryEmail } from "./mailer.js";
+import { withoutTemplateMedia } from "./templates.js";
 
 let storageAdapter: StorageAdapter | null = null;
 export function setCleanupStorage(s: StorageAdapter): void { storageAdapter = s; }
@@ -121,7 +122,8 @@ async function runCleanup(): Promise<void> {
         } catch { /* malformed content — skip */ }
       }
 
-      const uniqueUrls = [...new Set(allUrls)];
+      // Template design files are shared across posts — never clean them up here
+      const uniqueUrls = await withoutTemplateMedia([...new Set(allUrls)]);
       if (uniqueUrls.length) {
         const MEDIA_BATCH = 10;
         const MEDIA_DELAY_MS = 200;

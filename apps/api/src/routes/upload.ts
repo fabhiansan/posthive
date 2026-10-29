@@ -25,7 +25,7 @@ export async function uploadRoutes(
     // Verify ownership before touching storage
     const record = await prisma.upload.findFirst({ where: { url, userId } });
     if (!record) return reply.status(404).send({ error: "Upload not found" });
-    // Template designs are shared by every post made from the template — keep them
+    // Files a design template uses (and legacy kit designs posts share) — keep them
     if ((await withoutTemplateMedia([url])).length === 0) return reply.status(204).send();
     try {
       await storage.delete(url);

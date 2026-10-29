@@ -1,57 +1,114 @@
 import { prisma } from "./prisma.js";
 
+// Design templates (docs/content-types.md): the reference design for one content type
+// (Pillar + Category). Posts never copy template files; they only carry pillar/category.
+
+/** Max size of a template design file (.fig). */
+export const TEMPLATE_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
+export const TEMPLATE_SELECT = {
+  id: true,
+  name: true,
+  pillar: true,
+  category: true,
+  fileUrl: true,
+  fileName: true,
+  fileSize: true,
+  linkUrl: true,
+  previewUrl: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 /**
- * Drops URLs still used by a template. Posts made from a template share its design
- * files, so post cleanup (delete, edit, after publish) must never remove them.
+ * Drops URLs still used by a design template or by a legacy template kit. Posts made
+ * from a legacy kit share its design files, so post cleanup (delete, edit, after
+ * publish, failed-job cleanup) must never remove them.
  */
 export async function withoutTemplateMedia(urls: string[]): Promise<string[]> {
   if (!urls.length) return urls;
-  const templates = await prisma.template.findMany({
-    where: { OR: urls.map((url) => ({ content: { contains: url } })) },
-    select: { content: true },
-  });
-  if (!templates.length) return urls;
-  const inUse = new Set<string>();
+  const [templates, legacy] = await Promise.all([
+    prisma.template.findMany({
+      where: { OR: [{ fileUrl: { in: urls } }, { previewUrl: { in: urls } }] },
+      select: { fileUrl: true, previewUrl: true },
+    }),
+    prisma.legacyTemplateMedia.findMany({ where: { url: { in: urls } }, select: { url: true } }),
+  ]);
+  const inUse = new Set(legacy.map((l) => l.url));
   for (const t of templates) {
-    try {
-      for (const url of (JSON.parse(t.content) as { mediaUrls?: string[] }).mediaUrls ?? []) inUse.add(url);
-    } catch { /* malformed template content — ignore */ }
+    if (t.fileUrl) inUse.add(t.fileUrl);
+    if (t.previewUrl) inUse.add(t.previewUrl);
   }
   return urls.filter((url) => !inUse.has(url));
 }
 
+/** Storage URLs are relative for local disk; API clients need absolute ones. */
+export function absoluteUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  const base = (process.env.PUBLIC_API_URL ?? process.env.API_URL ?? `http://localhost:${process.env.PORT ?? 3001}`).replace(/\/$/, "");
+  return `${base}${url}`;
+}
+
+type TemplateFiles = {
+  fileUrl: string | null;
+  fileName: string | null;
+  fileSize: number | null;
+  linkUrl: string | null;
+  previewUrl: string | null;
+};
+
+/** The design reference returned by the public API and MCP (absolute URLs). */
+export function designReference(t: TemplateFiles) {
+  return {
+    fileUrl: t.fileUrl ? absoluteUrl(t.fileUrl) : null,
+    fileName: t.fileName,
+    fileSize: t.fileSize,
+    linkUrl: t.linkUrl,
+    previewUrl: t.previewUrl ? absoluteUrl(t.previewUrl) : null,
+  };
+}
+
+const FIG_MAGIC = Buffer.from("fig-kiwi");
+const ZIP_LOCAL = 0x04034b50;
+const ZIP_CENTRAL = 0x02014b50;
+const ZIP_END = 0x06054b50;
+
+/** Compression method and data offset of a ZIP entry, read from the central directory. */
+function zipEntry(buf: Buffer, name: string): { method: number; dataOffset: number } | null {
+  // The end-of-central-directory record sits in the last 22 bytes plus an optional comment
+  const stop = Math.max(0, buf.length - 22 - 0xffff);
+  for (let end = buf.length - 22; end >= stop; end--) {
+    if (buf.readUInt32LE(end) !== ZIP_END) continue;
+    const count = buf.readUInt16LE(end + 10);
+    let p = buf.readUInt32LE(end + 16);
+    for (let n = 0; n < count && p + 46 <= buf.length; n++) {
+      if (buf.readUInt32LE(p) !== ZIP_CENTRAL) return null;
+      const method = buf.readUInt16LE(p + 10);
+      const nameLen = buf.readUInt16LE(p + 28);
+      const skip = 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+      if (buf.toString("utf8", p + 46, p + 46 + nameLen) === name) {
+        const local = buf.readUInt32LE(p + 42);
+        if (local + 30 > buf.length || buf.readUInt32LE(local) !== ZIP_LOCAL) return null;
+        return { method, dataOffset: local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28) };
+      }
+      p += skip;
+    }
+    return null;
+  }
+  return null;
+}
+
 /**
- * Post content for a post created from a template via API/MCP: template fields plus
- * empty per-slide copy (Marketing fills it in) — design guidance stays on the template.
+ * True for a Figma design file: a .fig name and either the raw "fig-kiwi" format or a
+ * ZIP archive holding canvas.fig (the current "Save local copy" format). Browsers send
+ * no useful MIME type for .fig, so the bytes decide. FigJam/Slides canvases carry a
+ * different magic and are rejected when the entry is stored uncompressed.
  */
-export function postContentFromTemplate(
-  templateId: string,
-  tc: Record<string, unknown>,
-  text: string,
-  commentText: string | null,
-): Record<string, unknown> {
-  const slides = Array.isArray(tc.slides)
-    ? (tc.slides as { label?: string }[]).map((s) => ({ label: s.label ?? "", text: "" }))
-    : undefined;
-  return { ...tc, text, commentText, templateId, ...(slides ? { slides } : {}) };
-}
-
-/** True when a template has per-slide copy that must be typed in before scheduling. */
-export function templateNeedsCopy(tc: Record<string, unknown>): boolean {
-  return Array.isArray(tc.slides) && tc.slides.length > 0;
-}
-
-type SlideCopy = { label: string; text?: string }[];
-
-/** Labels of slides whose copy Marketing still has to fill in before the post leaves draft. */
-export function missingSlideCopy(slides: SlideCopy | undefined): string[] {
-  return (slides ?? []).filter((s) => !s.text?.trim()).map((s) => s.label);
-}
-
-/** 400 message when a stored post still has empty slide copy, else null. */
-export function slideCopyError(storedContent: string): string | null {
-  let slides: SlideCopy | undefined;
-  try { slides = (JSON.parse(storedContent) as { slides?: SlideCopy }).slides; } catch { return null; }
-  const empty = missingSlideCopy(slides);
-  return empty.length ? `Fill in the copywriting for: ${empty.join(", ")}` : null;
+export function isFigFile(fileName: string, buf: Buffer): boolean {
+  if (!/\.fig$/i.test(fileName)) return false;
+  if (buf.subarray(0, 8).equals(FIG_MAGIC)) return true;
+  if (buf.length < 22 || buf.readUInt32LE(0) !== ZIP_LOCAL) return false;
+  const canvas = zipEntry(buf, "canvas.fig");
+  if (!canvas) return false;
+  return canvas.method !== 0 || buf.subarray(canvas.dataOffset, canvas.dataOffset + 8).equals(FIG_MAGIC);
 }

@@ -179,7 +179,7 @@ async function main() {
   await app.register(uploadRoutes, { storage });
   if (process.env.ENABLE_BILLING === "true") await app.register(billingRoutes);
   await app.register(apiKeyRoutes);
-  await app.register(templateRoutes);
+  await app.register(templateRoutes, { storage });
   await app.register(workspaceRoutes);
   await app.register(publicApiRoutes, { storage });
   await app.register(mcpRoutes);

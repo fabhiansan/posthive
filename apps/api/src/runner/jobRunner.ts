@@ -257,7 +257,7 @@ export async function runJob(
       ...(content.mediaUrls ?? []),
       ...(content.youtubeThumbnailUrl ? [content.youtubeThumbnailUrl] : []),
     ];
-    // Template designs are shared across posts — never clean them up here
+    // Template files (incl. legacy kit designs posts may share) — never clean them up here
     const ownedUrls = await withoutTemplateMedia(urlsToClean.filter((url) => storage.ownsUrl(url)));
     if (ownedUrls.length) {
       await Promise.allSettled(
