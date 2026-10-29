@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { apiFetch } from "../../lib/api";
 import { CalendarView } from "../../components/CalendarView";
 import { PlatformIcon } from "../../components/PlatformIcon";
-import { EditPostDialog, type SlideCopy } from "../../components/EditPostDialog";
+import { EditPostDialog } from "../../components/EditPostDialog";
+import { toContentType, type ContentType } from "../../components/ContentTypeSelects";
+import type { DesignTemplate } from "../../lib/templates";
 import { ReviewDialog } from "../../components/ReviewDialog";
 import { DeleteConfirmDialog } from "../../components/DeleteConfirmDialog";
 import { useToast } from "../../components/Toast";
@@ -485,9 +487,12 @@ export default function JobsPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [bulkDeleteType, setBulkDeleteType] = useState<"selected" | "draft" | "pending" | "done" | "failed">("selected");
+  const [templates, setTemplates] = useState<DesignTemplate[]>([]);
 
   useEffect(() => {
     apiFetch<Account[]>("/accounts").then(setAccounts).catch(() => {});
+    // Design references for the edit and review dialogs
+    apiFetch<{ templates: DesignTemplate[] }>("/templates").then((d) => setTemplates(d.templates)).catch(() => {});
   }, []);
 
   async function reschedule(jobId: string, newDate: Date) {
@@ -591,6 +596,8 @@ export default function JobsPage() {
       youtubeVideoMode?: "upload" | "url";
       youtubeVideoUrl?: string;
       perAccount?: Record<string, { text?: string; commentText?: string }>;
+      pillar?: string | null;
+      category?: string | null;
     };
 
     // Extract YouTube title/description from its perAccount override
@@ -628,12 +635,14 @@ export default function JobsPage() {
       pinterestTitle,
       pinterestDescription,
       ...(Object.keys(perAccount).length > 0 ? { perAccount } : {}),
+      ...toContentType(content.pillar, content.category),
     }));
     router.push("/compose");
   }
 
   async function startRepeat(job: Job, interval: "daily" | "weekly" | "monthly", endsAt: string) {
-    const content = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: string; perAccount?: Record<string, unknown> };
+    const content = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: string; perAccount?: Record<string, unknown>; pillar?: string | null; category?: string | null };
+    const type = toContentType(content.pillar, content.category);
     const next = new Date();
     if (interval === "daily")   next.setDate(next.getDate() + 1);
     if (interval === "weekly")  next.setDate(next.getDate() + 7);
@@ -642,7 +651,7 @@ export default function JobsPage() {
     await apiFetch("/jobs", {
       method: "POST",
       body: JSON.stringify({
-        content: { text: content.text, mediaUrls: content.mediaUrls ?? [], mediaType: content.mediaType },
+        content: { text: content.text, mediaUrls: content.mediaUrls ?? [], mediaType: content.mediaType, ...(type.pillar || type.category ? type : {}) },
         commentText: job.commentText ?? undefined,
         accountIds: job.targets.map(t => t.accountId),
         scheduledFor: next.toISOString(),
@@ -669,7 +678,7 @@ export default function JobsPage() {
     }).catch(() => {});
   }
 
-  async function updateJob(jobId: string, text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[], perAccount: Record<string, PerAccountOverride>, mediaType?: "post" | "reel" | "story", youtubeType?: "short" | "video", youtubeVideoMode?: "upload" | "url", youtubeVideoUrl?: string, isDraft?: boolean, youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private", youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean, linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string, slides?: SlideCopy[]) {
+  async function updateJob(jobId: string, text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[], perAccount: Record<string, PerAccountOverride>, mediaType?: "post" | "reel" | "story", youtubeType?: "short" | "video", youtubeVideoMode?: "upload" | "url", youtubeVideoUrl?: string, isDraft?: boolean, youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private", youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean, linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string, contentType?: ContentType) {
     try {
       // Always patch content/accounts first
       await apiFetch(`/jobs/${jobId}`, {
@@ -692,7 +701,7 @@ export default function JobsPage() {
           ...(youtubeMadeForKids !== undefined ? { youtubeMadeForKids } : {}),
           ...(linkedinVisibility !== undefined ? { linkedinVisibility } : {}),
           ...(blueskyContentWarning !== undefined ? { blueskyContentWarning } : {}),
-          ...(slides ? { slides } : {}),
+          ...(contentType ? { pillar: contentType.pillar, category: contentType.category } : {}),
           ...(Object.keys(perAccount).length > 0 ? { perAccount } : { perAccount: {} }),
         }),
       });
@@ -863,9 +872,10 @@ export default function JobsPage() {
           open={!!editingJob}
           job={editingJob}
           accounts={accounts}
+          templates={templates}
           submitLabel={editingJob.status === "draft" && canSubmitOwn ? "Kirim untuk Review" : undefined}
-          onSave={async (text, commentText, scheduledFor, mediaUrls, accountIds, perAccount, mediaType, youtubeType, youtubeVideoMode, youtubeVideoUrl, youtubeThumbnailUrl, pixelfedSensitive, pixelfedVisibility, youtubeVisibility, youtubeTags, youtubeMadeForKids, linkedinVisibility, blueskyContentWarning, slides) => {
-            await updateJob(editingJob.id, text, commentText, scheduledFor, mediaUrls, accountIds, perAccount, mediaType, youtubeType, youtubeVideoMode, youtubeVideoUrl, editingJob.status === "draft", youtubeThumbnailUrl, pixelfedSensitive, pixelfedVisibility, youtubeVisibility, youtubeTags, youtubeMadeForKids, linkedinVisibility, blueskyContentWarning, slides);
+          onSave={async (text, commentText, scheduledFor, mediaUrls, accountIds, perAccount, mediaType, youtubeType, youtubeVideoMode, youtubeVideoUrl, youtubeThumbnailUrl, pixelfedSensitive, pixelfedVisibility, youtubeVisibility, youtubeTags, youtubeMadeForKids, linkedinVisibility, blueskyContentWarning, contentType) => {
+            await updateJob(editingJob.id, text, commentText, scheduledFor, mediaUrls, accountIds, perAccount, mediaType, youtubeType, youtubeVideoMode, youtubeVideoUrl, editingJob.status === "draft", youtubeThumbnailUrl, pixelfedSensitive, pixelfedVisibility, youtubeVisibility, youtubeTags, youtubeMadeForKids, linkedinVisibility, blueskyContentWarning, contentType);
           }}
           onClose={() => setEditingJob(null)}
         />
@@ -884,6 +894,7 @@ export default function JobsPage() {
       {reviewingJob && (
         <ReviewDialog
           job={reviewingJob}
+          templates={templates}
           onClose={() => setReviewingJob(null)}
           onApprove={async () => { await approveJob(reviewingJob); setReviewingJob(null); }}
           onReject={async (note) => { await rejectJob(reviewingJob, note); setReviewingJob(null); }}

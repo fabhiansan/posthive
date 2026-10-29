@@ -15,6 +15,10 @@ import { FirstComment } from "./composer/FirstComment";
 import { WarningsBar } from "./composer/WarningsBar";
 import { MediaSection } from "./composer/MediaSection";
 import { fromWibInput, toWibInput, wibDateKey } from "../lib/datetime";
+import { normalizeCategory } from "../lib/contentTypes";
+import { templatesByCategory, type DesignTemplate } from "../lib/templates";
+import { ContentTypeSelects, type ContentType } from "./ContentTypeSelects";
+import { DesignReferenceCard } from "./DesignReferenceCard";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -26,27 +30,24 @@ interface EditableJob {
   targets: Array<{ accountId: string }>;
 }
 
-// Copywriting per design slide when the post came from a template (docs/content-types.md)
-export interface SlideCopy {
-  label: string;
-  text: string;
-}
-
 interface Props {
   open: boolean;
   job: EditableJob;
   accounts: Account[];
   submitLabel?: string;
-  onSave: (text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[], perAccount: Record<string, PerAccountOverride>, mediaType?: "post" | "reel" | "story", youtubeType?: "short" | "video", youtubeVideoMode?: "upload" | "url", youtubeVideoUrl?: string, youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private", youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean, linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string, slides?: SlideCopy[]) => Promise<void>;
+  /** Design templates, to show the reference for the post's category. */
+  templates?: DesignTemplate[];
+  onSave: (text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[], perAccount: Record<string, PerAccountOverride>, mediaType?: "post" | "reel" | "story", youtubeType?: "short" | "video", youtubeVideoMode?: "upload" | "url", youtubeVideoUrl?: string, youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private", youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean, linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string, contentType?: ContentType) => Promise<void>;
   onClose: () => void;
 }
 
-export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClose }: Props) {
-  const parsedContent = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: "post" | "reel" | "story"; youtubeType?: "short" | "video"; youtubeVideoMode?: "upload" | "url"; youtubeVideoUrl?: string; youtubeThumbnailUrl?: string; perAccount?: Record<string, PerAccountOverride>; pixelfedSensitive?: boolean; pixelfedVisibility?: "public" | "unlisted" | "private"; linkedinVisibility?: "PUBLIC" | "CONNECTIONS"; blueskyContentWarning?: string; slides?: SlideCopy[] };
+export function EditPostDialog({ open, job, accounts, submitLabel, templates, onSave, onClose }: Props) {
+  const parsedContent = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: "post" | "reel" | "story"; youtubeType?: "short" | "video"; youtubeVideoMode?: "upload" | "url"; youtubeVideoUrl?: string; youtubeThumbnailUrl?: string; perAccount?: Record<string, PerAccountOverride>; pixelfedSensitive?: boolean; pixelfedVisibility?: "public" | "unlisted" | "private"; linkedinVisibility?: "PUBLIC" | "CONNECTIONS"; blueskyContentWarning?: string; pillar?: string | null; category?: string | null };
 
   const [text, setText] = useState(parsedContent.text);
   const [commentText, setCommentText] = useState(job.commentText ?? "");
-  const [slides, setSlides] = useState<SlideCopy[]>(parsedContent.slides ?? []);
+  // Content type is only sent when edited, so imported free-text values survive other edits
+  const [contentType, setContentType] = useState<ContentType | null>(null);
   const isDraft = job.status === "draft";
   const [scheduledFor, setScheduledFor] = useState(
     job.scheduledFor ? toWibInput(new Date(job.scheduledFor)) : toWibInput(new Date(Date.now() + 60 * 60 * 1000))
@@ -307,7 +308,7 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
     try {
       const hasLinkedin = selectedAccounts.some(a => a.platform === "linkedin");
       const hasBluesky = selectedAccounts.some(a => a.platform === "bluesky");
-      await onSave(text.trim(), commentText.trim(), date, mediaUrls, selectedIds, cleanOverrides, hasInstagram ? igMediaType : undefined, hasYoutube ? youtubeType : undefined, hasYoutube ? youtubeVideoMode : undefined, hasYoutube ? (youtubeVideoMode === "url" ? youtubeVideoUrl.trim() : "") : undefined, hasYoutube && youtubeThumbnailUrl ? youtubeThumbnailUrl : undefined, pixelfedSelected ? pixelfedSensitive : undefined, pixelfedSelected ? pixelfedVisibility : undefined, hasYoutube ? youtubeVisibility : undefined, hasYoutube && youtubeTags.trim() ? youtubeTags.split(",").map(t => t.trim()).filter(Boolean) : undefined, hasYoutube ? youtubeMadeForKids : undefined, hasLinkedin ? linkedinVisibility : undefined, hasBluesky ? (blueskyContentWarning || undefined) : undefined, slides.length > 0 ? slides : undefined);
+      await onSave(text.trim(), commentText.trim(), date, mediaUrls, selectedIds, cleanOverrides, hasInstagram ? igMediaType : undefined, hasYoutube ? youtubeType : undefined, hasYoutube ? youtubeVideoMode : undefined, hasYoutube ? (youtubeVideoMode === "url" ? youtubeVideoUrl.trim() : "") : undefined, hasYoutube && youtubeThumbnailUrl ? youtubeThumbnailUrl : undefined, pixelfedSelected ? pixelfedSensitive : undefined, pixelfedSelected ? pixelfedVisibility : undefined, hasYoutube ? youtubeVisibility : undefined, hasYoutube && youtubeTags.trim() ? youtubeTags.split(",").map(t => t.trim()).filter(Boolean) : undefined, hasYoutube ? youtubeMadeForKids : undefined, hasLinkedin ? linkedinVisibility : undefined, hasBluesky ? (blueskyContentWarning || undefined) : undefined, contentType ?? undefined);
       onClose();
     } catch (e) {
       setSaveError(e instanceof Error ? e.message.replace(/^API PATCH.*→ \d+: /, "") : "Save failed");
@@ -511,23 +512,25 @@ export function EditPostDialog({ open, job, accounts, submitLabel, onSave, onClo
             )}
           </div>
 
-          {/* Copywriting per slide — fixing a rejected template post */}
-          {slides.length > 0 && (
-            <div className="px-6 py-5" style={{ borderBottom: "1px solid #1e1e1e" }}>
-              <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#444" }}>Copywriting per slide</span>
-              <div className="mt-2 space-y-2.5">
-                {slides.map((slide, i) => (
-                  <label key={i} className="block">
-                    <span className="block text-xs font-semibold" style={{ color: "#ededed" }}>{slide.label}</span>
-                    <textarea value={slide.text} rows={2}
-                      onChange={(e) => { const copy = e.target.value.slice(0, 2000); setSlides((prev) => prev.map((x, j) => (j === i ? { ...x, text: copy } : x))); }}
-                      className="w-full mt-1 rounded-xl border px-3 py-2 text-sm focus:outline-none resize-y"
-                      style={{ backgroundColor: "#111111", borderColor: "#2a2a2a", color: "#ededed" }} />
-                  </label>
-                ))}
-              </div>
+          {/* Content type — the design template for it is a reference, never attached */}
+          <div className="px-6 py-5" style={{ borderBottom: "1px solid #1e1e1e" }}>
+            <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#444" }}>Content type</span>
+            <div className="mt-2">
+              <ContentTypeSelects idPrefix="edit-post"
+                pillar={contentType ? contentType.pillar : parsedContent.pillar}
+                category={contentType ? contentType.category : parsedContent.category}
+                onChange={setContentType}
+                selectStyle={{ backgroundColor: "#111111", border: "1px solid #2a2a2a", borderRadius: 12, padding: "8px 12px", fontSize: 14, color: "#ededed" }} />
             </div>
-          )}
+            {(() => {
+              const category = normalizeCategory(contentType ? contentType.category : parsedContent.category);
+              return category && templates ? (
+                <div className="mt-3">
+                  <DesignReferenceCard template={templatesByCategory(templates).get(category)} category={category} />
+                </div>
+              ) : null;
+            })()}
+          </div>
 
           {/* Caption */}
           <div className="px-6 py-5" style={{ display: noPostTextNeeded ? "none" : undefined }}>

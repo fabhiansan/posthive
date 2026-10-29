@@ -1,53 +1,52 @@
-import { CATEGORY_INFO, type Category } from "./contentTypes";
+import { normalizeCategory, type Category, type Pillar } from "./contentTypes";
 
-// Template kit as returned by GET /templates (content is a JSON string).
-export interface RawTemplate {
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+
+// Design template as returned by GET /templates (docs/content-types.md): the reference
+// design for one content type. A post only takes its pillar and category, never its files.
+export interface DesignTemplate {
   id: string;
   name: string;
-  content: string;
+  pillar: Pillar | null;
+  category: Category;
+  fileUrl: string | null;
+  fileName: string | null;
+  fileSize: number | null;
+  linkUrl: string | null;
+  previewUrl: string | null;
   updatedAt?: string;
 }
 
-export interface TemplateSlide {
-  label: string;
-  guide: string;
+/** Storage URLs are relative when the API stores files on local disk. */
+export function fileHref(url: string): string {
+  return /^https?:\/\//i.test(url) ? url : `${API_BASE}${url}`;
 }
 
-export interface TemplateKit {
-  id: string;
-  name: string;
-  updatedAt?: string;
-  text: string;
-  commentText?: string;
-  mediaUrls: string[];
-  /** Missing on caption-only templates saved before the template kit. */
-  category?: Category;
-  pillar: string | null;
-  format: "carousel" | "poster";
-  slides: TemplateSlide[];
+export function isFigmaLink(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "figma.com" || host.endsWith(".figma.com");
+  } catch {
+    return false;
+  }
 }
 
-export function parseTemplate(raw: RawTemplate): TemplateKit {
-  const c = (() => { try { return JSON.parse(raw.content) as Record<string, unknown>; } catch { return {}; } })();
-  const category = typeof c.category === "string" && c.category in CATEGORY_INFO ? (c.category as Category) : undefined;
-  const mediaUrls = Array.isArray(c.mediaUrls) ? (c.mediaUrls as string[]) : [];
-  return {
-    id: raw.id,
-    name: raw.name,
-    updatedAt: raw.updatedAt,
-    text: typeof c.text === "string" ? c.text : "",
-    commentText: typeof c.commentText === "string" ? c.commentText : undefined,
-    mediaUrls,
-    category,
-    pillar: category ? CATEGORY_INFO[category].pillar : null,
-    format: c.format === "poster" ? "poster" : "carousel",
-    slides: Array.isArray(c.slides) ? (c.slides as TemplateSlide[]) : [],
-  };
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-/** "Carousel, 5 slides" / "Poster" / "Caption only". */
-export function formatSummary(t: TemplateKit): string {
-  if (t.mediaUrls.length === 0) return "Caption only";
-  if (t.format === "poster") return "Poster";
-  return `Carousel, ${t.mediaUrls.length} slide${t.mediaUrls.length === 1 ? "" : "s"}`;
+/** Migrated templates have only a preview until the design team adds a file or link. */
+export function isIncomplete(t: DesignTemplate): boolean {
+  return !t.fileUrl && !t.linkUrl;
+}
+
+/** Category → template. The API lists newest first, so the newest wins if a category has more than one. */
+export function templatesByCategory(list: DesignTemplate[]): Map<Category, DesignTemplate> {
+  const map = new Map<Category, DesignTemplate>();
+  for (const t of list) {
+    const category = normalizeCategory(t.category);
+    if (category && !map.has(category)) map.set(category, t);
+  }
+  return map;
 }

@@ -6,6 +6,9 @@ import { PlatformIcon } from "./PlatformIcon";
 import { PlatformPreview, PLATFORM_LIMIT, countGraphemes, type Account } from "./PlatformPreview";
 import { MediaStage, toMediaItems } from "./MediaStage";
 import { formatDateTime } from "../lib/datetime";
+import { normalizeCategory } from "../lib/contentTypes";
+import { templatesByCategory, type DesignTemplate } from "../lib/templates";
+import { DesignReferenceCard } from "./DesignReferenceCard";
 
 const NOTE_MAX = 2000; // matches the /jobs/:id/reject body schema
 
@@ -18,13 +21,16 @@ interface ReviewContent {
   perAccount?: Record<string, { text?: string; commentText?: string }>;
   category?: string;
   pillar?: string | null;
+  /** Legacy template-kit posts only; shown read-only. */
   slides?: { label: string; text: string }[];
 }
 
 // Full-size review of a post awaiting design approval: large media, full copy and
 // per-platform preview, then approve or reject (reject requires a note).
-export function ReviewDialog({ job, onClose, onApprove, onReject }: {
+export function ReviewDialog({ job, templates, onClose, onApprove, onReject }: {
   job: Job;
+  /** Design templates, to show the reference for the post's category. */
+  templates?: DesignTemplate[];
   onClose: () => void;
   onApprove: () => Promise<void>;
   onReject: (note: string) => Promise<void>;
@@ -32,7 +38,7 @@ export function ReviewDialog({ job, onClose, onApprove, onReject }: {
   const content = (() => { try { return JSON.parse(job.content) as ReviewContent; } catch { return {} as ReviewContent; } })();
   const media = toMediaItems(content.mediaUrls ?? []);
   const slides = content.slides ?? [];
-  // Slide copy lines up with the designs when the post came from a template
+  // Legacy template-kit posts: slide copy lines up with the designs
   const slidesMatchMedia = slides.length > 0 && slides.length === media.length;
   const accounts: Account[] = job.targets.map((t) => ({
     id: t.accountId,
@@ -55,6 +61,8 @@ export function ReviewDialog({ job, onClose, onApprove, onReject }: {
   const limit = previewAccount ? PLATFORM_LIMIT[previewAccount.platform] : undefined;
   const previewLength = countGraphemes(previewText);
   const overrides = accounts.filter((a) => content.perAccount?.[a.id]?.text?.trim());
+  const category = normalizeCategory(content.category);
+  const reference = category && templates ? templatesByCategory(templates).get(category) : undefined;
 
   useEffect(() => { dialogRef.current?.focus(); }, []);
 
@@ -140,6 +148,7 @@ export function ReviewDialog({ job, onClose, onApprove, onReject }: {
           <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
             {tab === "copy" ? (
               <div className="space-y-5" style={{ maxWidth: "68ch" }}>
+                {category && templates && <DesignReferenceCard template={reference} category={category} />}
                 {slides.length > 0 && (
                   <section>
                     <h3 className="text-xs font-semibold mb-1.5" style={{ color: "#888" }}>Copywriting per slide</h3>

@@ -26,8 +26,9 @@ import { fromWibInput, toWibInput, wibDateKey } from "../../lib/datetime";
 import { MediaSection } from "../../components/composer/MediaSection";
 import { RepeatPicker } from "../../components/RepeatPicker";
 import { useWorkspace } from "../../context/WorkspaceContext";
-import { toMediaItems } from "../../components/MediaStage";
-import { parseTemplate, formatSummary, type RawTemplate, type TemplateKit } from "../../lib/templates";
+import { fileHref, templatesByCategory, type DesignTemplate } from "../../lib/templates";
+import { ContentTypeSelects, toContentType, type ContentType } from "../../components/ContentTypeSelects";
+import { DesignReferenceCard } from "../../components/DesignReferenceCard";
 import Link from "next/link";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -89,13 +90,11 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   const [allowReels, setAllowReels] = useState(true); // optimistic; corrected after fetch
   const [maxImagesPerPost, setMaxImagesPerPost] = useState(10); // optimistic; corrected after fetch
   const { success: toastSuccess, error: toastError, warning: toastWarning } = useToast();
-  const [templates, setTemplates] = useState<RawTemplate[]>([]);
+  const [templates, setTemplates] = useState<DesignTemplate[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
-  // Template kit in use: its designs are attached and Marketing types the copy per slide
-  const [appliedTemplate, setAppliedTemplate] = useState<TemplateKit | null>(null);
-  const [slideCopy, setSlideCopy] = useState<{ label: string; guide: string; text: string }[]>([]);
-  // Template designs belong to the template — never delete them from storage here
-  const templateMediaRef = useRef<Set<string>>(new Set());
+  // Content type (docs/content-types.md). Picking a template only sets this — the
+  // template's design stays a reference and is never attached to the post.
+  const [contentType, setContentType] = useState<ContentType>({ pillar: null, category: null });
   const [showReorder, setShowReorder] = useState(false);
   const [accountOrder, setAccountOrder] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem("posthive_account_order") ?? "[]"); } catch { return []; }
@@ -149,6 +148,8 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
         pinterestTitle?: string;
         pinterestDescription?: string;
         perAccount?: Record<string, { text?: string; commentText?: string }>;
+        pillar?: string | null;
+        category?: string | null;
       };
       setText(draft.text);
       setCommentText(draft.commentText);
@@ -162,6 +163,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
       if (draft.pinterestTitle !== undefined) setPinterestTitle(draft.pinterestTitle);
       if (draft.pinterestDescription !== undefined) setPinterestDescription(draft.pinterestDescription);
       if (draft.perAccount) setPerAccountOverrides(draft.perAccount);
+      setContentType(toContentType(draft.pillar, draft.category));
     } catch { /* malformed draft — ignore */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -171,7 +173,6 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     return () => {
       mediaItemsRef.current.forEach(m => {
         URL.revokeObjectURL(m.previewUrl);
-        if (templateMediaRef.current.has(m.url)) return;
         fetch(`${API_BASE}/upload`, { method: "DELETE", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: m.url }) }).catch(() => {});
       });
     };
@@ -208,7 +209,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
       .then((data) => setGroups(data))
       .catch(() => {});
 
-    apiFetch<{ templates: RawTemplate[] }>("/templates")
+    apiFetch<{ templates: DesignTemplate[] }>("/templates")
       .then((data) => {
         setTemplates(data.templates);
         // Opened from the Template Library: /compose?template=<id>
@@ -295,7 +296,6 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     e.preventDefault(); uploadFiles(files);
   }
   function deleteFromStorage(url: string) {
-    if (templateMediaRef.current.has(url)) return;
     fetch(`${API_BASE}/upload`, { method: "DELETE", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) }).catch(() => {});
   }
 
@@ -368,10 +368,6 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   }
 
   function removeMediaItem(i: number) {
-    if (templateMediaRef.current.has(mediaItems[i]?.url)) {
-      toastWarning("Template designs stay with the post. Remove the template to drop them.");
-      return;
-    }
     setMediaItems((prev) => {
       const item = prev[i];
       URL.revokeObjectURL(item.previewUrl);
@@ -399,8 +395,6 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   }
 
   function validateBeforeSubmit(): string | null {
-    const emptySlides = slideCopy.filter((s) => !s.text.trim()).map((s) => s.label);
-    if (emptySlides.length) return `Fill in the copywriting for: ${emptySlides.join(", ")}.`;
     if (selectedIds.length === 0) return "Select at least one account to post to.";
 
     const hasInstagram = selectedAccounts.some((a) => a.platform === "instagram");
@@ -454,52 +448,18 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     return null;
   }
 
-  function applyTemplate(raw: RawTemplate) {
-    const kit = parseTemplate(raw);
+  // A template is a design reference: it only sets the content type. Media, caption and
+  // schedule are left as they are; the design file/link shows in the reference card.
+  function applyTemplate(t: DesignTemplate) {
     setShowTemplates(false);
-    if (!kit.category) {
-      // Caption-only template saved before the template kit
-      const content = (() => { try { return JSON.parse(raw.content) as { youtubeTitle?: string; youtubeDescription?: string; youtubeType?: "short" | "video"; pinterestTitle?: string; pinterestDescription?: string }; } catch { return {}; } })();
-      setText(kit.text);
-      if (kit.commentText !== undefined) setCommentText(kit.commentText);
-      if (content.youtubeTitle !== undefined) setYoutubeTitle(content.youtubeTitle);
-      if (content.youtubeDescription !== undefined) setYoutubeDescription(content.youtubeDescription);
-      if (content.youtubeType) setYoutubeType(content.youtubeType);
-      if (content.pinterestTitle !== undefined) setPinterestTitle(content.pinterestTitle);
-      if (content.pinterestDescription !== undefined) setPinterestDescription(content.pinterestDescription);
-      toastSuccess(`Template "${kit.name}" loaded.`);
-      return;
-    }
-    // Swap any attached media for the template designs
-    mediaItemsRef.current.forEach((m) => { URL.revokeObjectURL(m.previewUrl); deleteFromStorage(m.url); });
-    templateMediaRef.current = new Set(kit.mediaUrls);
-    setMediaItems(toMediaItems(kit.mediaUrls));
-    setAltTexts(kit.mediaUrls.map(() => ""));
-    setIgMediaType("post");
-    setText(kit.text);
-    setCommentText(kit.commentText ?? "");
-    setAppliedTemplate(kit);
-    setSlideCopy(kit.slides.map((s) => ({ label: s.label, guide: s.guide, text: "" })));
-    toastSuccess(`Template "${kit.name}" applied. Type the copy for each slide.`);
+    setContentType({ pillar: t.pillar, category: t.category });
+    toastSuccess(`Content type set to ${t.category}. Open the design from the reference card.`);
   }
 
-  function removeTemplate() {
-    const urls = templateMediaRef.current;
-    templateMediaRef.current = new Set();
-    setMediaItems((prev) => prev.filter((m) => !urls.has(m.url)));
-    setAltTexts((prev) => prev.filter((_, i) => !urls.has(mediaItems[i]?.url)));
-    setAppliedTemplate(null);
-    setSlideCopy([]);
-  }
-
-  // Template fields sent with the post (docs/content-types.md)
-  function templateContent() {
-    if (!appliedTemplate) return {};
-    return {
-      templateId: appliedTemplate.id,
-      category: appliedTemplate.category,
-      slides: slideCopy.map(({ label, text: copy }) => ({ label, text: copy })),
-    };
+  // Content type sent with the post; the API derives the pillar from the category
+  function contentTypeFields() {
+    if (!contentType.pillar && !contentType.category) return {};
+    return { pillar: contentType.pillar, category: contentType.category };
   }
 
   function resetForm() {
@@ -518,7 +478,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
     setPerAccountOverrides({}); setShowCustomize(false); setUploadError(null);
     mediaItems.forEach(m => URL.revokeObjectURL(m.previewUrl));
     setMediaItems([]); setAltTexts([]);
-    templateMediaRef.current = new Set(); setAppliedTemplate(null); setSlideCopy([]);
+    setContentType({ pillar: null, category: null });
     setRepeatInterval(""); setRepeatEndsAt("");
   }
 
@@ -551,7 +511,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
             ...(linkedinSelected ? { linkedinVisibility } : {}),
             ...(blueskySelected && blueskyContentWarning ? { blueskyContentWarning } : {}),
             ...(Object.keys(cleanOverrides).length > 0 ? { perAccount: cleanOverrides } : {}),
-            ...templateContent(),
+            ...contentTypeFields(),
           },
           commentText: commentText.trim() || undefined,
           accountIds: selectedIds,
@@ -598,7 +558,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
             ...(linkedinSelected ? { linkedinVisibility } : {}),
             ...(blueskySelected && blueskyContentWarning ? { blueskyContentWarning } : {}),
             ...(Object.keys(cleanOverrides).length > 0 ? { perAccount: cleanOverrides } : {}),
-            ...templateContent(),
+            ...contentTypeFields(),
           },
           commentText: commentText.trim() || undefined,
           accountIds: selectedIds,
@@ -671,6 +631,8 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
   const onlyPinterest = pinterestSelected && selectedAccounts.every((a) => a.platform === "pinterest");
   // True when every selected account is YouTube or Pinterest — both have their own title/description fields
   const noPostTextNeeded = selectedAccounts.length > 0 && selectedAccounts.every((a) => a.platform === "youtube" || a.platform === "pinterest");
+  // One design template per category — the reference card looks it up by the post's category
+  const templateMap = templatesByCategory(templates);
   // Telegram channels don't support first comments — hide the field when all selected accounts don't support comments
   const NO_COMMENT_PLATFORMS = new Set(["pinterest", "telegram", "tumblr", "linkedin", "tiktok"]);
   const noCommentSupport = selectedAccounts.length > 0 && selectedAccounts.every((a) => NO_COMMENT_PLATFORMS.has(a.platform));
@@ -935,46 +897,60 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
             </div>
           )}
 
-          {/* Template copy — Marketing types the copywriting for each design slide */}
-          {appliedTemplate && !loadingAccounts && (
+          {/* Content type — a template only fills this in; its design stays a reference */}
+          {!loadingAccounts && (
             <div className="px-6 py-5" style={{ borderBottom: "1px solid #1e1e1e" }}>
-              <div className="flex items-start gap-3 mb-3">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold" style={{ color: "#ededed" }}>Copywriting per slide</p>
-                  <p className="text-xs mt-0.5" style={{ color: "#888" }}>
-                    {appliedTemplate.name}. {appliedTemplate.category}{appliedTemplate.pillar ? `, ${appliedTemplate.pillar} pillar` : ""}.
-                  </p>
-                </div>
-                <button type="button" onClick={removeTemplate}
-                  className="text-xs font-medium px-2.5 py-1 rounded-lg hover:bg-white/5 flex-shrink-0"
-                  style={{ color: "#888", border: "1px solid #2a2a2a" }}>
-                  Remove template
-                </button>
-              </div>
-              <ol className="space-y-2.5">
-                {slideCopy.map((slide, i) => {
-                  const design = toMediaItems(appliedTemplate.mediaUrls.slice(i, i + 1))[0];
-                  return (
-                    <li key={i} className="flex gap-3">
-                      {design && (
-                        <a href={design.previewUrl} target="_blank" rel="noopener noreferrer" className="flex-shrink-0" aria-label={`Open the ${slide.label} design`}>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={design.previewUrl} alt="" className="rounded-lg object-cover" style={{ width: 56, height: 70, border: "1px solid #2a2a2a" }} />
-                        </a>
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <span className="text-xs font-semibold uppercase tracking-wide">Content type</span>
+                <div ref={templatesRef} style={{ position: "relative" }}>
+                  <button type="button" onClick={() => setShowTemplates(v => !v)} aria-expanded={showTemplates}
+                    className="flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
+                    style={{ color: "#888" }}>
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                    Pick from templates
+                  </button>
+                  {showTemplates && (
+                    <div className="absolute top-6 right-0 z-30 w-72 rounded-xl overflow-hidden shadow-xl"
+                      style={{ backgroundColor: "#161616", border: "1px solid #2a2a2a" }}>
+                      {templates.length === 0 ? (
+                        <p className="px-3 py-4 text-xs text-center" style={{ color: "#888" }}>No templates yet. The design team adds them in Templates.</p>
+                      ) : (
+                        <ul className="max-h-72 overflow-y-auto">
+                          {[...templateMap.values()].map(t => (
+                            <li key={t.id}>
+                              <button type="button" onClick={() => applyTemplate(t)}
+                                className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-white/5 transition-colors">
+                                {t.previewUrl ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={fileHref(t.previewUrl)} alt="" className="w-8 h-10 rounded object-cover flex-shrink-0" style={{ border: "1px solid #2a2a2a" }} />
+                                ) : (
+                                  <span className="w-8 h-10 rounded flex-shrink-0 flex items-center justify-center text-[9px] font-bold" style={{ border: "1px solid #2a2a2a", color: "#888" }}>FIG</span>
+                                )}
+                                <span className="min-w-0">
+                                  <span className="block text-xs font-medium truncate" style={{ color: "#ededed" }}>{t.category}</span>
+                                  <span className="block text-[11px] truncate" style={{ color: "#888" }}>{t.pillar ?? "No pillar"}</span>
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
                       )}
-                      <label className="flex-1 min-w-0">
-                        <span className="block text-xs font-semibold" style={{ color: "#ededed" }}>{slide.label}</span>
-                        {slide.guide && <span className="block text-xs mt-0.5" style={{ color: "#888" }}>{slide.guide}</span>}
-                        <textarea value={slide.text} rows={2}
-                          onChange={(e) => { const copy = e.target.value.slice(0, 2000); setSlideCopy((prev) => prev.map((x, j) => (j === i ? { ...x, text: copy } : x))); }}
-                          placeholder="Paste or type the copy for this slide"
-                          className="w-full mt-1.5 rounded-xl border px-3 py-2 text-sm focus:outline-none resize-y"
-                          style={{ backgroundColor: "#111111", borderColor: "#2a2a2a", color: "#ededed" }} />
-                      </label>
-                    </li>
-                  );
-                })}
-              </ol>
+                      <Link href="/templates" className="block px-3 py-2 text-xs font-medium hover:bg-white/5" style={{ color: "#ededed", borderTop: "1px solid #2a2a2a" }}>
+                        Browse all templates
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <ContentTypeSelects idPrefix="compose" pillar={contentType.pillar} category={contentType.category} onChange={setContentType}
+                selectStyle={{ backgroundColor: "#111111", border: "1px solid #2a2a2a", borderRadius: 12, padding: "8px 12px", fontSize: 14, color: "#ededed" }} />
+              {contentType.category && (
+                <div className="mt-3">
+                  <DesignReferenceCard template={templateMap.get(contentType.category)} category={contentType.category} showPreview />
+                </div>
+              )}
             </div>
           )}
 
@@ -1006,53 +982,6 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
                 )}
               </div>
               <div className="flex items-center gap-3">
-                {/* Templates — hidden when only YouTube selected */}
-                {!noPostTextNeeded && (
-                  <div className="flex items-center gap-2" ref={templatesRef} style={{ position: "relative" }}>
-                    <button type="button" onClick={() => setShowTemplates(v => !v)}
-                      className="flex items-center gap-1 text-[11px] font-medium transition-opacity hover:opacity-80"
-                      style={{ color: "#888" }}>
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                      </svg>
-                      Templates
-                    </button>
-                    {showTemplates && (
-                      <div className="absolute top-6 right-0 z-30 w-72 rounded-xl overflow-hidden shadow-xl"
-                        style={{ backgroundColor: "#161616", border: "1px solid #2a2a2a" }}>
-                        {templates.length === 0 ? (
-                          <p className="px-3 py-4 text-xs text-center" style={{ color: "#888" }}>No templates yet. The design team adds them in Templates.</p>
-                        ) : (
-                          <ul className="max-h-72 overflow-y-auto">
-                            {templates.map(raw => {
-                              const kit = parseTemplate(raw);
-                              return (
-                                <li key={raw.id}>
-                                  <button type="button" onClick={() => applyTemplate(raw)}
-                                    className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-white/5 transition-colors">
-                                    {kit.mediaUrls[0] ? (
-                                      // eslint-disable-next-line @next/next/no-img-element
-                                      <img src={toMediaItems(kit.mediaUrls.slice(0, 1))[0].previewUrl} alt="" className="w-8 h-10 rounded object-cover flex-shrink-0" style={{ border: "1px solid #2a2a2a" }} />
-                                    ) : (
-                                      <span className="w-8 h-10 rounded flex-shrink-0" style={{ border: "1px solid #2a2a2a" }} />
-                                    )}
-                                    <span className="min-w-0">
-                                      <span className="block text-xs font-medium truncate" style={{ color: "#ededed" }}>{kit.name}</span>
-                                      <span className="block text-[11px] truncate" style={{ color: "#888" }}>{kit.category ?? "No category"}, {formatSummary(kit).toLowerCase()}</span>
-                                    </span>
-                                  </button>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        )}
-                        <Link href="/templates" className="block px-3 py-2 text-xs font-medium hover:bg-white/5" style={{ color: "#ededed", borderTop: "1px solid #2a2a2a" }}>
-                          Browse all templates
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                )}
                 {/* Instagram format toggle */}
                 {instagramSelected && (
                 <div className="flex items-center gap-1.5">
