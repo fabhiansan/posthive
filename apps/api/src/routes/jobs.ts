@@ -13,8 +13,8 @@ import { enforcePlan } from "../lib/enforcePlan.js";
 import { getPlan } from "../lib/plans.js";
 import type { StorageAdapter } from "../lib/storage.js";
 import { adapters } from "../adapters/index.js";
-import { withoutTemplateMedia, missingSlideCopy, slideCopyError } from "../lib/templates.js";
-import { CATEGORIES, pillarFor } from "../lib/contentTypes.js";
+import { withoutTemplateMedia } from "../lib/templates.js";
+import { CATEGORIES, PILLARS, pillarFor, type Category, type Pillar } from "../lib/contentTypes.js";
 
 const TARGET_SELECT = {
   id: true, accountId: true, status: true,
@@ -27,11 +27,16 @@ const perAccountOverrideSchema = z.object({
   commentText: z.string().optional(),
 });
 
-// Template kit fields (docs/content-types.md) — copywriting per design slide
-const slideCopySchema = z.array(z.object({
-  label: z.string().trim().min(1).max(40),
-  text: z.string().max(2000),
-})).max(20);
+// Content type (docs/content-types.md). The pillar always follows the category; a
+// pillar alone is allowed while the category is still undecided.
+type ContentType = { pillar: Pillar | null; category: Category | null };
+
+function contentType(pillar: Pillar | null | undefined, category: Category | null | undefined): ContentType | { error: string } {
+  if (!category) return { pillar: pillar ?? null, category: null };
+  const derived = pillarFor(category);
+  if (pillar !== undefined && pillar !== derived) return { error: `${category} belongs to ${derived ?? "no pillar"}` };
+  return { pillar: derived, category };
+}
 
 const createJobBody = z.object({
   scheduledFor: z.string().datetime().optional(),
@@ -57,10 +62,9 @@ const createJobBody = z.object({
     blueskyLanguage: z.string().optional(),
     blueskyContentWarning: z.string().optional(),
     perAccount: z.record(z.string().cuid(), perAccountOverrideSchema).optional(),
-    templateId: z.string().cuid().optional(),
     title: z.string().max(200).optional(),
-    category: z.enum(CATEGORIES).optional(),
-    slides: slideCopySchema.optional(),
+    pillar: z.enum(PILLARS).nullable().optional(),
+    category: z.enum(CATEGORIES).nullable().optional(),
   }),
   commentText: z.string().optional(),
   accountIds: z.array(z.string().cuid()).min(1),
@@ -97,10 +101,9 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (!draft && !scheduledFor) {
       return reply.status(400).send({ error: "scheduledFor is required when not saving as draft" });
     }
-    const emptySlides = draft ? [] : missingSlideCopy(content.slides);
-    if (emptySlides.length) {
-      return reply.status(400).send({ error: `Fill in the copywriting for: ${emptySlides.join(", ")}` });
-    }
+    const { pillar, category, ...postContent } = content;
+    const type = pillar !== undefined || category !== undefined ? contentType(pillar, category) : null;
+    if (type && "error" in type) return reply.status(400).send({ error: type.error });
 
     // Approval gate — member posts in approval-enabled workspaces stay drafts
     // awaiting design review; scheduledFor is kept as the requested time.
@@ -154,7 +157,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
           status: draft || needsReview ? "draft" : "pending",
           approvalStatus: needsReview ? "pending" : null,
           // Pillar is derived from the category, never trusted from the client
-          content: JSON.stringify(content.category ? { ...content, pillar: pillarFor(content.category) } : content),
+          content: JSON.stringify(type ? { ...postContent, ...type } : postContent),
           commentText: commentText ?? null,
           dryRun,
           userId,
@@ -370,9 +373,14 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       blueskyContentWarning: z.string().optional(),
       accountIds: z.array(z.string().cuid()).min(1).optional(),
       perAccount: z.record(z.string().cuid(), perAccountOverrideSchema).optional(),
-      slides: slideCopySchema.optional(),
+      // Sent together; category null clears both
+      pillar: z.enum(PILLARS).nullable().optional(),
+      category: z.enum(CATEGORIES).nullable().optional(),
     }).safeParse(req.body);
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+    const typeChanged = body.data.pillar !== undefined || body.data.category !== undefined;
+    const type = typeChanged ? contentType(body.data.pillar, body.data.category) : null;
+    if (type && "error" in type) return reply.status(400).send({ error: type.error });
 
     const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, content: true, userId: true, approvalStatus: true } });
     if (!job) return reply.status(404).send({ error: "Job not found" });
@@ -407,7 +415,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (body.data.scheduledFor) {
       updateData.scheduledFor = new Date(body.data.scheduledFor);
     }
-    if (body.data.text !== undefined || body.data.mediaUrls !== undefined || body.data.mediaType !== undefined || body.data.youtubeType !== undefined || body.data.youtubeVideoMode !== undefined || body.data.youtubeVideoUrl !== undefined || body.data.youtubeThumbnailUrl !== undefined || body.data.pixelfedSensitive !== undefined || body.data.pixelfedVisibility !== undefined || body.data.youtubeVisibility !== undefined || body.data.youtubeTags !== undefined || body.data.youtubeMadeForKids !== undefined || body.data.linkedinVisibility !== undefined || body.data.blueskyLanguage !== undefined || body.data.blueskyContentWarning !== undefined || body.data.perAccount !== undefined || body.data.slides !== undefined) {
+    if (body.data.text !== undefined || body.data.mediaUrls !== undefined || body.data.mediaType !== undefined || body.data.youtubeType !== undefined || body.data.youtubeVideoMode !== undefined || body.data.youtubeVideoUrl !== undefined || body.data.youtubeThumbnailUrl !== undefined || body.data.pixelfedSensitive !== undefined || body.data.pixelfedVisibility !== undefined || body.data.youtubeVisibility !== undefined || body.data.youtubeTags !== undefined || body.data.youtubeMadeForKids !== undefined || body.data.linkedinVisibility !== undefined || body.data.blueskyLanguage !== undefined || body.data.blueskyContentWarning !== undefined || body.data.perAccount !== undefined || typeChanged) {
       const existing = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: string; youtubeType?: string; youtubeVideoMode?: string; youtubeVideoUrl?: string; youtubeThumbnailUrl?: string; pixelfedSensitive?: boolean; pixelfedVisibility?: string; youtubeVisibility?: string; youtubeTags?: string[]; youtubeMadeForKids?: boolean; linkedinVisibility?: string; blueskyLanguage?: string; blueskyContentWarning?: string; perAccount?: Record<string, unknown> };
       updateData.content = JSON.stringify({
         ...existing,
@@ -427,7 +435,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
         ...(body.data.blueskyLanguage !== undefined ? { blueskyLanguage: body.data.blueskyLanguage } : {}),
         ...(body.data.blueskyContentWarning !== undefined ? { blueskyContentWarning: body.data.blueskyContentWarning } : {}),
         ...(body.data.perAccount !== undefined ? { perAccount: body.data.perAccount } : {}),
-        ...(body.data.slides !== undefined ? { slides: body.data.slides } : {}),
+        ...(type ?? {}),
       });
     }
     if (body.data.commentText !== undefined) {
@@ -510,12 +518,10 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
     }
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, content: true } });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true } });
     // Other people's plain drafts are hidden from approvers — only in-review ones can be promoted
     if (!job || !isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only draft jobs can be scheduled" });
-    const copyError = slideCopyError(job.content);
-    if (copyError) return reply.status(400).send({ error: copyError });
 
     const blocked = await enforcePlan(userId, workspaceId, "scheduling");
     if (blocked) return reply.status(402).send(blocked);
@@ -577,7 +583,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const ws = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { approvalRequired: true } });
     if (!ws?.approvalRequired) return reply.status(400).send({ error: "Approval is not enabled for this workspace" });
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, content: true } });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true } });
     if (!job) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only drafts can be submitted for review" });
     if (job.approvalStatus === "pending") return reply.status(409).send({ error: "Already awaiting review" });
@@ -587,8 +593,6 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (job.userId !== userId && role !== "owner" && role !== "admin") {
       return reply.status(403).send({ error: "You can only submit your own posts.", code: "FORBIDDEN" });
     }
-    const copyError = slideCopyError(job.content);
-    if (copyError) return reply.status(400).send({ error: copyError });
 
     const updated = await prisma.postJob.update({
       where: { id },
