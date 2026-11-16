@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { BellIcon, CalendarIcon, LightbulbIcon, SearchIcon } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +15,7 @@ type ActionsProps = {
   today: Date;
 };
 
-/** Search, tips, notifications, today's date and the avatar: the right side of the top bar of a dashboard page. */
+/** Search, tips, notifications, today's date and the avatar (a link to My profile): the right side of the top bar of a dashboard page. */
 export function TopbarActions({ fullName, avatarUrl, today }: ActionsProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 xl:shrink-0 xl:flex-nowrap">
@@ -47,10 +48,12 @@ export function TopbarActions({ fullName, avatarUrl, today }: ActionsProps) {
         <time dateTime={today.toISOString()}>{formatTodayPill(today)}</time>
       </Badge>
 
-      <Avatar size="lg" className="size-10">
-        {avatarUrl && <AvatarImage src={avatarUrl} alt={fullName} />}
-        <AvatarFallback className="bg-brand-500 text-neutral-950">{initialsOf(fullName)}</AvatarFallback>
-      </Avatar>
+      <Link href="/profile" aria-label="My profile" className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+        <Avatar size="lg" className="size-10">
+          {avatarUrl && <AvatarImage src={avatarUrl} alt="" />}
+          <AvatarFallback className="bg-brand-500 text-neutral-950">{initialsOf(fullName)}</AvatarFallback>
+        </Avatar>
+      </Link>
     </div>
   );
 }

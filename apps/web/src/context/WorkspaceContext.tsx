@@ -14,6 +14,8 @@ export interface Workspace {
   role: string; // owner | admin | designer | member
   isActive: boolean;
   createdAt: string;
+  /** When the signed-in person joined this workspace. */
+  joinedAt?: string;
   approvalRequired?: boolean;
 }
 

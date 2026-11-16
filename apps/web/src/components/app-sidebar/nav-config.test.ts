@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canAccessPage } from "@/lib/permissions";
-import { ADD_ACCOUNT, FOOTER_ITEMS, MANAGE_GROUP, NAV_GROUPS, footerItemsFor, isActiveHref, manageGroupFor, navGroupsFor } from "./nav-config";
+import { ADD_ACCOUNT, FOOTER_ITEMS, MANAGE_GROUP, NAV_GROUPS, PROFILE_HREF, footerItemsFor, isActiveHref, manageGroupFor, navGroupsFor } from "./nav-config";
 
 const ROLES = ["owner", "admin", "designer", "member"] as const;
 
@@ -40,6 +40,32 @@ describe("nav config", () => {
   });
 });
 
+describe("Setting & integration", () => {
+  const setting = (role: string) => footerItemsFor(role).find((i) => i.label === "Setting & integration");
+
+  it("opens /settings for an owner and an admin", () => {
+    for (const r of ["owner", "admin"]) expect(setting(r)!.href).toBe("/settings");
+  });
+
+  it("opens My profile for the roles that may not open /settings, so the row is still there", () => {
+    for (const r of ["member", "designer", "nobody"]) expect(setting(r)!.href, r).toBe(PROFILE_HREF);
+    expect(PROFILE_HREF).toBe("/profile");
+  });
+
+  it("/profile is open to every role, so the row never bounces anyone", () => {
+    for (const r of ROLES) expect(canAccessPage(PROFILE_HREF, r), r).toBe(true);
+  });
+
+  it("the row lights up on /profile", () => {
+    expect(isActiveHref("/profile", PROFILE_HREF)).toBe(true);
+    expect(isActiveHref("/settings", PROFILE_HREF)).toBe(false);
+  });
+
+  it("the footer keeps its two rows for every role", () => {
+    for (const r of ROLES) expect(footerItemsFor(r).map((i) => i.label), r).toEqual(["Help & support", "Setting & integration"]);
+  });
+});
+
 describe("navGroupsFor / footerItemsFor", () => {
   it("owner and admin see every page", () => {
     for (const r of ["owner", "admin"]) {
@@ -53,12 +79,12 @@ describe("navGroupsFor / footerItemsFor", () => {
   });
 
   it("a designer sees the dashboard, the posts and the templates, plus the pages that are not built yet", () => {
-    expect(hrefsOf("designer")).toEqual(["/dashboard", "/jobs", "/templates"]);
+    expect(hrefsOf("designer")).toEqual(["/dashboard", "/jobs", "/templates", "/profile"]);
     expect(labelsOf("designer")).toEqual(expect.arrayContaining(["My task", "Media library", "Help & support"]));
   });
 
   it("a member also gets import and analytics, but none of the manage pages", () => {
-    expect(hrefsOf("member")).toEqual(["/dashboard", "/jobs/import", "/jobs", "/analytics", "/templates"]);
+    expect(hrefsOf("member")).toEqual(["/dashboard", "/jobs/import", "/jobs", "/analytics", "/templates", "/profile"]);
     for (const p of ["/library", "/integrations", "/groups", "/settings", "/team", "/billing"]) expect(hrefsOf("member"), p).not.toContain(p);
   });
 
@@ -72,7 +98,7 @@ describe("navGroupsFor / footerItemsFor", () => {
 
   it("an unknown role gets the narrowest view and cannot reach the owner pages", () => {
     for (const odd of [undefined, null, "superuser"]) {
-      expect(hrefsOf(odd as string)).toEqual(["/dashboard", "/jobs", "/templates"]);
+      expect(hrefsOf(odd as string)).toEqual(["/dashboard", "/jobs", "/templates", "/profile"]);
     }
   });
 

@@ -77,11 +77,29 @@ describe("AppSidebar: links by role", () => {
   it("a member gets no manage pages and no Add account", () => {
     h.workspace = { id: "w1", name: "Postly Studio", role: "member", isActive: true };
     render(<Shell />);
-    for (const gone of ["Team", "Billing", "Library", "Platform", "Groups", "Add account", "Setting & integration"]) {
+    for (const gone of ["Team", "Billing", "Library", "Platform", "Groups", "Add account"]) {
       expect(labels().some((l) => l.startsWith(gone)), gone).toBe(false);
     }
     expect(labels().some((l) => l.startsWith("Import quarter plan"))).toBe(true);
     expect(screen.queryByText("Workspace")).toBeNull();
+  });
+
+  it("Setting & integration opens /settings for an admin and My profile for a member", () => {
+    const hrefOfSetting = () => screen.getByRole("link", { name: /Setting & integration/ }).getAttribute("href");
+    h.workspace = { id: "w1", name: "Postly Studio", role: "admin", isActive: true };
+    const { unmount } = render(<Shell />);
+    expect(hrefOfSetting()).toBe("/settings");
+    unmount();
+    h.workspace = { id: "w1", name: "Postly Studio", role: "member", isActive: true };
+    render(<Shell />);
+    expect(hrefOfSetting()).toBe("/profile");
+  });
+
+  it("the row is the one that lights up on /profile", () => {
+    h.workspace = { id: "w1", name: "Postly Studio", role: "member", isActive: true };
+    h.pathname = "/profile";
+    render(<Shell />);
+    expect(screen.getByRole("link", { name: /Setting & integration/ }).getAttribute("aria-current")).toBe("page");
   });
 
   it("no role has a New post button: the design has none, and Add content on the dashboard opens the composer", () => {

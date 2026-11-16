@@ -88,6 +88,13 @@ describe("Topbar", () => {
     expect(screen.getByText("PA")).toBeTruthy();
   });
 
+  it("the avatar is a link to My profile", () => {
+    render(<Topbar {...props} />);
+    const link = screen.getByRole("link", { name: "My profile" });
+    expect(link.getAttribute("href")).toBe("/profile");
+    expect(within(link).getByText("PA")).toBeTruthy();
+  });
+
   it("the icon buttons are named, and search is a labelled search field", () => {
     render(<Topbar {...props} />);
     expect(screen.getByRole("button", { name: "Tips" })).toBeTruthy();

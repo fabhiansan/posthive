@@ -30,10 +30,12 @@ type Props = {
   tone?: "danger" | "default";
   /** Replace the tone's icon. */
   icon?: ReactNode;
+  /** Keep the confirm button off until what the dialog asks for (a password, a typed name) is there. */
+  confirmDisabled?: boolean;
   /**
    * What to do on confirm. While it runs both buttons are disabled and the dialog cannot be
    * closed; when it resolves the dialog closes. Handle errors inside it (toast); if it rejects
-   * the dialog stays open so the user can try again.
+   * the dialog stays open so the user can try again (the rejection is not rethrown).
    */
   onConfirm: () => void | Promise<void>;
 };
@@ -53,6 +55,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   tone = "danger",
   icon,
+  confirmDisabled = false,
   onConfirm,
 }: Props) {
   const [pending, setPending] = useState(false);
@@ -65,6 +68,9 @@ export function ConfirmDialog({
     try {
       await onConfirm();
       onOpenChange(false);
+    } catch (e) {
+      // onConfirm has already told the person what went wrong: the dialog stays open for another try
+      console.error("ConfirmDialog: onConfirm failed", e);
     } finally {
       setPending(false);
     }
@@ -85,7 +91,7 @@ export function ConfirmDialog({
         </div>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
-          <AlertDialogAction variant={danger ? "destructive" : "default"} disabled={pending} onClick={handleConfirm}>
+          <AlertDialogAction variant={danger ? "destructive" : "default"} disabled={pending || confirmDisabled} onClick={handleConfirm}>
             {pending && pendingLabel ? pendingLabel : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>

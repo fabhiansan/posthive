@@ -79,6 +79,9 @@ export const FOOTER_ITEMS: NavItem[] = [
   { label: "Setting & integration", href: "/settings", icon: Settings },
 ];
 
+/** Where "Setting & integration" goes for a role that may not open /settings: its own profile page. */
+export const PROFILE_HREF = "/profile";
+
 /** "Add account" button of the Channel active group. */
 export const ADD_ACCOUNT = { label: "Add account", href: "/accounts" } as const;
 
@@ -95,12 +98,14 @@ export function manageGroupFor(role: string | null | undefined): NavGroup | null
   return items.length > 0 ? { ...MANAGE_GROUP, items } : null;
 }
 
+/** The bottom links of a role. "Setting & integration" opens /settings for those who may, and My profile for the rest. */
 export function footerItemsFor(role: string | null | undefined): NavItem[] {
-  return FOOTER_ITEMS.filter((i) => visible(i, role));
+  return FOOTER_ITEMS.map((i) => (i.href !== null && !canAccessPage(i.href, role) ? { ...i, href: PROFILE_HREF } : i));
 }
 
 const ALL_HREFS = [...NAV_GROUPS.flatMap((g) => g.items), ...MANAGE_GROUP.items, ...FOOTER_ITEMS, ADD_ACCOUNT]
   .map((i) => i.href)
+  .concat(PROFILE_HREF)
   .filter((h): h is string => h !== null);
 
 /**
