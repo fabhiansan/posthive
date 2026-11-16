@@ -6,6 +6,7 @@ import { AppSidebar, MobileMenuButton } from "./app-sidebar/AppSidebar";
 import { AuthGuard } from "./AuthGuard";
 import { PlanGuard } from "./PlanGuard";
 import { OnboardingChecklist } from "./OnboardingChecklist";
+import { CanvasBoot } from "./canvas/CanvasBoot";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { usePermissions } from "../lib/usePermissions";
 
@@ -43,6 +44,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Auth-only pages — no sidebar, no plan guard
   if (pathname === "/onboarding" || pathname === "/mcp-connect" || pathname === "/admin") {
     return <AuthGuard>{children}</AuthGuard>;
+  }
+
+  // Canvas: the same auth, plan and role guards, but its own full-screen layout (no sidebar).
+  // Only the pages that exist: the matcher grows when /canvas/[designId] does, so an unknown
+  // /canvas/... address gets the normal app layout and its 404 instead of a loader that never ends.
+  if (pathname === "/canvas" || pathname === "/canvas/reviews") {
+    return (
+      <CanvasBoot>
+        <AuthGuard>
+          <PlanGuard>
+            <RoleGuard>{children}</RoleGuard>
+          </PlanGuard>
+        </AuthGuard>
+      </CanvasBoot>
+    );
   }
 
   // Main app: needs auth + plan guard + role guard + sidebar

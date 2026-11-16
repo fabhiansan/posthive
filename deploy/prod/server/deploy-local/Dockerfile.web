@@ -6,6 +6,7 @@ FROM base AS builder
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/package.json
+COPY apps/canvas/package.json ./apps/canvas/package.json
 RUN pnpm install --frozen-lockfile --filter web...
 
 # NEXT_PUBLIC_* vars are baked at build time
@@ -14,6 +15,7 @@ ARG NEXT_PUBLIC_WEB_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_WEB_URL=$NEXT_PUBLIC_WEB_URL
 
+COPY apps/canvas ./apps/canvas
 COPY apps/web ./apps/web
 RUN pnpm --filter web exec next build --webpack
 

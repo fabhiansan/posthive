@@ -7,6 +7,7 @@ on:
     paths:
       - "apps/api/**"
       - "apps/web/**"
+      - "apps/canvas/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/docker.yml"

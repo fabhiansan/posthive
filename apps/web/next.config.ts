@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // apps/canvas ships TypeScript source, so Next compiles it with the app
+  transpilePackages: ["posthive-canvas"],
   async redirects() {
     return [
       {

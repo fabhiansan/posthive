@@ -4,4 +4,7 @@ export default {
 
   // TypeScript check for Web
   "apps/web/src/**/*.{ts,tsx}": () => "pnpm --filter web typecheck",
+
+  // TypeScript check for the Canvas editor package
+  "apps/canvas/src/**/*.{ts,tsx}": () => "pnpm --filter posthive-canvas typecheck",
 };
