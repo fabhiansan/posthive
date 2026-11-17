@@ -1,20 +1,21 @@
 "use client";
 
 import { CanvasEditor } from "@/components/canvas/CanvasEditor";
+import { CanvasGate } from "@/components/canvas/CanvasGate";
+import { CanvasHome } from "@/components/canvas/CanvasHome";
+import { CanvasFailure, CanvasWaiting } from "@/components/canvas/CanvasMessage";
 import { useCanvasBootstrap } from "@/components/canvas/useCanvasBootstrap";
-import { Spinner } from "@/components/Spinner";
 
-// Phase 2: a working editor on a local, unsaved design. On the first open the loader in CanvasBoot
-// covers this page. Coming back from another Canvas page the loader is already gone, so the page
-// shows its own quiet spinner until the engine and fonts are ready.
+// The design team opens its saved designs here. Everyone else keeps the local, unsaved editor until the
+// Marketing phase brings published templates. On the first open the loader in CanvasBoot covers this page;
+// coming back from another Canvas page the loader is already gone, so the page shows its own quiet states.
 export default function CanvasPage() {
-  const engine = useCanvasBootstrap();
-  if (!engine) {
-    return (
-      <div className="theme-dashboard flex h-dvh items-center justify-center bg-background">
-        <Spinner size="lg" label="Loading the editor" className="text-brand-800" />
-      </div>
-    );
-  }
+  return <CanvasGate>{(isDesigner) => (isDesigner ? <CanvasHome /> : <LocalEditor />)}</CanvasGate>;
+}
+
+function LocalEditor() {
+  const { engine, failure } = useCanvasBootstrap();
+  if (failure) return <CanvasFailure message={failure.message} retry={failure.retry} />;
+  if (!engine) return <CanvasWaiting />;
   return <CanvasEditor engine={engine} />;
 }

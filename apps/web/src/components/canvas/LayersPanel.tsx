@@ -18,9 +18,11 @@ interface LayersPanelProps {
   onToggleVisible(id: string): void;
   onMove(id: string, to: MoveTo): void;
   onRename(id: string, name: string): void;
+  /** The longest layer name (LIMITS.nodeName.max). */
+  nameMaxLength: number;
 }
 
-function RenameField({ name, onDone }: { name: string; onDone(next: string | null): void }) {
+function RenameField({ name, maxLength, onDone }: { name: string; maxLength: number; onDone(next: string | null): void }) {
   const ref = useRef<HTMLInputElement>(null);
   const finished = useRef(false); // Enter and the blur it causes must not both commit
   useEffect(() => ref.current?.select(), []);
@@ -33,7 +35,7 @@ function RenameField({ name, onDone }: { name: string; onDone(next: string | nul
     <Input
       ref={ref}
       defaultValue={name}
-      maxLength={80}
+      maxLength={maxLength}
       aria-label="Layer name"
       className="h-7 rounded-lg px-2 py-0"
       onBlur={(e) => finish(e.currentTarget.value)}
@@ -45,7 +47,7 @@ function RenameField({ name, onDone }: { name: string; onDone(next: string | nul
   );
 }
 
-export function LayersPanel({ nodes, selectedId, onSelect, onToggleVisible, onMove, onRename }: LayersPanelProps) {
+export function LayersPanel({ nodes, selectedId, onSelect, onToggleVisible, onMove, onRename, nameMaxLength }: LayersPanelProps) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const top = nodes.length - 1;
 
@@ -79,6 +81,7 @@ export function LayersPanel({ nodes, selectedId, onSelect, onToggleVisible, onMo
                     <div className="min-w-0 flex-1 p-1">
                       <RenameField
                         name={node.name}
+                        maxLength={nameMaxLength}
                         onDone={(next) => {
                           setRenaming(null);
                           if (next !== null && next.trim() && next !== node.name) onRename(node.id, next.trim());

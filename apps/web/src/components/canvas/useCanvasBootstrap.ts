@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { loadEditorFonts } from "@/lib/canvas";
+import { useEffect, useMemo, useState } from "react";
+import type { CanvasDocument } from "posthive-canvas";
+import { AssetLoadError, getDesign, loadAsset, loadEditorFonts, type Design } from "@/lib/canvas";
 import { useBootReport } from "./CanvasBoot";
 
 export type CanvasEngine = typeof import("posthive-canvas");
@@ -17,17 +18,89 @@ function loadEngine(): Promise<CanvasEngine> {
   return engineLoad;
 }
 
+/** A saved design, opened: its document and the decoded images it draws. */
+export interface LoadedDesign {
+  id: string;
+  version: number;
+  name: string;
+  document: CanvasDocument;
+  images: ReadonlyMap<string, HTMLImageElement>;
+  /** Images that could not be loaded for good (gone, or the API address is not set): their layers show a grey box. */
+  missing: string[];
+  /** The API address is not configured, which is why the images are missing. Not the design's fault. */
+  badApiBase: boolean;
+}
+
+/** Why a design cannot be opened at all. */
+export type DesignProblem = "not-found" | "forbidden" | "invalid";
+
+export interface Bootstrap {
+  /** Set once the engine, the fonts and (for a saved design) the design and its images are all ready. */
+  engine: CanvasEngine | null;
+  design: LoadedDesign | null;
+  problem: DesignProblem | null;
+  /** Something that may work on a second try. Also reported to the loader, which is gone after the first open. */
+  failure: { message: string; retry: () => void } | null;
+}
+
+interface Images {
+  images: Map<string, HTMLImageElement>;
+  missing: string[];
+  badBase: boolean;
+  /** At least one image failed in a way that a retry may fix (a lost connection, a server error). */
+  failed: boolean;
+}
+
+const isDocument = (d: unknown): d is CanvasDocument => typeof d === "object" && d !== null && (d as CanvasDocument).schemaVersion === 1 && Array.isArray((d as CanvasDocument).nodes);
+
+const assetIdsOf = (doc: CanvasDocument): string[] => [...new Set(doc.nodes.flatMap((n) => (n.type === "image" ? [n.assetId] : [])))];
+
+/** Never rejects: each image ends as loaded, missing (it will not come back) or failed (it may, on a retry). */
+async function loadImages(ids: string[]): Promise<Images> {
+  const out: Images = { images: new Map(), missing: [], badBase: false, failed: false };
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        out.images.set(id, await loadAsset(id));
+      } catch (err) {
+        const code = err instanceof AssetLoadError ? err.code : "FAILED";
+        if (code === "FAILED") out.failed = true;
+        else out.missing.push(id);
+        if (code === "BAD_API_BASE") out.badBase = true;
+      }
+    }),
+  );
+  return out;
+}
+
+type Stage = "engine" | "document" | "assets";
+
 /**
- * Loads what the editor needs (the Konva engine and the editor fonts) and tells the Canvas loader
- * how each is going. Returns the engine once it, the design document and the fonts are all ready.
- * Konva needs a browser, so the engine is imported here and never during server rendering.
+ * Loads what the editor needs and tells the Canvas loader how each part is going: the Konva engine, the editor
+ * fonts and, for a saved design (`designId`), the design itself and its images. Pass a designId that does not
+ * change during the hook's life (key the page by it). Returns the engine only when everything is ready. Konva needs
+ * a browser, so the engine is imported here and never during server rendering.
  */
-export function useCanvasBootstrap(): CanvasEngine | null {
+export function useCanvasBootstrap(designId?: string): Bootstrap {
   const report = useBootReport();
   const [engine, setEngine] = useState<CanvasEngine | null>(null);
-  const [fontsReady, setFontsReady] = useState(false);
+  const [design, setDesign] = useState<Design | null>(null);
+  const [problem, setProblem] = useState<DesignProblem | null>(null);
+  const [loaded, setLoaded] = useState<Images | null>(null);
+  const [failures, setFailures] = useState<Partial<Record<Stage, { message: string; retry: () => void }>>>({});
   const [engineTry, setEngineTry] = useState(0);
-  const [fontsTry, setFontsTry] = useState(0);
+  const [designTry, setDesignTry] = useState(0);
+  const [assetsTry, setAssetsTry] = useState(0);
+
+  /** Tells the loader and the page. A retry first clears the failure, then asks the stage to run again. */
+  const fail = (stage: Stage, message: string, again: () => void) => {
+    const retry = () => {
+      setFailures((f) => ({ ...f, [stage]: undefined }));
+      again();
+    };
+    report(stage, { state: "error", message, retry });
+    setFailures((f) => ({ ...f, [stage]: { message, retry } }));
+  };
 
   useEffect(() => {
     let live = true;
@@ -39,32 +112,78 @@ export function useCanvasBootstrap(): CanvasEngine | null {
         report("engine", { state: "done" });
       },
       () => {
-        if (live) report("engine", { state: "error", message: "The editor could not be loaded. Check your connection.", retry: () => setEngineTry((n) => n + 1) });
+        if (live) fail("engine", "The editor could not be loaded. Check your connection.", () => setEngineTry((n) => n + 1));
       },
     );
     return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `fail` only closes over stable setters and `report`
   }, [engineTry, report]);
 
-  // The blank design is created in the engine's own defaults, so it is ready as soon as the engine is.
+  // The local editor's blank design is made by the engine itself, so it is ready as soon as the engine is.
   useEffect(() => {
-    report("document", { state: engine ? "done" : "pending" });
-  }, [engine, report]);
+    if (!designId) report("document", { state: engine ? "done" : "pending" });
+  }, [designId, engine, report]);
 
+  // A saved design: fetched once; a missing or forbidden one is a screen of its own, not a loader error.
   useEffect(() => {
+    if (!designId) return;
     let live = true;
-    report("assets", { state: "active" });
-    loadEditorFonts().then(
-      () => {
+    report("document", { state: "active" });
+    getDesign(designId).then(
+      ({ design: d }) => {
         if (!live) return;
-        setFontsReady(true);
-        report("assets", { state: "done" });
+        if (!isDocument(d.document)) {
+          setProblem("invalid");
+          report("document", { state: "na" });
+          report("assets", { state: "na" });
+          return;
+        }
+        setDesign(d);
+        report("document", { state: "done", detail: d.name });
       },
-      () => {
-        if (live) report("assets", { state: "error", message: "The editor fonts could not be loaded.", retry: () => setFontsTry((n) => n + 1) });
+      (err: unknown) => {
+        if (!live) return;
+        const status = (err as { status?: number } | null)?.status;
+        if (status === 404 || status === 403) {
+          setProblem(status === 404 ? "not-found" : "forbidden");
+          report("document", { state: "na" });
+          report("assets", { state: "na" });
+          return;
+        }
+        fail("document", "The design could not be loaded. Check your connection.", () => setDesignTry((n) => n + 1));
       },
     );
     return () => { live = false; };
-  }, [fontsTry, report]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `fail` only closes over stable setters and `report`
+  }, [designId, designTry, report]);
 
-  return fontsReady ? engine : null;
+  // Fonts, and the images of a saved design. Konva does not redraw when either arrives late, so both are
+  // ready before the editor opens. A missing image does not stop it opening (its layer is a grey box).
+  useEffect(() => {
+    if (designId && !design) return;
+    let live = true;
+    report("assets", { state: "active" });
+    Promise.all([loadEditorFonts().then(() => true, () => false), loadImages(design ? assetIdsOf(design.document) : [])]).then(([fontsOk, images]) => {
+      if (!live) return;
+      if (!fontsOk) return fail("assets", "The editor fonts could not be loaded.", () => setAssetsTry((n) => n + 1));
+      if (images.failed) return fail("assets", "Some images could not be loaded. Check your connection.", () => setAssetsTry((n) => n + 1));
+      setLoaded(images);
+      report("assets", { state: "done" });
+    });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `fail` only closes over stable setters and `report`
+  }, [designId, design, assetsTry, report]);
+
+  const ready = engine !== null && loaded !== null && (!designId || design !== null);
+  const loadedDesign = useMemo<LoadedDesign | null>(
+    () => (design && loaded ? { id: design.id, version: design.version, name: design.name, document: design.document, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase } : null),
+    [design, loaded],
+  );
+
+  return {
+    engine: ready ? engine : null,
+    design: ready ? loadedDesign : null,
+    problem,
+    failure: failures.engine ?? failures.document ?? failures.assets ?? null,
+  };
 }

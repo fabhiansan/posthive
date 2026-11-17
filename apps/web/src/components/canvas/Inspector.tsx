@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { MousePointerClickIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { CanvasDocument, CanvasNode, NodePatch, TextNode } from "posthive-canvas";
+import type { CanvasDocument, CanvasNode, Limits, NodePatch, TextNode } from "posthive-canvas";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
@@ -25,17 +25,17 @@ interface InspectorProps {
   focusTextSignal: number;
   /** The font names the editor can draw. */
   fonts: readonly string[];
+  /** Every field's range. The engine holds the same numbers to every edit; they are read here, never repeated. */
+  limits: Limits;
+  /** How long the selected text layer's text may be (engine textRoom): what it holds plus what is left of the design's budget. */
+  textRoom: number;
 }
-
-// Wide enough for any real layout, tight enough that a typo like 1e9 cannot lose a layer for good.
-const POS = 100_000;
-const SIZE = 20_000;
 
 function NumberField({
   label,
   value,
-  min = -POS,
-  max = POS,
+  min,
+  max,
   step = 1,
   disabled,
   onChange,
@@ -43,8 +43,8 @@ function NumberField({
 }: {
   label: string;
   value: number;
-  min?: number;
-  max?: number;
+  min: number;
+  max: number;
   step?: number;
   disabled?: boolean;
   onChange(value: number): void;
@@ -101,7 +101,7 @@ function ColorField({ label, value, onChange, onSeal }: { label: string; value: 
   );
 }
 
-export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDelete, focusTextSignal, fonts }: InspectorProps) {
+export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDelete, focusTextSignal, fonts, limits, textRoom }: InspectorProps) {
   const textBox = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (focusTextSignal > 0) {
@@ -135,13 +135,15 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
 
   const n = selected;
   const key = (field: string) => `${n.id}:${field}`;
-  const num = (field: keyof NodePatch, value: number, extra: Partial<Parameters<typeof NumberField>[0]> = {}) => (
+  const num = (field: keyof NodePatch, value: number, range: { min: number; max: number }, extra: { label: string; step?: number }) => (
     <NumberField
-      label={extra.label ?? String(field)}
+      label={extra.label}
       value={value}
+      min={range.min}
+      max={range.max}
+      step={extra.step}
       onChange={(v) => onPatch({ [field]: v } as NodePatch, key(field))}
       onSeal={onSeal}
-      {...extra}
     />
   );
   const text = n.type === "text" ? (n as TextNode) : null;
@@ -164,7 +166,7 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
             ref={textBox}
             value={text.text}
             rows={4}
-            maxLength={5000}
+            maxLength={textRoom}
             aria-label="Text"
             onChange={(e) => onPatch({ text: e.target.value }, key("text"))}
             onBlur={onSeal}
@@ -185,7 +187,7 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
                 <NativeSelectOption value="600">Semibold</NativeSelectOption>
               </NativeSelect>
             </div>
-            {num("fontSize", text.fontSize, { label: "Size", min: 1, max: 1000 })}
+            {num("fontSize", text.fontSize, limits.text.fontSize, { label: "Size" })}
             <div className="flex flex-col gap-1">
               <Label>Align</Label>
               <NativeSelect size="sm" aria-label="Align" value={text.align} onChange={(e) => onPatch({ align: e.target.value as TextNode["align"] }, key("align"))} onBlur={onSeal}>
@@ -194,8 +196,8 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
                 <NativeSelectOption value="right">Right</NativeSelectOption>
               </NativeSelect>
             </div>
-            {num("lineHeight", text.lineHeight, { label: "Line height", min: 0.5, max: 3, step: 0.1 })}
-            {num("letterSpacing", text.letterSpacing, { label: "Letter spacing", min: -50, max: 200 })}
+            {num("lineHeight", text.lineHeight, limits.text.lineHeight, { label: "Line height", step: 0.1 })}
+            {num("letterSpacing", text.letterSpacing, limits.text.letterSpacing, { label: "Letter spacing" })}
           </div>
         </section>
       )}
@@ -203,17 +205,17 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
       <section className="flex flex-col gap-2">
         <h3 className="section-label">Position and size</h3>
         <div className="grid grid-cols-2 gap-2">
-          {num("x", n.x, { label: "X" })}
-          {num("y", n.y, { label: "Y" })}
-          {num("width", n.width, { label: "Width", min: 1, max: SIZE })}
+          {num("x", n.x, limits.position, { label: "X" })}
+          {num("y", n.y, limits.position, { label: "Y" })}
+          {num("width", n.width, limits.size, { label: "Width" })}
           {/* A text layer's height follows its text, so it is not a setting. */}
-          {text ? null : num("height", n.height, { label: "Height", min: 1, max: SIZE })}
-          {num("rotation", n.rotation, { label: "Rotation", min: -3600, max: 3600 })}
+          {text ? null : num("height", n.height, limits.size, { label: "Height" })}
+          {num("rotation", n.rotation, limits.rotation, { label: "Rotation" })}
           <NumberField
             label="Opacity %"
             value={n.opacity * 100}
-            min={0}
-            max={100}
+            min={limits.opacity.min * 100}
+            max={limits.opacity.max * 100}
             onChange={(v) => onPatch({ opacity: Math.round(v) / 100 }, key("opacity"))}
             onSeal={onSeal}
           />
@@ -224,12 +226,12 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
         <section className="flex flex-col gap-2">
           <h3 className="section-label">Style</h3>
           {hasFill && <ColorField label={text ? "Text colour" : "Fill"} value={n.fill ?? "#000000"} onChange={(c) => onPatch({ fill: c }, key("fill"))} onSeal={onSeal} />}
-          {n.type === "rect" && num("cornerRadius", n.cornerRadius ?? 0, { label: "Corner radius", min: 0, max: SIZE })}
+          {n.type === "rect" && num("cornerRadius", n.cornerRadius ?? 0, limits.cornerRadius, { label: "Corner radius" })}
           {hasStroke &&
             (n.stroke ? (
               <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
                 <ColorField label="Stroke" value={n.stroke} onChange={(c) => onPatch({ stroke: c }, key("stroke"))} onSeal={onSeal} />
-                {num("strokeWidth", n.strokeWidth ?? 1, { label: "Stroke width", min: 0, max: 500 })}
+                {num("strokeWidth", n.strokeWidth ?? 1, limits.strokeWidth, { label: "Stroke width" })}
                 <Button variant="ghost" size="icon-sm" aria-label="Remove stroke" onClick={() => onPatch({ stroke: undefined, strokeWidth: undefined }, key("stroke-off"))}>
                   <XIcon />
                 </Button>

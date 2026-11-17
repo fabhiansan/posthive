@@ -47,9 +47,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   // Canvas: the same auth, plan and role guards, but its own full-screen layout (no sidebar).
-  // Only the pages that exist: the matcher grows when /canvas/[designId] does, so an unknown
-  // /canvas/... address gets the normal app layout and its 404 instead of a loader that never ends.
-  if (pathname === "/canvas" || pathname === "/canvas/reviews") {
+  // Only the pages that exist: /canvas, /canvas/reviews and /canvas/[designId] (one segment). Anything
+  // deeper, like /canvas/a/b, gets the normal app layout and its 404 instead of a loader that never ends.
+  if (pathname === "/canvas" || /^\/canvas\/[^/]+$/.test(pathname)) {
     return (
       <CanvasBoot>
         <AuthGuard>

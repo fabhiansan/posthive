@@ -54,7 +54,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AppShell", () => {
-  it.each(["/canvas", "/canvas/reviews"])("%s sits inside the auth and plan guards, with no sidebar", (path) => {
+  it.each(["/canvas", "/canvas/reviews", "/canvas/clx1y2z3a0000abcd"])("%s sits inside the auth and plan guards, with no sidebar", (path) => {
     h.pathname = path;
     render(
       <AppShell>
@@ -79,8 +79,8 @@ describe("AppShell", () => {
     expect(h.replace).toHaveBeenCalledWith("/jobs");
   });
 
-  // An unknown /canvas/... address is not a Canvas page yet, so it must not get the Canvas loader.
-  it.each(["/jobs", "/canvas/abc"])("%s keeps the normal app layout", (path) => {
+  // /canvas/<id> is a Canvas page (one segment). Anything deeper is not, so it must not get the Canvas loader.
+  it.each(["/jobs", "/canvas/abc/def", "/canvas/abc/def/ghi"])("%s keeps the normal app layout", (path) => {
     h.pathname = path;
     render(
       <AppShell>

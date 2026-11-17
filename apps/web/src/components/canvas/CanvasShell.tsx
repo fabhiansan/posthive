@@ -1,15 +1,29 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowLeftIcon, PanelLeftIcon, PanelRightIcon, SlidersHorizontalIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AiChatPanel } from "./AiChatPanel";
 
 interface CanvasShellProps {
   title: string;
+  /**
+   * Makes the name editable (a saved design). It gets the text as typed, on Enter or when the field loses focus;
+   * the editor cleans it and may refuse it (a blank name), and the field then shows the title again.
+   */
+  onRename?(name: string): void;
+  nameMaxLength?: number;
+  /** The save state, next to the name. */
+  status?: React.ReactNode;
+  /** A notice under the top bar (a conflict, a deleted design). */
+  banner?: React.ReactNode;
+  /** Asked before "back to the dashboard" leaves: resolve true to go, false to stay. */
+  onBeforeLeave?(): Promise<boolean>;
   /** Tools, undo/redo and zoom: the centre of the top bar. */
   toolbar: React.ReactNode;
   /** Right end of the top bar (export). */
@@ -22,11 +36,39 @@ interface CanvasShellProps {
   children: React.ReactNode;
 }
 
+function NameField({ value, maxLength, onCommit }: { value: string; maxLength?: number; onCommit(name: string): void }) {
+  // The text typed is kept apart from the title until it is committed, so a refused name can simply fall back.
+  const [draft, setDraft] = useState<string | null>(null);
+  const cancelled = useRef(false);
+  return (
+    <Input
+      aria-label="Design name"
+      value={draft ?? value}
+      maxLength={maxLength}
+      className="h-8 w-40 rounded-lg px-2 py-0 type-body-sb-s lg:w-56"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft !== null && !cancelled.current) onCommit(draft);
+        cancelled.current = false;
+        setDraft(null);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          cancelled.current = true;
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 /**
  * The standalone Canvas layout: no dashboard sidebar. Layers and the right panel sit beside the
  * editor on large screens and open as sheets below that.
  */
-export function CanvasShell({ title, toolbar, actions, layers, properties, propertiesSignal = 0, children }: CanvasShellProps) {
+export function CanvasShell({ title, onRename, nameMaxLength, status, banner, onBeforeLeave, toolbar, actions, layers, properties, propertiesSignal = 0, children }: CanvasShellProps) {
+  const router = useRouter();
   const [tab, setTab] = useState("properties");
   useEffect(() => {
     if (propertiesSignal > 0) setTab("properties");
@@ -60,13 +102,23 @@ export function CanvasShell({ title, toolbar, actions, layers, properties, prope
         <Link
           href="/dashboard"
           aria-label="Back to dashboard"
+          onClick={async (e) => {
+            // Leaving saves first. A click that opens a new tab or window is left alone.
+            if (!onBeforeLeave || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            if (await onBeforeLeave()) router.push("/dashboard");
+          }}
           className="flex shrink-0 items-center gap-2 rounded-lg p-1 text-fg outline-none hover:bg-neutral-100 focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           <ArrowLeftIcon className="size-4 text-muted" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/posthivemain.png" alt="" className="size-7 rounded-lg" />
         </Link>
-        <p className="hidden min-w-0 max-w-48 truncate type-body-sb-s text-fg sm:block">{title}</p>
+        <div className="hidden min-w-0 shrink-0 items-center sm:flex">
+          {onRename ? <NameField value={title} maxLength={nameMaxLength} onCommit={onRename} /> : <p className="max-w-48 truncate type-body-sb-s text-fg">{title}</p>}
+        </div>
+        {/* Outside the wrapper above on purpose: a failing save must be visible on a narrow screen too (as an icon there). */}
+        {status && <div className="flex shrink-0 items-center">{status}</div>}
 
         <div role="toolbar" aria-label="Tools" className="flex min-w-0 flex-1 items-center justify-center gap-1 overflow-x-auto">
           {toolbar}
@@ -98,6 +150,7 @@ export function CanvasShell({ title, toolbar, actions, layers, properties, prope
           {actions}
         </div>
       </header>
+      {banner && <div className="shrink-0 border-b border-border bg-surface px-3 py-2">{banner}</div>}
 
       <div className="flex min-h-0 flex-1">
         <aside className="hidden w-60 shrink-0 border-r border-border bg-surface lg:block">{layers}</aside>

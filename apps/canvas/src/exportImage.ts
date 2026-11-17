@@ -33,7 +33,7 @@ export async function exportStage(
     throw new ExportError(multiplier === 2 ? "This design is too large to export at 2x. Use 1x." : "This design is too large to export.");
   }
   if (doc.nodes.some((n) => n.type === "image" && n.visible && !images.has(n.assetId))) {
-    throw new ExportError("Some images are still loading. Try again in a moment.");
+    throw new ExportError("Some images are missing or still loading. Hide or delete the grey layers, or try again in a moment.");
   }
   // Text must be drawn with the real fonts, not a fallback that is replaced a moment later.
   await document.fonts.ready;

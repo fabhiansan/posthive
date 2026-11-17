@@ -89,6 +89,7 @@ model Workspace {
   contentLibraries ContentLibrary[]
   accountGroups    AccountGroup[]
   designAssets     DesignAsset[]
+  designs          Design[]
 
   // Back-ref for users whose activeWorkspace points here
   activeForUsers User[] @relation("UserActiveWorkspace")
@@ -413,6 +414,25 @@ model DesignAsset {
   createdAt       DateTime  @default(now())
 
   @@index([workspaceId])
+}
+
+// A Canvas design. Phase 3 saves the designer's working copy ("template"); instances come with the Marketing phase.
+// `document` is a CanvasDocument (apps/api/src/lib/canvas.ts validates it on every save); it is never null: a new
+// design starts from the blank document. `version` is the optimistic lock: a save names the version it was based on
+// and only succeeds while that is still the stored one.
+model Design {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  kind            String // template (the only kind so far)
+  name            String
+  document        Json
+  version         Int       @default(1)
+  createdByUserId String? // no FK: deleting a user must not delete workspace designs
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([workspaceId, kind, updatedAt])
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.

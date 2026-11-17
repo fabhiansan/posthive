@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import { Ellipse, Image as KonvaImage, Layer, Rect, Stage, Text, Transformer } from "react-konva";
-import { clamp, coverCrop, foldScale, MAX_ZOOM, MIN_ZOOM, round2, type CanvasDocument, type CanvasNode, type NodePatch } from "./document";
+import { clamp, coverCrop, foldScale, limitPatch, MAX_ZOOM, MIN_ZOOM, round2, type CanvasDocument, type CanvasNode, type NodePatch } from "./document";
 import { exportStage, type ExportOptions } from "./exportImage";
 
 export interface CanvasStageHandle {
@@ -160,17 +160,26 @@ export function CanvasStage({ doc, selectedId, images, fonts, onSelect, onChange
     onTouchStart: pick(n.id),
     onDragEnd: (e: KonvaEventObject<DragEvent>) => {
       e.cancelBubble = true;
-      onChange(n.id, { x: round2(e.target.x()), y: round2(e.target.y()) });
+      // A drag can end past the limits (far off the artboard at low zoom). The document keeps the clamped
+      // value, and so must the Konva node: if the clamp leaves the document unchanged nothing re-renders,
+      // and the node would stay where the mouse left it.
+      const patch = limitPatch(n, { x: round2(e.target.x()), y: round2(e.target.y()) });
+      e.target.position({ x: patch.x ?? n.x, y: patch.y ?? n.y });
+      onChange(n.id, patch);
     },
     onTransformEnd: (e: KonvaEventObject<Event>) => {
       // Konva leaves the resize as a scale on the node. Fold it into the size and reset it, so the
-      // document never stores a scaled node.
+      // document never stores a scaled node. Position and rotation are held to the limits and written back
+      // for the reason above; the size is drawn from the document, whose width and height are what is stored.
       const node = e.target;
       const sx = node.scaleX();
       const sy = node.scaleY();
       node.scaleX(1);
       node.scaleY(1);
-      onChange(n.id, { x: round2(node.x()), y: round2(node.y()), rotation: round2(node.rotation()), ...foldScale(n, sx, sy) });
+      const patch = limitPatch(n, { x: round2(node.x()), y: round2(node.y()), rotation: round2(node.rotation()), ...foldScale(n, sx, sy) });
+      node.position({ x: patch.x ?? n.x, y: patch.y ?? n.y });
+      node.rotation(patch.rotation ?? n.rotation);
+      onChange(n.id, patch);
     },
     ...(n.shadow && {
       shadowColor: n.shadow.color,

@@ -12,7 +12,7 @@ import { useWorkspaceWait } from "./useWorkspaceWait";
 export type BootStage = "engine" | "document" | "assets";
 
 export type StageStatus =
-  | { state: "pending" | "active" | "done" | "na" }
+  | { state: "pending" | "active" | "done" | "na"; /** Shown under the row, e.g. the design's name. */ detail?: string }
   | { state: "error"; message: string; retry: () => void };
 
 type Report = (stage: BootStage, status: StageStatus) => void;
@@ -80,7 +80,7 @@ export function CanvasBoot({ children }: { children: React.ReactNode }) {
   const rows: Row[] = [
     session,
     { id: "engine", label: "Editor engine", status: stages.engine },
-    { id: "document", label: "Design document", detail: stages.document.state === "done" ? "New blank design" : undefined, status: stages.document },
+    { id: "document", label: "Design document", detail: stages.document.state === "done" ? (stages.document.detail ?? "New blank design") : undefined, status: stages.document },
     { id: "assets", label: "Assets and fonts", status: stages.assets },
   ];
   const ready = rows.every((r) => r.status.state === "done" || r.status.state === "na");
