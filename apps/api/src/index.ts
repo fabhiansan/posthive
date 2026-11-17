@@ -59,6 +59,8 @@ import { feedbackRoutes } from "./routes/feedback.js";
 import { aiRoutes } from "./routes/ai.js";
 import { libraryRoutes } from "./routes/library.js";
 import { accountGroupRoutes } from "./routes/accountGroups.js";
+import { canvasRoutes } from "./routes/canvas.js";
+import { publicUploadsStatic } from "./lib/canvasAssets.js";
 import { withAuth } from "./lib/auth/withAuth.js";
 import type { StorageAdapter } from "./lib/storage.js";
 
@@ -119,7 +121,8 @@ async function main() {
   });
   await app.register(cookie);
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_SIZE, files: 4 } });
-  await app.register(staticFiles, { root: UPLOADS_DIR, prefix: "/uploads/" });
+  // allowedPath keeps Canvas's private assets (.canvas-private/) off this public route; they are served by /canvas/assets/:id/content.
+  await app.register(staticFiles, publicUploadsStatic(UPLOADS_DIR));
 
   // Raw body — needed for webhook signature verification
   await app.register(rawBody, { global: false, encoding: "utf8" });
@@ -194,6 +197,7 @@ async function main() {
   await app.register(aiRoutes);
   await app.register(libraryRoutes);
   await app.register(accountGroupRoutes);
+  await app.register(canvasRoutes, { storage });
 
   app.get("/health", async () => ({ ok: true }));
 

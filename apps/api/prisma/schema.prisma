@@ -86,6 +86,7 @@ model Workspace {
   feedbacks        Feedback[]
   contentLibraries ContentLibrary[]
   accountGroups    AccountGroup[]
+  designAssets     DesignAsset[]
 
   // Back-ref for users whose activeWorkspace points here
   activeForUsers User[] @relation("UserActiveWorkspace")
@@ -367,6 +368,23 @@ model Template {
 model LegacyTemplateMedia {
   url       String   @id
   createdAt DateTime @default(now())
+}
+
+// An image a Canvas design uses (PNG, or an SVG rasterized to PNG). Delivered only through the
+// authenticated /canvas/assets/:id/content route; storageRef never leaves the server.
+model DesignAsset {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  storageRef      String    @unique // private storage path, never serialized to the client
+  width           Int
+  height          Int
+  bytes           Int
+  sourceFormat    String // png | svg
+  createdByUserId String? // no FK: deleting a user must not delete workspace assets
+  createdAt       DateTime  @default(now())
+
+  @@index([workspaceId])
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.

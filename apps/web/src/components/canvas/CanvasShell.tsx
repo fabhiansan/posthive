@@ -1,48 +1,40 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-  ArrowLeftIcon,
-  CircleIcon,
-  DownloadIcon,
-  ImagePlusIcon,
-  MousePointer2Icon,
-  PanelLeftIcon,
-  PanelRightIcon,
-  Redo2Icon,
-  SlidersHorizontalIcon,
-  SparklesIcon,
-  SquareIcon,
-  TypeIcon,
-  Undo2Icon,
-} from "lucide-react";
+import { ArrowLeftIcon, PanelLeftIcon, PanelRightIcon, SlidersHorizontalIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/cn";
 import { AiChatPanel } from "./AiChatPanel";
-import { Inspector } from "./Inspector";
-import { LayersPanel } from "./LayersPanel";
 
 interface CanvasShellProps {
   title: string;
-  artboard: { width: number; height: number };
+  /** Tools, undo/redo and zoom: the centre of the top bar. */
+  toolbar: React.ReactNode;
+  /** Right end of the top bar (export). */
+  actions: React.ReactNode;
+  layers: React.ReactNode;
+  properties: React.ReactNode;
+  /** Changes whenever the Properties tab should come forward (a double-click on text). */
+  propertiesSignal?: number;
   /** The editor surface. It fills the space between the panels. */
   children: React.ReactNode;
 }
 
-// The tools are laid out now so the toolbar doesn't move when Phase 2 switches them on.
-const TOOLS = [
-  { label: "Select", icon: MousePointer2Icon },
-  { label: "Rectangle", icon: SquareIcon },
-  { label: "Ellipse", icon: CircleIcon },
-  { label: "Text", icon: TypeIcon },
-  { label: "Image", icon: ImagePlusIcon },
-];
+/**
+ * The standalone Canvas layout: no dashboard sidebar. Layers and the right panel sit beside the
+ * editor on large screens and open as sheets below that.
+ */
+export function CanvasShell({ title, toolbar, actions, layers, properties, propertiesSignal = 0, children }: CanvasShellProps) {
+  const [tab, setTab] = useState("properties");
+  useEffect(() => {
+    if (propertiesSignal > 0) setTab("properties");
+  }, [propertiesSignal]);
 
-function RightPanel({ artboard }: { artboard: CanvasShellProps["artboard"] }) {
-  return (
-    <Tabs defaultValue="properties" className="h-full min-h-0 gap-0">
+  // The right panel is rendered twice (beside the editor, and inside the narrow-screen sheet), both from one tab state.
+  const rightPanel = (
+    <Tabs value={tab} onValueChange={setTab} className="h-full min-h-0 gap-0">
       <TabsList variant="line" className="shrink-0 px-2">
         <TabsTrigger value="properties">
           <SlidersHorizontalIcon /> Properties
@@ -53,21 +45,15 @@ function RightPanel({ artboard }: { artboard: CanvasShellProps["artboard"] }) {
       </TabsList>
       {/* Both tabs stay mounted, so switching tabs keeps a half-typed message. The narrow-screen sheet
           unmounts when it closes and loses it, which is fine while the placeholder cannot send. */}
-      <TabsContent value="properties" forceMount className="flex min-h-0 flex-col data-[state=inactive]:hidden">
-        <Inspector width={artboard.width} height={artboard.height} />
+      <TabsContent value="properties" forceMount className="flex min-h-0 flex-col overflow-y-auto data-[state=inactive]:hidden">
+        {properties}
       </TabsContent>
       <TabsContent value="assistant" forceMount className="flex min-h-0 flex-col data-[state=inactive]:hidden">
         <AiChatPanel />
       </TabsContent>
     </Tabs>
   );
-}
 
-/**
- * The standalone Canvas layout: no dashboard sidebar. Layers and the right panel sit beside the
- * editor on large screens and open as sheets below that.
- */
-export function CanvasShell({ title, artboard, children }: CanvasShellProps) {
   return (
     <div className="theme-dashboard flex h-dvh flex-col bg-background">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-surface px-3">
@@ -83,26 +69,7 @@ export function CanvasShell({ title, artboard, children }: CanvasShellProps) {
         <p className="hidden min-w-0 max-w-48 truncate type-body-sb-s text-fg sm:block">{title}</p>
 
         <div role="toolbar" aria-label="Tools" className="flex min-w-0 flex-1 items-center justify-center gap-1 overflow-x-auto">
-          {TOOLS.map(({ label, icon: Icon }, i) => (
-            <Button
-              key={label}
-              variant="ghost"
-              size="icon-sm"
-              aria-label={label}
-              aria-pressed={i === 0}
-              disabled={i !== 0}
-              className={cn(i === 0 && "bg-brand-100 text-brand-800 hover:bg-brand-100 hover:text-brand-800")}
-            >
-              <Icon />
-            </Button>
-          ))}
-          <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
-          <Button variant="ghost" size="icon-sm" aria-label="Undo" disabled>
-            <Undo2Icon />
-          </Button>
-          <Button variant="ghost" size="icon-sm" aria-label="Redo" disabled>
-            <Redo2Icon />
-          </Button>
+          {toolbar}
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
@@ -114,7 +81,7 @@ export function CanvasShell({ title, artboard, children }: CanvasShellProps) {
             </SheetTrigger>
             <SheetContent side="left" className="w-72 gap-0 p-0">
               <SheetTitle className="sr-only">Layers</SheetTitle>
-              <LayersPanel />
+              {layers}
             </SheetContent>
           </Sheet>
           <Sheet>
@@ -125,23 +92,17 @@ export function CanvasShell({ title, artboard, children }: CanvasShellProps) {
             </SheetTrigger>
             <SheetContent side="right" className="gap-0 p-0">
               <SheetTitle className="sr-only">Properties and assistant</SheetTitle>
-              <RightPanel artboard={artboard} />
+              {rightPanel}
             </SheetContent>
           </Sheet>
-          <Button variant="secondary" size="sm" disabled>
-            <DownloadIcon /> Export
-          </Button>
+          {actions}
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="hidden w-60 shrink-0 border-r border-border bg-surface lg:block">
-          <LayersPanel />
-        </aside>
+        <aside className="hidden w-60 shrink-0 border-r border-border bg-surface lg:block">{layers}</aside>
         <main className="relative min-w-0 flex-1 bg-background">{children}</main>
-        <aside className="hidden w-80 shrink-0 border-l border-border bg-surface lg:block">
-          <RightPanel artboard={artboard} />
-        </aside>
+        <aside className="hidden w-80 shrink-0 border-l border-border bg-surface lg:block">{rightPanel}</aside>
       </div>
     </div>
   );
