@@ -39,17 +39,60 @@ const ACCOUNTS = [
   { id: "a2", platform: "instagram", displayName: "@braga.geo" },
 ];
 
+const NOW = new Date("2026-11-17T05:00:00Z"); // 12:00 WIB on 17 Nov 2026
+
+/** What /user/devices answers: this device, another one, and the sign-ins. */
+const DEVICES = {
+  devices: [
+    { id: "s-this", tile: "Mac", name: "Chrome on macOS", startedAt: "2026-11-17T03:00:00.000Z", lastActiveAt: "2026-11-17T04:58:00.000Z", current: true },
+    { id: "s-phone", tile: "iOS", name: "Safari on iOS", startedAt: "2026-11-16T01:00:00.000Z", lastActiveAt: "2026-11-17T02:00:00.000Z", current: false },
+  ],
+  signIns: [
+    { id: "e1", at: "2026-11-17T01:12:00.000Z", device: "Chrome on macOS", failure: null },
+    { id: "e2", at: "2026-11-16T12:40:00.000Z", device: "Firefox on Linux", failure: "Wrong password" },
+    { id: "e3", at: "2026-11-10T15:05:00.000Z", device: "Edge on Windows", failure: null },
+  ],
+};
+
+const ACTIVITY = {
+  quarter: "Q4 2026",
+  kind: "maker",
+  rows: [
+    { id: "imported", count: 60 },
+    { id: "sent", count: 12 },
+    { id: "approved", count: 8 },
+    { id: "scheduled", count: 2 },
+    { id: "published", count: 1, channels: ["instagram"] },
+  ],
+};
+
+/** The answers of the page's requests; a test replaces one to try another case. */
+const answers: Record<string, unknown> = {};
+
+/** What the page's own requests get, unless a test says otherwise. */
+function base(path: string, accounts: unknown = ACCOUNTS): unknown {
+  if (path in answers) {
+    const a = answers[path];
+    if (a instanceof Error) throw a;
+    return a;
+  }
+  if (path === "/accounts") return accounts;
+  if (path === "/user/devices") return DEVICES;
+  if (path === "/user/activity") return ACTIVITY;
+  return { ok: true };
+}
+
 function serve(accounts: unknown = ACCOUNTS) {
-  h.apiFetch.mockImplementation(async (path: string) => {
-    if (path === "/accounts") return accounts;
-    return { ok: true };
-  });
+  h.apiFetch.mockImplementation(async (path: string) => base(path, accounts));
 }
 
 const calls = (path: string) => h.apiFetch.mock.calls.filter(([p]) => p === path);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  for (const k of Object.keys(answers)) delete answers[k];
   h.role = "member";
   h.workspaceName = "Braga Tech";
   h.others = [];
@@ -59,7 +102,10 @@ beforeEach(() => {
   h.logout.mockResolvedValue(undefined);
   serve();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 const nameField = () => screen.getByRole("textbox", { name: /Full name/ }) as HTMLInputElement;
 
@@ -140,7 +186,7 @@ describe("My Profile: what it shows", () => {
     cleanup();
     h.apiFetch.mockImplementation(async (path: string) => {
       if (path === "/accounts") throw new Error("boom");
-      return {};
+      return base(path);
     });
     render(<ProfilePage />);
     expect(await screen.findByText("No accounts are connected to this workspace yet.")).toBeTruthy();
@@ -184,17 +230,15 @@ describe("My Profile: what it shows", () => {
 describe("My Profile: in production the sample is left out", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("shows only what the app knows: no devices, no activity, no second step, no made-up dates", () => {
+  it("shows only what the app knows: no second step, no made-up dates; the devices and the activity are real, so they stay", async () => {
     vi.stubEnv("NODE_ENV", "production");
     render(<ProfilePage />);
-    expect(screen.queryByText("Devices & login history")).toBeNull();
-    expect(screen.queryByText("MacBook Pro · Chrome on macOS")).toBeNull();
-    expect(screen.queryByText("Your activity")).toBeNull();
-    expect(screen.queryByText("Posts imported")).toBeNull();
+    expect(await screen.findByText("Devices & login history")).toBeTruthy();
+    expect(await screen.findByText("Chrome on macOS", { selector: "p" })).toBeTruthy();
+    expect(await screen.findByText("Posts imported")).toBeTruthy();
     expect(screen.queryByText("Two-step verification")).toBeNull();
     expect(screen.queryByText(/Authenticator app/)).toBeNull();
     expect(screen.queryByText(/Last changed/)).toBeNull();
-    expect(screen.queryByText(/Last sign-in/)).toBeNull();
     expect(screen.queryByText(/annual/)).toBeNull();
     expect(screen.queryByText(/Dewi W\./)).toBeNull();
     expect(screen.queryByText(/Marketing lead for Braga Geo/)).toBeNull();
@@ -215,9 +259,10 @@ describe("My Profile: in production the sample is left out", () => {
     expect((screen.getByRole("textbox", { name: /About you/ }) as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("the page still has no dangling dot or double space", () => {
+  it("the page still has no dangling dot or double space", async () => {
     vi.stubEnv("NODE_ENV", "production");
     render(<ProfilePage />);
+    await screen.findByText("Posts imported");
     for (const el of document.querySelectorAll("p, dd")) {
       expect(el.textContent ?? "", el.outerHTML).not.toMatch(/·\s*$/);
       expect(el.textContent ?? "", el.outerHTML).not.toMatch(/ {2}/);
@@ -289,7 +334,7 @@ describe("My Profile: Save and Cancel", () => {
   it("a server error is shown and the form keeps what was typed", async () => {
     h.apiFetch.mockImplementation(async (path: string) => {
       if (path === "/user/profile") throw new Error("Name is too long");
-      return ACCOUNTS;
+      return base(path);
     });
     render(<ProfilePage />);
     await userEvent.type(nameField(), "x");
@@ -323,20 +368,13 @@ describe("My Profile: Save and Cancel", () => {
 describe("My Profile: the buttons", () => {
   it("the ones with no backend yet say so and change nothing", async () => {
     render(<ProfilePage />);
-    for (const name of ["Change photo", "Remove", "Manage", "Sign out of other devices"]) {
+    for (const name of ["Change photo", "Remove", "Manage"]) {
       await userEvent.click(screen.getByRole("button", { name }));
     }
-    for (const button of screen.getAllByRole("button", { name: "Sign out" })) await userEvent.click(button);
-    expect(h.toast.toast).toHaveBeenCalledTimes(4 + 2);
+    expect(h.toast.toast).toHaveBeenCalledTimes(3);
     expect(h.toast.toast).toHaveBeenCalledWith("Not available yet");
-    expect(h.apiFetch.mock.calls.map(([p]) => p)).toEqual(["/accounts"]);
-  });
-
-  it("only the other devices have a Sign out", () => {
-    render(<ProfilePage />);
-    const current = screen.getByText("MacBook Pro · Chrome on macOS").closest("li")!;
-    expect(within(current).queryByRole("button")).toBeNull();
-    expect(screen.getByText("This device")).toBeTruthy();
+    // nothing but what the page reads when it opens
+    expect(h.apiFetch.mock.calls.map(([p]) => p).sort()).toEqual(["/accounts", "/user/activity", "/user/devices"]);
   });
 
   it("Send reset link mails the account's own email", async () => {
@@ -350,7 +388,7 @@ describe("My Profile: the buttons", () => {
   it("a failed reset link says why", async () => {
     h.apiFetch.mockImplementation(async (path: string) => {
       if (path === "/auth/forgot-password") throw new Error("Too many requests");
-      return [];
+      return base(path);
     });
     render(<ProfilePage />);
     await userEvent.click(screen.getByRole("button", { name: "Send reset link" }));
@@ -395,7 +433,7 @@ describe("My Profile: change password", () => {
   it("a wrong current password is shown and the dialog stays open", async () => {
     h.apiFetch.mockImplementation(async (path: string) => {
       if (path === "/user/password") throw new Error("Current password is incorrect");
-      return [];
+      return base(path);
     });
     render(<ProfilePage />);
     await userEvent.click(screen.getByRole("button", { name: "Change password" }));
@@ -450,7 +488,7 @@ describe("My Profile: delete account", () => {
   it("a wrong password is shown, nothing is signed out and the dialog stays", async () => {
     h.apiFetch.mockImplementation(async (path: string) => {
       if (path === "/user") throw new Error("Incorrect password");
-      return [];
+      return base(path);
     });
     render(<ProfilePage />);
     const dialog = await open();
@@ -481,5 +519,204 @@ describe("My Profile: delete account", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(calls("/user")).toHaveLength(0);
+  });
+});
+
+describe("My Profile: devices and login history", () => {
+  const card = async () => (await screen.findByRole("heading", { name: "Devices & login history" })).closest("[data-slot=card]") as HTMLElement;
+
+  it("lists the devices the account is open on, this one marked, and when the others were last active", async () => {
+    render(<ProfilePage />);
+    const c = within(await card());
+    expect(await c.findByText("Chrome on macOS", { selector: "p" })).toBeTruthy();
+    expect(c.getByText("This device")).toBeTruthy();
+    expect(c.getByText("active now")).toBeTruthy();
+    expect(c.getByText("Safari on iOS")).toBeTruthy();
+    expect(c.getByText("last active 3 hours ago")).toBeTruthy();
+  });
+
+  it("only the other devices have a Sign out", async () => {
+    render(<ProfilePage />);
+    const c = within(await card());
+    const current = (await c.findByText("This device")).closest("li")!;
+    expect(within(current).queryByRole("button")).toBeNull();
+    expect(c.getAllByRole("button", { name: "Sign out" })).toHaveLength(1);
+  });
+
+  it("recent sign-ins: the time, the device, and whether it worked; a wrong password says so", async () => {
+    render(<ProfilePage />);
+    const c = within(await card());
+    expect(await c.findByText("Today, 08:12 WIB")).toBeTruthy();
+    expect(c.getByText("Yesterday, 19:40 WIB")).toBeTruthy();
+    expect(c.getByText("Firefox on Linux")).toBeTruthy();
+    expect(c.getByText("Wrong password")).toBeTruthy();
+    expect(c.getByText("10 Nov 2026, 22:05 WIB")).toBeTruthy();
+    expect(c.getAllByText("Successful")).toHaveLength(2);
+    expect(c.getByText("Last 30 days")).toBeTruthy();
+  });
+
+  it("there is no Location column: the API keeps no address", async () => {
+    render(<ProfilePage />);
+    const c = within(await card());
+    await c.findByText("Today, 08:12 WIB");
+    expect(c.queryByText("Location")).toBeNull();
+  });
+
+  it("Password & sign-in says when and from what the person last signed in, from the history", async () => {
+    render(<ProfilePage />);
+    expect(await screen.findByText("Last sign-in today, 08:12 WIB · Chrome on macOS")).toBeTruthy();
+  });
+
+  it("the last sign-in that WORKED is the one named, not a wrong password after it", async () => {
+    answers["/user/devices"] = { ...DEVICES, signIns: [{ id: "x", at: "2026-11-17T04:00:00.000Z", device: "Firefox on Linux", failure: "Wrong password" }, ...DEVICES.signIns] };
+    render(<ProfilePage />);
+    expect(await screen.findByText("Last sign-in today, 08:12 WIB · Chrome on macOS")).toBeTruthy();
+  });
+
+  it("Sign out ends that device's session, says so, and asks the list again", async () => {
+    render(<ProfilePage />);
+    const c = within(await card());
+    await userEvent.click(await c.findByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(calls("/user/devices/s-phone")).toHaveLength(1));
+    expect(calls("/user/devices/s-phone")[0][1]).toEqual({ method: "DELETE" });
+    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Signed out of Safari on iOS"));
+    await waitFor(() => expect(calls("/user/devices")).toHaveLength(2));
+    expect(h.toast.toast).not.toHaveBeenCalled(); // no more "Not available yet"
+  });
+
+  it("a Sign out that fails says why, and still asks the list again (the device may already be gone)", async () => {
+    answers["/user/devices/s-phone"] = new Error("That device is not signed in any more.");
+    render(<ProfilePage />);
+    await userEvent.click(await within(await card()).findByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("That device is not signed in any more."));
+    await waitFor(() => expect(calls("/user/devices")).toHaveLength(2));
+  });
+
+  it("Sign out of other devices asks first; Cancel sends nothing", async () => {
+    render(<ProfilePage />);
+    await userEvent.click(await within(await card()).findByRole("button", { name: "Sign out of other devices" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Sign out of your other devices?")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(calls("/user/devices/sign-out-others")).toHaveLength(0);
+  });
+
+  it("confirming signs every other device out, says so, and asks the list again", async () => {
+    render(<ProfilePage />);
+    await userEvent.click(await within(await card()).findByRole("button", { name: "Sign out of other devices" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(calls("/user/devices/sign-out-others")).toHaveLength(1));
+    expect(calls("/user/devices/sign-out-others")[0][1]).toEqual({ method: "POST" });
+    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Signed out of your other devices"));
+    await waitFor(() => expect(calls("/user/devices")).toHaveLength(2));
+  });
+
+  it("a failed sign-out of the others says why and the dialog stays for another try", async () => {
+    answers["/user/devices/sign-out-others"] = new Error("Too many requests");
+    render(<ProfilePage />);
+    await userEvent.click(await within(await card()).findByRole("button", { name: "Sign out of other devices" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Too many requests"));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+  });
+
+  it("with only this device, there is nothing to sign out of: the button is off", async () => {
+    answers["/user/devices"] = { ...DEVICES, devices: [DEVICES.devices[0]] };
+    render(<ProfilePage />);
+    const button = await within(await card()).findByRole("button", { name: "Sign out of other devices" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true));
+  });
+
+  it("no sign-ins yet says so; and there is no last sign-in line", async () => {
+    answers["/user/devices"] = { devices: [DEVICES.devices[0]], signIns: [] };
+    render(<ProfilePage />);
+    expect(await screen.findByText("No sign-ins in the last 30 days.")).toBeTruthy();
+    expect(screen.queryByText(/Last sign-in/)).toBeNull();
+  });
+
+  it("while it loads there is a skeleton, not the old made-up devices", async () => {
+    h.apiFetch.mockImplementation(() => new Promise(() => {}));
+    render(<ProfilePage />);
+    expect(screen.getByLabelText("Loading your devices").getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText("MacBook Pro · Chrome on macOS")).toBeNull();
+    expect(screen.queryByText("Today, 08:12 WIB")).toBeNull();
+  });
+
+  it("when the devices cannot be loaded it says so and offers to try again, and draws no list", async () => {
+    answers["/user/devices"] = new Error("Network down");
+    render(<ProfilePage />);
+    expect(await screen.findByText(/We couldn't load your devices/)).toBeTruthy();
+    answers["/user/devices"] = DEVICES;
+    const c = within(await card());
+    await userEvent.click(c.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("This device")).toBeTruthy();
+  });
+});
+
+describe("My Profile: your activity", () => {
+  const card = async () => (await screen.findByRole("heading", { name: "Your activity" })).closest("[data-slot=card]") as HTMLElement;
+
+  it("shows the numbers the API counted for this person, with what each means", async () => {
+    render(<ProfilePage />);
+    const c = within(await card());
+    expect(await c.findByText("Posts imported")).toBeTruthy();
+    expect(c.getByText("60")).toBeTruthy();
+    expect(c.getByText("Sent to Design Team")).toBeTruthy();
+    expect(c.getByText("12")).toBeTruthy();
+    expect(c.getByText("Designs approved")).toBeTruthy();
+    expect(c.getByText("Scheduled")).toBeTruthy();
+    expect(c.getByText("Published")).toBeTruthy();
+    expect(c.getByText("Live on Instagram")).toBeTruthy();
+    expect(c.getByText("Q4 2026")).toBeTruthy();
+    expect(c.getByText("Counts cover the current quarter and reset on 1 January.")).toBeTruthy();
+  });
+
+  it("a quarter with nothing in it says so in every row, not '60 posts from your plan'", async () => {
+    answers["/user/activity"] = { quarter: "Q4 2026", kind: "maker", rows: ACTIVITY.rows.map((r) => ({ id: r.id, count: 0, ...(r.id === "published" ? { channels: [] } : {}) })) };
+    render(<ProfilePage />);
+    const c = within(await card());
+    expect(await c.findByText("No plan file imported yet")).toBeTruthy();
+    expect(c.getByText("Nothing sent for review yet")).toBeTruthy();
+    expect(c.getByText("Nothing live yet")).toBeTruthy();
+    expect(c.queryByText("From your plan files")).toBeNull();
+  });
+
+  it("the design team sees its reviews, not the Marketing rows", async () => {
+    h.role = "designer";
+    answers["/user/activity"] = { quarter: "Q4 2026", kind: "reviewer", rows: [{ id: "reviewed", count: 46 }, { id: "sentBack", count: 3 }, { id: "templates", count: 2 }] };
+    render(<ProfilePage />);
+    const c = within(await card());
+    expect(await c.findByText("Designs approved")).toBeTruthy();
+    expect(c.getByText("46")).toBeTruthy();
+    expect(c.getByText("Sent back to Marketing")).toBeTruthy();
+    expect(c.getByText("Templates added")).toBeTruthy();
+    expect(c.queryByText("Posts imported")).toBeNull();
+    expect(c.queryByText("Sent to Design Team")).toBeNull();
+  });
+
+  it("while it loads there is a skeleton, and the old made-up numbers are never drawn", async () => {
+    h.apiFetch.mockImplementation(() => new Promise(() => {}));
+    render(<ProfilePage />);
+    expect(screen.getByLabelText("Loading your activity").getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText("From your Q4 plan file")).toBeNull();
+  });
+
+  it("when it cannot be loaded it says so and offers to try again", async () => {
+    answers["/user/activity"] = new Error("Network down");
+    render(<ProfilePage />);
+    expect(await screen.findByText(/We couldn't load your activity/)).toBeTruthy();
+    answers["/user/activity"] = ACTIVITY;
+    const c = within(await card());
+    await userEvent.click(c.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Posts imported")).toBeTruthy();
+  });
+
+  it("the card is there in production too: the numbers are real", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    render(<ProfilePage />);
+    expect(await screen.findByText("Posts imported")).toBeTruthy();
+    vi.unstubAllEnvs();
   });
 });

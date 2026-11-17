@@ -2109,7 +2109,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: profile.picture,
       });
 
-      const { accessToken, refreshToken } = await createLocalTokens(dbUser.id);
+      const { accessToken, refreshToken } = await createLocalTokens(dbUser.id, req.headers["user-agent"]);
       setAuthCookies(reply, accessToken, refreshToken);
 
       const dest = isNew ? "/onboarding" : returnTo;
@@ -2284,7 +2284,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: profile.picture,
       });
 
-      const { accessToken, refreshToken } = await createLocalTokens(dbUser.id);
+      const { accessToken, refreshToken } = await createLocalTokens(dbUser.id, req.headers["user-agent"]);
       setAuthCookies(reply, accessToken, refreshToken);
 
       const dest = isNew ? "/onboarding" : returnTo;

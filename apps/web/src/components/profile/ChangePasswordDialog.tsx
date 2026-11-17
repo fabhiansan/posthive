@@ -12,10 +12,12 @@ import { PASSWORD_HINT, passwordProblem } from "@/lib/passwordRule";
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The password was changed: the server signed every other device out, so the device list is stale. */
+  onChanged?: () => void;
 };
 
 /** Change the password: the current one, the new one twice. The server signs out every other device when it changes. */
-export function ChangePasswordDialog({ open, onOpenChange }: Props) {
+export function ChangePasswordDialog({ open, onOpenChange, onChanged }: Props) {
   const { success, error } = useToast();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -44,6 +46,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: Props) {
     try {
       await apiFetch("/user/password", { method: "PATCH", body: JSON.stringify({ currentPassword: current, newPassword: next }) });
       success("Password changed");
+      onChanged?.();
       change(false);
     } catch (err) {
       error(err instanceof Error ? err.message : "Failed to change password");

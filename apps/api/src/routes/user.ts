@@ -64,7 +64,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const { user, accessToken, refreshToken } = await authProvider.register(
-        parsed.data.email, parsed.data.password, parsed.data.name
+        parsed.data.email, parsed.data.password, parsed.data.name, req.headers["user-agent"]
       );
       setAuthCookies(reply, accessToken, refreshToken);
 
@@ -102,7 +102,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const { user, accessToken, refreshToken } = await authProvider.login(
-        parsed.data.email, parsed.data.password
+        parsed.data.email, parsed.data.password, req.headers["user-agent"]
       );
       setAuthCookies(reply, accessToken, refreshToken, { persistent: parsed.data.remember });
       return reply.send({ user });
@@ -330,7 +330,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     }
     // Everything signed in with the old password is out; this request gets a fresh session.
     await authProvider.revokeOtherSessions?.(reset.userId);
-    const { accessToken, refreshToken } = await createLocalTokens(reset.userId);
+    const { accessToken, refreshToken } = await createLocalTokens(reset.userId, req.headers["user-agent"]);
     setAuthCookies(reply, accessToken, refreshToken);
 
     return reply.send({ ok: true, loggedIn: true });

@@ -40,6 +40,7 @@ model User {
   postJobs           PostJob[]
   reviewedJobs       PostJob[]           @relation("PostJobReviewedBy")
   submittedJobs      PostJob[]           @relation("PostJobSubmittedBy")
+  loginEvents        LoginEvent[]
   authSessions       AuthSession[]
   apiKeys            ApiKey[]
   emailVerifications EmailVerification[]
@@ -141,8 +142,23 @@ model AuthSession {
   lastActiveAt  DateTime  @default(now())
   expiresAt     DateTime
   createdAt     DateTime  @default(now())
+  // The browser it was opened from (the User-Agent header, cut to 300 characters); null for sessions that predate this.
+  userAgent     String?
 
   @@index([userId])
+}
+
+// A sign-in, or a wrong password on a real account: "Recent sign-ins" on the profile page. Kept 30 days. No IP address.
+model LoginEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  at        DateTime @default(now())
+  userAgent String?
+  success   Boolean
+  failure   String? // "Wrong password"; null when it worked
+
+  @@index([userId, at])
 }
 
 // A connected social media account for a specific platform.

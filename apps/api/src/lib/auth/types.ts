@@ -18,8 +18,9 @@ export interface RefreshResult {
 }
 
 export interface AuthProvider {
-  register(email: string, password: string, name: string): Promise<{ user: AuthUser } & TokenPair>;
-  login(email: string, password: string): Promise<{ user: AuthUser } & TokenPair>;
+  /** `userAgent` is the browser's header: the session list says which device each session is. */
+  register(email: string, password: string, name: string, userAgent?: string): Promise<{ user: AuthUser } & TokenPair>;
+  login(email: string, password: string, userAgent?: string): Promise<{ user: AuthUser } & TokenPair>;
   /** `sessionId` is set by providers with server-side sessions (local). */
   validateAccessToken(token: string): Promise<(AuthUser & { sessionId?: string }) | null>;
   refreshTokens(refreshToken: string): Promise<RefreshResult | null>;

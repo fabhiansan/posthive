@@ -33,6 +33,9 @@ async function runCleanup(): Promise<void> {
     where: { OR: [{ expiresAt: { lt: new Date(now) } }, { lastActiveAt: { lt: cut1d } }] },
   });
 
+  // Sign-in history: the profile page shows 30 days (LOGIN_HISTORY_DAYS), so a line older than that is of no use
+  await prisma.loginEvent.deleteMany({ where: { at: { lt: cut30d } } });
+
   const [oldSessions, bounceSessions, oldEvents, oldPostJobs, oldOAuthStates, oldEmailVerifications, revokedApiKeys, staleApiKeys, staleOAuthClients] = await Promise.all([
     // Sessions older than 90 days
     prisma.session.deleteMany({ where: { createdAt: { lt: cut90d } } }),

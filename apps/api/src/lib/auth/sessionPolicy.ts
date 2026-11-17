@@ -22,6 +22,8 @@ export interface SessionRecord {
   lastActiveAt: Date;
   expiresAt: Date;
   createdAt: Date;
+  /** The browser it was opened from; absent on sessions that predate it. */
+  userAgent?: string | null;
 }
 
 export type SessionState = "active" | "idle_expired" | "absolute_expired";

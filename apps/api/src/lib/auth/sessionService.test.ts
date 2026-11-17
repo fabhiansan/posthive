@@ -202,3 +202,27 @@ describe("revocation", () => {
     expect(await ctx.service.authenticate(b.sessionId)).toBeNull();
   });
 });
+
+describe("which browser a session was opened from", () => {
+  let ctx: ReturnType<typeof setup>;
+  beforeEach(() => { ctx = setup(); });
+
+  it("is stored with the session, so the device list can name it", async () => {
+    const { sessionId } = await ctx.service.create("u1", "Mozilla/5.0 Chrome/130");
+    expect((await ctx.store.findById(sessionId))?.userAgent).toBe("Mozilla/5.0 Chrome/130");
+  });
+
+  it("is nothing when the browser sent none, and a session made the old way still works", async () => {
+    const a = await ctx.service.create("u1");
+    const b = await ctx.service.create("u1", null);
+    expect((await ctx.store.findById(a.sessionId))?.userAgent).toBeNull();
+    expect((await ctx.store.findById(b.sessionId))?.userAgent).toBeNull();
+    expect(await ctx.service.authenticate(a.sessionId)).toEqual({ userId: "u1" });
+  });
+
+  it("survives the refresh token being rotated", async () => {
+    const { sessionId, refreshToken } = await ctx.service.create("u1", "Firefox/132");
+    await ctx.service.refresh(refreshToken);
+    expect((await ctx.store.findById(sessionId))?.userAgent).toBe("Firefox/132");
+  });
+});

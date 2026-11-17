@@ -37,6 +37,7 @@ import { importRoutes } from "./routes/import.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { userRoutes } from "./routes/user.js";
+import { profileSecurityRoutes } from "./routes/profileSecurity.js";
 import { billingRoutes } from "./routes/billing.js";
 import { apiKeyRoutes } from "./routes/apiKeys.js";
 import { templateRoutes } from "./routes/templates.js";
@@ -175,6 +176,7 @@ async function main() {
 
   // Auth routes (no auth required)
   await app.register(userRoutes);
+  await app.register(profileSecurityRoutes);
   await app.register(authRoutes); // Threads OAuth
 
   // App routes (auth required — withAuth applied per-route)

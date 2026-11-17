@@ -87,57 +87,7 @@ export const NOTIFICATIONS: NotificationChoice[] = [
 ];
 
 export const SIGN_IN = {
-  lastSignIn: "Last sign-in today, 08:12 WIB · Chrome on macOS",
   passwordChanged: "Last changed 2 months ago",
   linkExpires: "Link expires after 30 minutes · request a new one anytime",
   twoStep: { on: true, detail: "Authenticator app · added 13 Nov 2026" },
 };
-
-export interface Device {
-  id: string;
-  /** The short label in the square tile: "Mac", "iOS", "Win". */
-  tile: string;
-  name: string;
-  place: string;
-  seen: string;
-  current: boolean;
-}
-
-export const DEVICES: Device[] = [
-  { id: "macbook", tile: "Mac", name: "MacBook Pro · Chrome on macOS", place: "Bandung, Indonesia", seen: "active now", current: true },
-  { id: "iphone", tile: "iOS", name: "iPhone 15 · Postly app", place: "Bandung, Indonesia", seen: "last active 2 hours ago", current: false },
-  { id: "windows", tile: "Win", name: "Windows PC · Edge", place: "Jakarta, Indonesia", seen: "last active 3 days ago", current: false },
-];
-
-export interface SignInRecord {
-  id: string;
-  when: string;
-  device: string;
-  place: string;
-  /** null = it worked; otherwise why it did not. */
-  failure: string | null;
-}
-
-export const SIGN_INS_RANGE = "Last 30 days";
-export const SIGN_INS: SignInRecord[] = [
-  { id: "1", when: "Today, 08:12 WIB", device: "Chrome · macOS", place: "Bandung, ID", failure: null },
-  { id: "2", when: "Yesterday, 19:40 WIB", device: "Postly app · iOS", place: "Bandung, ID", failure: null },
-  { id: "3", when: "10 Nov 2026, 22:05 WIB", device: "Firefox · Linux", place: "Surabaya, ID", failure: "Wrong password" },
-  { id: "4", when: "9 Nov 2026, 09:01 WIB", device: "Edge · Windows", place: "Jakarta, ID", failure: null },
-  { id: "5", when: "7 Nov 2026, 08:55 WIB", device: "Chrome · macOS", place: "Bandung, ID", failure: null },
-];
-
-export interface ActivityCount {
-  id: string;
-  count: number;
-  title: string;
-  note: string;
-}
-
-export const ACTIVITY: ActivityCount[] = [
-  { id: "imported", count: 60, title: "Posts imported", note: "From your Q4 plan file" },
-  { id: "design", count: 12, title: "Sent to Design Team", note: "Waiting for design review" },
-  { id: "approved", count: 8, title: "Designs approved", note: "Ready for your final check" },
-  { id: "scheduled", count: 2, title: "Scheduled", note: "Going live this week" },
-  { id: "published", count: 1, title: "Published", note: "Live on Instagram" },
-];

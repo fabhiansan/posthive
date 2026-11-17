@@ -5,6 +5,8 @@ import type { AuthProvider, AuthUser } from "./types.js";
 import { createSessionService } from "./sessionService.js";
 import { prismaSessionStore } from "./prismaSessionStore.js";
 import { ACCESS_TTL_MS } from "./sessionPolicy.js";
+import { cleanUserAgent } from "../deviceLabel.js";
+import { WRONG_PASSWORD, recordLoginEvent } from "../loginHistory.js";
 
 const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET!;
 
@@ -19,12 +21,19 @@ function signAccess(userId: string, sessionId: string): string {
   });
 }
 
+/** Every sign-in opens a session and leaves a line in the person's history, whichever way they came in. */
+async function startSession(userId: string, userAgent?: string | null) {
+  const created = await sessions.create(userId, cleanUserAgent(userAgent));
+  await recordLoginEvent({ userId, userAgent });
+  return created;
+}
+
 function toAuthUser(user: { id: string; email: string; name: string; avatarUrl: string | null; timezone: string }): AuthUser {
   return { id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, timezone: user.timezone };
 }
 
 export const localAuthProvider: AuthProvider = {
-  async register(email, password, name) {
+  async register(email, password, name, userAgent) {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) throw new Error("Email already in use");
 
@@ -47,19 +56,23 @@ export const localAuthProvider: AuthProvider = {
     });
     await prisma.user.update({ where: { id: user.id }, data: { activeWorkspaceId: workspace.id } });
 
-    const { sessionId, refreshToken } = await sessions.create(user.id);
+    const { sessionId, refreshToken } = await startSession(user.id, userAgent);
     return { user: toAuthUser(user), accessToken: signAccess(user.id, sessionId), refreshToken };
   },
 
-  async login(email, password) {
+  async login(email, password, userAgent) {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user || !user.passwordHash) throw new Error("Invalid email or password");
 
     const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) throw new Error("Invalid email or password");
+    if (!valid) {
+      // Only a wrong password on a real account is history: an email that is nobody's leaves nothing behind
+      await recordLoginEvent({ userId: user.id, userAgent, failure: WRONG_PASSWORD });
+      throw new Error("Invalid email or password");
+    }
 
     // Other devices keep their own sessions; expired ones are removed lazily on use.
-    const { sessionId, refreshToken } = await sessions.create(user.id);
+    const { sessionId, refreshToken } = await startSession(user.id, userAgent);
     return { user: toAuthUser(user), accessToken: signAccess(user.id, sessionId), refreshToken };
   },
 
@@ -96,7 +109,7 @@ export const localAuthProvider: AuthProvider = {
   },
 };
 
-export async function createLocalTokens(userId: string): Promise<{ accessToken: string; refreshToken: string }> {
-  const { sessionId, refreshToken } = await sessions.create(userId);
+export async function createLocalTokens(userId: string, userAgent?: string | null): Promise<{ accessToken: string; refreshToken: string }> {
+  const { sessionId, refreshToken } = await startSession(userId, userAgent);
   return { accessToken: signAccess(userId, sessionId), refreshToken };
 }

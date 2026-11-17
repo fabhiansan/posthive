@@ -45,7 +45,7 @@ export function createSessionService(deps: SessionServiceDeps) {
   const randomToken = deps.randomToken ?? (() => crypto.randomBytes(32).toString("base64url"));
 
   return {
-    async create(userId: string): Promise<CreatedSession> {
+    async create(userId: string, userAgent?: string | null): Promise<CreatedSession> {
       const t = now();
       const refreshToken = randomToken();
       const row = await store.create({
@@ -55,6 +55,7 @@ export function createSessionService(deps: SessionServiceDeps) {
         rotatedAt: null,
         lastActiveAt: t,
         expiresAt: new Date(t.getTime() + ABSOLUTE_TTL_MS),
+        userAgent: userAgent ?? null,
       });
       return { sessionId: row.id, refreshToken };
     },

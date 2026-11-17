@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { LogOutIcon } from "lucide-react";
 import { TopbarActions } from "@/components/dashboard/Topbar";
 import { ImportActionBar } from "@/components/import/ImportActionBar";
 import { AccountCard } from "@/components/profile/AccountCard";
 import { ActivityCard } from "@/components/profile/ActivityCard";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ChangePasswordDialog } from "@/components/profile/ChangePasswordDialog";
 import { DeleteAccountDialog } from "@/components/profile/DeleteAccountDialog";
 import { DevicesCard } from "@/components/profile/DevicesCard";
@@ -27,24 +29,24 @@ import { platformLabel } from "@/lib/platforms";
 import { memberSince, planLine, quarterOf, type ConnectedAccount } from "@/lib/profile";
 import {
   ABOUT_MAX,
-  ACTIVITY,
-  DEVICES,
   LANGUAGE,
   LANGUAGES,
   NOTIFICATIONS,
   NOTIFICATIONS_SCOPE,
   PLAN_INTERVAL,
-  SIGN_INS,
-  SIGN_INS_RANGE,
   SIGN_IN,
   WORKS_WITH_CONTACT,
   sampleOf,
   sampleOn,
 } from "@/lib/profile-mock";
+import { lastSignInLine, type ApiDevice } from "@/lib/profile-security";
+import { useActivity, useDevices } from "@/lib/useProfileSecurity";
 import { roleProfileOf } from "@/lib/role-profile";
 import type { AppRole } from "@/lib/permissions";
 
 const NOT_YET = "Not available yet";
+/** The sign-in history the API keeps and the card says (LOGIN_HISTORY_DAYS in the API). */
+const HISTORY_DAYS = 30;
 
 /** What the form holds that the server does not keep yet: it starts as the mock and goes back to it on Cancel. */
 interface Draft {
@@ -57,9 +59,9 @@ interface Draft {
 }
 
 /**
- * My Profile: the person's own page. Their name is saved for real; the rest of the form, the devices
- * and the activity come from lib/profile-mock.ts until the API has them. What the role may do is
- * read from lib/role-profile.ts, so another role changes data, not markup.
+ * My Profile: the person's own page. Their name, devices, sign-in history and activity are real; the rest of the
+ * form comes from lib/profile-mock.ts until the API has it. What the role may do is read from lib/role-profile.ts,
+ * so another role changes data, not markup.
  */
 export default function ProfilePage() {
   const router = useRouter();
@@ -77,6 +79,11 @@ export default function ProfilePage() {
   const workspaceName = activeWorkspace?.name ?? "";
   const email = user?.email ?? "";
   const quarter = quarterOf(now);
+
+  const devices = useDevices();
+  const activity = useActivity();
+  const [signingOut, setSigningOut] = useState<string | null>(null);
+  const [othersOpen, setOthersOpen] = useState(false);
 
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
   useEffect(() => {
@@ -172,6 +179,32 @@ export default function ProfilePage() {
     else toast("Your account signs in without a password. Use Send reset link to set one.");
   }
 
+  async function signOutDevice(device: ApiDevice) {
+    setSigningOut(device.id);
+    try {
+      await apiFetch(`/user/devices/${device.id}`, { method: "DELETE" });
+      success(`Signed out of ${device.name}`);
+    } catch (e) {
+      error(e instanceof Error ? e.message : "Failed to sign that device out");
+    } finally {
+      setSigningOut(null);
+      // whatever happened, the list is asked again: the device may already be gone
+      devices.reload();
+    }
+  }
+
+  async function signOutOthers() {
+    try {
+      await apiFetch("/user/devices/sign-out-others", { method: "POST" });
+      success("Signed out of your other devices");
+    } catch (e) {
+      error(e instanceof Error ? e.message : "Failed to sign out of your other devices");
+      throw e;
+    } finally {
+      devices.reload();
+    }
+  }
+
   async function logOut() {
     await logout();
     router.replace("/login");
@@ -253,7 +286,7 @@ export default function ProfilePage() {
               onChange={(id, on) => set({ notifications: { ...draft.notifications, [id]: on } })}
             />
             <PasswordCard
-              lastSignIn={demo ? SIGN_IN.lastSignIn : undefined}
+              lastSignIn={devices.data ? lastSignInLine(devices.data.signIns, now) : undefined}
               changed={demo ? SIGN_IN.passwordChanged : undefined}
               email={email}
               linkNote={SIGN_IN.linkExpires}
@@ -263,7 +296,17 @@ export default function ProfilePage() {
               onSendLink={() => void sendResetLink()}
               onManage={() => toast(NOT_YET)}
             />
-            {demo && <DevicesCard devices={DEVICES} signIns={SIGN_INS} range={SIGN_INS_RANGE} onSignOut={() => toast(NOT_YET)} onSignOutOthers={() => toast(NOT_YET)} />}
+            <DevicesCard
+              data={devices.data}
+              loading={devices.loading}
+              error={devices.error}
+              now={now}
+              signingOut={signingOut}
+              days={HISTORY_DAYS}
+              onRetry={devices.reload}
+              onSignOut={(device) => void signOutDevice(device)}
+              onSignOutOthers={() => setOthersOpen(true)}
+            />
             <AccountCard
               email={email}
               workspace={workspaceName}
@@ -290,7 +333,7 @@ export default function ProfilePage() {
               team={[team.team, workspaceName].filter(Boolean).join(" · ")}
               worksWith={contact ? `${profile.worksWith} · ${contact}` : profile.worksWith}
             />
-            {demo && <ActivityCard quarter={quarter.label} resets={quarter.resets} counts={ACTIVITY} />}
+            <ActivityCard quarter={quarter.label} resets={quarter.resets} data={activity.data} loading={activity.loading} error={activity.error} onRetry={activity.reload} />
           </div>
         </div>
 
@@ -304,7 +347,17 @@ export default function ProfilePage() {
         </ImportActionBar>
       </div>
 
-      <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
+      <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} onChanged={devices.reload} />
+      <ConfirmDialog
+        open={othersOpen}
+        onOpenChange={setOthersOpen}
+        title="Sign out of your other devices?"
+        description="Every device except this one is signed out and has to sign in again."
+        confirmLabel="Sign out"
+        pendingLabel="Signing out…"
+        icon={<LogOutIcon />}
+        onConfirm={signOutOthers}
+      />
       <DeleteAccountDialog open={deleteOpen} onOpenChange={setDeleteOpen} email={email} owned={owned} hasPassword={Boolean(user?.hasPassword)} onDelete={deleteAccount} />
     </div>
   );
