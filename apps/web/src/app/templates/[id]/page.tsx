@@ -8,6 +8,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
 import { InlineAlert } from "@/components/InlineAlert";
 import { TemplateEditor } from "@/components/TemplateEditor";
+import { CanvasDesignBlock } from "@/components/templates/CanvasDesignBlock";
 import { TemplateCover } from "@/components/templates/TemplateCover";
 import { TemplateStatus } from "@/components/templates/TemplateStatus";
 import { TemplatesHeader } from "@/components/templates/TemplatesHeader";
@@ -17,8 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiFetch } from "@/lib/api";
-import { createdLine, formatText, linkLabel, platformsText } from "@/lib/template-library";
-import { isFigmaLink, type DesignTemplate } from "@/lib/templates";
+import { createdLine, formatText, platformsText, publishBlockedReason, sourceLabel } from "@/lib/template-library";
+import { hasFigmaSource, isFigmaLink, type DesignTemplate } from "@/lib/templates";
 import { usePermissions } from "@/lib/usePermissions";
 import { useTemplates } from "@/lib/useTemplates";
 import { wibDateKey } from "@/lib/datetime";
@@ -137,18 +138,25 @@ export default function TemplateDetailPage() {
                 <Row label="Content format">{formatText(template) ?? "No format yet"}</Row>
                 <Row label="Publishing platforms">{platformsText(template.platforms) ?? "No platform yet"}</Row>
                 <Row label="Figma link">
-                  {template.linkUrl ? (
+                  {hasFigmaSource(template.linkUrl) && template.linkUrl ? (
                     <a href={template.linkUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 text-brand-800 underline-offset-4 hover:underline">
-                      <span className="truncate">{linkLabel(template.linkUrl)}</span>
+                      <span className="truncate">{sourceLabel(template)}</span>
                       <ExternalLinkIcon aria-hidden="true" className="size-3.5 shrink-0" />
                     </a>
                   ) : (
-                    "No Figma link yet"
+                    sourceLabel(template)
                   )}
                 </Row>
                 <Row label="Created">{createdLine(template).replace(/^Created /, "")}</Row>
                 {updated && <Row label="Last updated">{updated}</Row>}
               </dl>
+
+              {canManage && <CanvasDesignBlock template={template} onChanged={reload} />}
+
+              {/* Visible, not only a tooltip: a disabled button takes no focus and a tooltip does not show on touch. */}
+              {canManage && !template.published && publishBlockedReason(template) && (
+                <p id="publish-reason" role="status" className="type-body-r-xs text-brand-800">{publishBlockedReason(template)}</p>
+              )}
 
               <div className="mt-auto flex flex-wrap items-center gap-2">
                 {back}
@@ -158,7 +166,13 @@ export default function TemplateDetailPage() {
                       <PencilIcon />
                       Edit
                     </Button>
-                    <Button variant={template.published ? "secondary" : "default"} disabled={switching} onClick={() => void setPublished(!template.published)}>
+                    <Button
+                      variant={template.published ? "secondary" : "default"}
+                      disabled={switching || (!template.published && publishBlockedReason(template) !== null)}
+                      title={template.published ? undefined : (publishBlockedReason(template) ?? undefined)}
+                      aria-describedby={!template.published && publishBlockedReason(template) ? "publish-reason" : undefined}
+                      onClick={() => void setPublished(!template.published)}
+                    >
                       {template.published ? <EyeOffIcon /> : <GlobeIcon />}
                       {template.published ? "Unpublish" : "Publish"}
                     </Button>

@@ -57,6 +57,8 @@ export interface Autosave<D> {
   readonly info: AutosaveInfo;
   /** After a conflict: the server's version, ready for reset(). */
   readonly conflict: Saved<D> | null;
+  /** The version the server last confirmed: what a publish names. Only meaningful once flush() has resolved true. */
+  readonly version: number;
 }
 
 export const DEBOUNCE_MS = 1500;
@@ -385,6 +387,9 @@ export function createAutosave<D>(initial: Saved<D>, deps: AutosaveDeps<D>): Aut
     },
     get conflict() {
       return latest;
+    },
+    get version() {
+      return saved.version;
     },
   };
 }

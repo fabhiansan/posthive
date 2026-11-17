@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   NO_FILTERS,
   PAGE_SIZE,
+  attachBlockedReason,
+  attachNotice,
   createdLine,
   filterTemplates,
   footerLine,
@@ -12,6 +14,8 @@ import {
   marketingLine,
   pageOf,
   platformsText,
+  publishBlockedReason,
+  sourceLabel,
   subLine,
   toCsv,
 } from "./template-library";
@@ -186,5 +190,109 @@ describe("toCsv", () => {
 
   it("no templates: only the header", () => {
     expect(toCsv([]).split("\r\n")).toHaveLength(2);
+  });
+});
+
+// ── Canvas designs (phase 4): what the page says about a template's source ─────────────────────────────────────
+
+const FIGMA = "https://www.figma.com/design/Pt3mPl8/Insight-Carousel";
+
+describe("sourceLabel", () => {
+  it("a valid Figma link is shown as before, shortened", () => {
+    expect(sourceLabel(t())).toBe("figma.com/design/Pt3mPl8/Insight-Carousel");
+    expect(sourceLabel(t())).toBe(linkLabel(FIGMA));
+  });
+
+  it("a Canvas revision with no Figma link is the Canvas design and its revision", () => {
+    expect(sourceLabel(t({ linkUrl: null, designId: "d1", canvasRevision: 3 }))).toBe("Canvas design · Revision 3");
+  });
+
+  it("a Canvas design with no revision says so", () => {
+    expect(sourceLabel(t({ linkUrl: null, designId: "d1", canvasRevision: null }))).toBe("Canvas design · no revision yet");
+  });
+
+  it("a Figma link wins over a Canvas design: it is what Marketing is sent", () => {
+    expect(sourceLabel(t({ designId: "d1", canvasRevision: 2 }))).toBe(linkLabel(FIGMA));
+  });
+
+  it("a stored link that is not a Figma design is never called one", () => {
+    expect(sourceLabel(t({ linkUrl: "https://example.com" }))).toBe("Not a Figma link");
+    expect(sourceLabel(t({ linkUrl: "https://example.com", designId: "d1", canvasRevision: 1 }))).toBe("Canvas design · Revision 1");
+  });
+
+  it("a blank link and nothing else is no link yet", () => {
+    expect(sourceLabel(t({ linkUrl: null }))).toBe("No Figma link yet");
+    expect(sourceLabel(t({ linkUrl: "   " }))).toBe("No Figma link yet");
+    expect(sourceLabel(t({ linkUrl: "" }))).toBe("No Figma link yet");
+  });
+});
+
+describe("publishBlockedReason: the page says it first, the API decides", () => {
+  it("a template with a Figma link, or a Canvas revision, is not blocked", () => {
+    expect(publishBlockedReason(t())).toBeNull();
+    expect(publishBlockedReason(t({ linkUrl: null, designId: "d1", canvasRevision: 1 }))).toBeNull();
+  });
+
+  it("nothing at all is blocked, and the reason says what to add", () => {
+    expect(publishBlockedReason(t({ linkUrl: null }))).toBe("Add a Figma link or publish a Canvas revision first.");
+  });
+
+  it("a whitespace link is blocked (it is truthy but not a source)", () => {
+    expect(publishBlockedReason(t({ linkUrl: "   " }))).toBe("Add a Figma link or publish a Canvas revision first.");
+  });
+
+  it("a link that is not a Figma design is blocked, and the reason says so", () => {
+    expect(publishBlockedReason(t({ linkUrl: "https://example.com" }))).toContain("not a Figma design");
+  });
+
+  it("a Canvas design with no revision is blocked", () => {
+    expect(publishBlockedReason(t({ linkUrl: null, designId: "d1", canvasRevision: null }))).not.toBeNull();
+  });
+});
+
+describe("attachBlockedReason (R4: linking must not strand a published template)", () => {
+  const revised = { latestRevision: { number: 1 } };
+  const bare = { latestRevision: null };
+
+  it("a template that already has a design cannot take another", () => {
+    expect(attachBlockedReason(t({ designId: "d1", canvasRevision: 1 }), revised)).toContain("already has a Canvas design");
+  });
+
+  it("a DRAFT with no source may take any design, with or without a revision, and a design about to be created", () => {
+    const draft = t({ published: false, linkUrl: null });
+    expect(attachBlockedReason(draft, bare)).toBeNull();
+    expect(attachBlockedReason(draft, revised)).toBeNull();
+    expect(attachBlockedReason(draft, null)).toBeNull();
+  });
+
+  it("a published template WITH a valid Figma link may take a design with no revision", () => {
+    expect(attachBlockedReason(t({ published: true }), bare)).toBeNull();
+    expect(attachBlockedReason(t({ published: true }), null)).toBeNull();
+  });
+
+  it("a published template with no source may take only a design that already has a revision", () => {
+    const legacy = t({ published: true, linkUrl: null });
+    expect(attachBlockedReason(legacy, revised)).toBeNull();
+    expect(attachBlockedReason(legacy, bare)).toContain("link a design that has a revision");
+    expect(attachBlockedReason(legacy, null)).not.toBeNull(); // a design that is about to be created has no revision
+  });
+
+  it("the same for a published template whose link is not a Figma design, or is blank", () => {
+    for (const linkUrl of ["https://example.com", "   ", ""]) {
+      expect(attachBlockedReason(t({ published: true, linkUrl }), bare), JSON.stringify(linkUrl)).not.toBeNull();
+      expect(attachBlockedReason(t({ published: true, linkUrl }), revised), JSON.stringify(linkUrl)).toBeNull();
+    }
+  });
+});
+
+describe("attachNotice: what linking changes for the public API and MCP", () => {
+  it("says so for a published template that has no valid Figma link", () => {
+    expect(attachNotice(t({ published: true, linkUrl: null }))).toContain("no longer returned by the public API and MCP");
+    expect(attachNotice(t({ published: true, linkUrl: "https://example.com" }))).not.toBeNull();
+  });
+
+  it("says nothing for a draft, or for a template that keeps its Figma link", () => {
+    expect(attachNotice(t({ published: false, linkUrl: null }))).toBeNull();
+    expect(attachNotice(t({ published: true }))).toBeNull();
   });
 });

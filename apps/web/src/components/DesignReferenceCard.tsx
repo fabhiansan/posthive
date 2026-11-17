@@ -1,7 +1,7 @@
 "use client";
 
 import type { Category } from "../lib/contentTypes";
-import { fileHref, isFigmaLink, isIncomplete, type DesignTemplate } from "../lib/templates";
+import { fileHref, isFigmaLink, type DesignTemplate } from "../lib/templates";
 import { contentTypeLabel } from "./ContentTypeSelects";
 
 // The design template for a post's content type, shown next to the post as a reference.
@@ -37,8 +37,9 @@ export function DesignReferenceCard({ template, category, showPreview = false }:
         <p className="type-body-r-xs mt-0.5 text-muted">
           {contentTypeLabel(template.category, template.pillar)}. For reference only; it is not attached to the post.
         </p>
-        {isIncomplete(template) ? (
-          <p className="type-body-r-xs mt-2 text-muted">Figma link not added yet.</p>
+        {!template.linkUrl?.trim() ? (
+          // No link to open: a template designed in Canvas says so (it has nothing for Marketing to click here), any other says it is missing.
+          <p className="type-body-r-xs mt-2 text-muted">{template.canvasRevision != null ? "Designed in Canvas by the design team." : "Figma link not added yet."}</p>
         ) : (
           <div className="flex flex-wrap gap-2 mt-2">
             {template.linkUrl && (

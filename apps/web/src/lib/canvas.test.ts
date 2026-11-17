@@ -250,3 +250,52 @@ describe("design calls", () => {
     expect(err).toMatchObject({ status: 409, message: "This design was changed somewhere else.", data: { code: "VERSION_CONFLICT" } });
   });
 });
+
+describe("revisions and the template link (phase 4)", () => {
+  const last = () => fetchMock.mock.calls.at(-1) as [string, RequestInit];
+
+  it("publish names only the version, to the design's own address", async () => {
+    fetchMock.mockImplementation(async () => json({ revision: { number: 1, designVersion: 3, createdAt: "2026-11-17T00:00:00Z" } }, 201));
+    const { publishDesign } = await import("./canvas");
+    await publishDesign("d1", 3);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/designs/d1/publish");
+    expect(last()[1]).toMatchObject({ method: "POST", body: '{"version":3}', credentials: "include" });
+    expect(last()[1].headers).toMatchObject({ "Content-Type": "application/json" }); // the API refuses anything but JSON
+    expect(Object.keys(JSON.parse(last()[1].body as string))).toEqual(["version"]); // never a document, a manifest or a number
+  });
+
+  it("create-for-template is one POST with an empty object, to the template's own address (the server makes and links the design)", async () => {
+    fetchMock.mockImplementation(async () => json({ design: { id: "d9", name: "Case Study", version: 1 } }, 201));
+    const { createDesignForTemplate } = await import("./canvas");
+    const res = await createDesignForTemplate("t/1?x");
+    expect(res.design.id).toBe("d9");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/templates/t%2F1%3Fx/design");
+    expect(last()[1]).toMatchObject({ method: "POST", body: "{}", credentials: "include" });
+    expect(last()[1].headers).toMatchObject({ "Content-Type": "application/json" });
+  });
+
+  it("attach and detach address the template by an encoded id", async () => {
+    fetchMock.mockImplementation(async () => json({ ok: true }));
+    const { attachDesign, detachDesign } = await import("./canvas");
+    await attachDesign("t/1?x", "d1");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/templates/t%2F1%3Fx/design");
+    expect(last()[1]).toMatchObject({ method: "PUT", body: '{"designId":"d1"}' });
+    expect(last()[1].headers).toMatchObject({ "Content-Type": "application/json" });
+    await detachDesign("t1");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/templates/t1/design");
+    expect(last()[1].method).toBe("DELETE");
+  });
+
+  it.each(["NO_CHANGES", "INVALID_PUBLISH", "UNKNOWN_ASSET", "TEMPLATE_HAS_DESIGN", "DESIGN_LINKED", "DESIGN_NEEDS_REVISION", "SOURCE_REQUIRED", "VERSION_CONFLICT"])(
+    "a refusal with the code %s reaches the page with its status, message and code",
+    async (code) => {
+      fetchMock.mockImplementation(async () => json({ error: `refused: ${code}`, code }, 409)); // a fresh Response each call: a body can be read once
+      const { publishDesign, attachDesign, detachDesign } = await import("./canvas");
+      for (const call of [() => publishDesign("d1", 1), () => attachDesign("t1", "d1"), () => detachDesign("t1")]) {
+        const err = await call().catch((e: unknown) => e);
+        expect(err).toMatchObject({ status: 409, message: `refused: ${code}`, data: { code } });
+      }
+    },
+  );
+});

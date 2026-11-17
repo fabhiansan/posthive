@@ -158,11 +158,22 @@ export async function loadAsset(assetId: string): Promise<HTMLImageElement> {
 // ── Saved designs ───────────────────────────────────────────────────────────
 // Designer only (the API refuses anyone else). A failed call throws what apiFetch throws: an Error with `status` and `data`.
 
+/** A published, immutable revision of a design. */
+export interface RevisionInfo {
+  number: number;
+  designVersion: number;
+  createdAt: string;
+}
+
 export interface DesignSummary {
   id: string;
   name: string;
   version: number;
   updatedAt: string;
+  /** The template this design is made for (null: not attached to one). */
+  template: { id: string; category: string; published: boolean } | null;
+  /** Its latest published revision (null: none yet). */
+  latestRevision: RevisionInfo | null;
 }
 
 export interface Design extends DesignSummary {
@@ -181,3 +192,19 @@ export const getDesign = (id: string) => apiFetch<{ design: Design }>(designPath
 export const saveDesign = (id: string, body: { version: number; document: CanvasDocument; name?: string }) =>
   apiFetch<{ version: number }>(designPath(id), { method: "PUT", body: JSON.stringify(body) });
 export const deleteDesign = (id: string) => apiFetch<{ ok: true }>(designPath(id), { method: "DELETE" });
+
+// ── Revisions and templates (phase 4) ───────────────────────────────────────
+// Publishing a revision freezes the saved design and the layers Marketing may change. It does not make anything visible to
+// Marketing: that is the template's own Publish. `version` is the one the editor last saved (a 409 VERSION_CONFLICT otherwise).
+// Error codes the pages read from `error.data.code`: NO_CHANGES, INVALID_PUBLISH, UNKNOWN_ASSET, TEMPLATE_HAS_DESIGN,
+// DESIGN_LINKED, DESIGN_NEEDS_REVISION, SOURCE_REQUIRED.
+export const publishDesign = (id: string, version: number) =>
+  apiFetch<{ revision: RevisionInfo }>(`${designPath(id)}/publish`, { method: "POST", body: JSON.stringify({ version }) });
+
+const templateDesignPath = (templateId: string) => `/canvas/templates/${encodeURIComponent(templateId)}/design`;
+/** Creates a blank design named after the template's category and attaches it, in one step on the server: if it fails, nothing is left behind. */
+export const createDesignForTemplate = (templateId: string) =>
+  apiFetch<{ design: { id: string; name: string; version: number } }>(templateDesignPath(templateId), { method: "POST", body: JSON.stringify({}) });
+export const attachDesign = (templateId: string, designId: string) =>
+  apiFetch<{ designId: string }>(templateDesignPath(templateId), { method: "PUT", body: JSON.stringify({ designId }) });
+export const detachDesign = (templateId: string) => apiFetch<{ ok: true }>(templateDesignPath(templateId), { method: "DELETE" });

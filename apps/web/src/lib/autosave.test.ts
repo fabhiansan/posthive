@@ -815,3 +815,59 @@ describe("sameJson", () => {
     expect(sameJson(a, b)).toBe(expected);
   });
 });
+
+describe("the confirmed version (a publish names it)", () => {
+  it("starts as the version the design was opened at", () => {
+    const { a } = setup({ version: 7, doc: D0, name: "A" });
+    expect(a.version).toBe(7);
+  });
+
+  it("is the version the server confirmed, not the one a save was sent on", async () => {
+    const { a, requests } = setup();
+    a.update(doc(1), "A");
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(requests[0].version).toBe(1);
+    expect(a.version).toBe(1); // sent, not confirmed yet: still the old one
+    requests[0].ok(2);
+    await settle();
+    expect(a.version).toBe(2);
+  });
+
+  it("follows each answer (1, 2, 3) and a jump the server makes", async () => {
+    const { a, requests } = setup();
+    a.update(doc(1), "A");
+    await vi.advanceTimersByTimeAsync(1500);
+    requests[0].ok(2);
+    await settle();
+    a.update(doc(2), "A");
+    await vi.advanceTimersByTimeAsync(1500);
+    requests[1].ok(9);
+    await settle();
+    expect(a.version).toBe(9);
+  });
+
+  it("a failed save does not move it", async () => {
+    const { a, requests } = setup();
+    a.update(doc(1), "A");
+    await vi.advanceTimersByTimeAsync(1500);
+    requests[0].fail(http(400, "no"));
+    await settle();
+    expect(a.version).toBe(1);
+  });
+
+  it("after Reload latest (reset) it is the server's version", async () => {
+    const { a } = setup();
+    a.reset({ version: 12, doc: doc(5), name: "B" });
+    expect(a.version).toBe(12);
+  });
+
+  it("after flush() resolves true, it is the version the last save confirmed", async () => {
+    const { a, requests } = setup();
+    a.update(doc(1), "A");
+    const done = a.flush();
+    await settle();
+    requests[0].ok(2);
+    await expect(done).resolves.toBe(true);
+    expect(a.version).toBe(2);
+  });
+});

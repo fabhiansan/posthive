@@ -2,9 +2,9 @@
 // place the API may reach into apps/canvas): every boundary below is driven by the ENGINE's numbers, so if the two
 // sides drift apart, a document the editor can make is refused here, or one the editor forbids gets through.
 import { describe, expect, it } from "vitest";
-import { addNode, createDocument, createImage, createShape, createText, foldScale, moveNode, removeNode, updateNode, type CanvasDocument, type CanvasNode, type NodePatch } from "../../../canvas/src/document";
+import { addNode, createDocument, createImage, createShape, createText, editableLayers, foldScale, moveNode, removeNode, updateNode, type CanvasDocument, type CanvasNode, type NodePatch } from "../../../canvas/src/document";
 import { LIMITS as ENGINE } from "../../../canvas/src/limits";
-import { BLANK_DOCUMENT, LIMITS, canvasDocument, createBody, designName, documentAssetIds, firstIssue, saveBody } from "./canvas.js";
+import { BLANK_DOCUMENT, LIMITS, attachBody, buildManifest, canvasDocument, createBody, designName, documentAssetIds, firstIssue, hiddenMessage, publishBody, saveBody } from "./canvas.js";
 
 const accepts = (doc: unknown) => canvasDocument.safeParse(doc).success;
 const issuePath = (doc: unknown) => {
@@ -470,5 +470,170 @@ describe("the request bodies", () => {
     expect(saveBody.safeParse({ version: 1, document, workspaceId: "other" }).success).toBe(false);
     expect(createBody.safeParse({ name: "A", kind: "instance" }).success).toBe(false);
     expect(saveBody.safeParse(undefined).success).toBe(false);
+  });
+
+  it("a publish names a version and nothing else: no document, manifest, number or author comes from the client", () => {
+    expect(publishBody.safeParse({ version: 3 }).success).toBe(true);
+    for (const version of [0, -1, 1.5, "3", null, undefined, 2_000_000_001]) expect(publishBody.safeParse({ version }).success, String(version)).toBe(false);
+    for (const extra of [{ document: BLANK_DOCUMENT }, { manifest: { schemaVersion: 1, fields: [] } }, { number: 9 }, { designId: "x" }, { createdByUserId: "u" }, { workspaceId: "w" }, { kind: "template" }]) {
+      expect(publishBody.safeParse({ version: 3, ...extra }).success, JSON.stringify(Object.keys(extra))).toBe(false);
+    }
+    expect(publishBody.safeParse({}).success).toBe(false);
+    expect(publishBody.safeParse(undefined).success).toBe(false);
+    expect(publishBody.safeParse(null).success).toBe(false);
+  });
+
+  it("an attach names a well-formed design id and nothing else", () => {
+    expect(attachBody.safeParse({ designId: "clx1y2z3a0000abcd" }).success).toBe(true);
+    for (const designId of ["", "a b", "a/b", "../x", "a\u0000b", "x".repeat(65), 5, null, undefined]) expect(attachBody.safeParse({ designId }).success, String(designId)).toBe(false);
+    expect(attachBody.safeParse({ designId: "d1", templateId: "t1" }).success).toBe(false);
+    expect(attachBody.safeParse({ designId: "d1", published: true }).success).toBe(false);
+  });
+});
+
+// ── The field manifest (phase 4) ────────────────────────────────────────────
+
+type Edit = Record<string, unknown>;
+/** A design of the given layers; each is [id, type, change]. Layers are made by the editor's own factories. */
+function design(...layers: Array<[string, "text" | "image" | "rect" | "group", Edit?]>) {
+  const nodes = layers.map(([id, type, change]) => {
+    const base = type === "text" ? createText(blank) : type === "image" ? createImage(blank, { id: "asset-1", width: 10, height: 10 }) : createShape(blank, type === "group" ? "rect" : type);
+    return { ...base, id, name: `Layer ${id}`, ...(type === "group" ? { type: "group" } : {}), ...change } as unknown as CanvasNode;
+  });
+  return { ...blank, nodes } as CanvasDocument;
+}
+const ids = (m: { fields: Array<{ nodeId: string }> }) => m.fields.map((f) => f.nodeId);
+
+describe("buildManifest: default deny", () => {
+  it("lists only a text layer set to text and an image layer set to image, in paint order", () => {
+    const doc = design(["a", "text", { permission: "text" }], ["b", "rect"], ["c", "image", { permission: "image" }], ["d", "text"], ["e", "image"], ["f", "text", { permission: "text" }]);
+    const { manifest, hidden } = buildManifest(doc);
+    expect(manifest).toEqual({
+      schemaVersion: 1,
+      fields: [
+        { nodeId: "a", kind: "text" },
+        { nodeId: "c", kind: "image" },
+        { nodeId: "f", kind: "text" },
+      ],
+    });
+    expect(hidden).toEqual([]);
+  });
+
+  it("an empty design, and a design with nothing editable, has an empty manifest (that is allowed)", () => {
+    expect(buildManifest(blank).manifest).toEqual({ schemaVersion: 1, fields: [] });
+    expect(buildManifest(design(["a", "text"], ["b", "rect"], ["c", "image"])).manifest.fields).toEqual([]);
+  });
+
+  it("shapes and groups are protected by absence, whatever they carry", () => {
+    const doc = design(["r", "rect", { permission: "text" }], ["g", "group", { permission: "image" }]); // the schema refuses these; the manifest must not list them anyway
+    expect(buildManifest(doc).manifest.fields).toEqual([]);
+  });
+
+  it("is deterministic and does not change its input", () => {
+    const doc = design(["a", "text", { permission: "text" }], ["b", "image", { permission: "image" }]);
+    const before = JSON.stringify(doc);
+    expect(JSON.stringify(buildManifest(doc))).toBe(JSON.stringify(buildManifest(doc)));
+    expect(JSON.stringify(doc)).toBe(before);
+  });
+
+  it("follows the document, not a client: the same document always gives the same manifest", () => {
+    const a = design(["a", "text", { permission: "text" }]);
+    const b = design(["a", "text", { permission: "protected" }]);
+    expect(ids(buildManifest(a).manifest)).toEqual(["a"]);
+    expect(ids(buildManifest(b).manifest)).toEqual([]);
+  });
+});
+
+describe("buildManifest: effective visibility", () => {
+  it("an editable layer that is hidden itself is reported, not listed", () => {
+    const { manifest, hidden } = buildManifest(design(["a", "text", { permission: "text", visible: false }], ["b", "text", { permission: "text" }]));
+    expect(ids(manifest)).toEqual(["b"]);
+    expect(hidden).toEqual([{ nodeId: "a", name: "Layer a", group: null }]);
+  });
+
+  it("an editable child of a hidden group is hidden, and the group is named", () => {
+    const doc = design(["g", "group", { visible: false }], ["a", "text", { permission: "text", parentId: "g" }]);
+    const { manifest, hidden } = buildManifest(doc);
+    expect(manifest.fields).toEqual([]);
+    expect(hidden).toEqual([{ nodeId: "a", name: "Layer a", group: "Layer g" }]);
+  });
+
+  it("a hidden grandparent hides a grandchild: the whole chain is checked", () => {
+    const doc = design(["g1", "group", { visible: false }], ["g2", "group", { parentId: "g1" }], ["a", "image", { permission: "image", parentId: "g2" }]);
+    const { manifest, hidden } = buildManifest(doc);
+    expect(manifest.fields).toEqual([]);
+    expect(hidden).toMatchObject([{ nodeId: "a", group: "Layer g1" }]);
+  });
+
+  it("a visible child of visible groups is listed", () => {
+    const doc = design(["g1", "group"], ["g2", "group", { parentId: "g1" }], ["a", "text", { permission: "text", parentId: "g2" }]);
+    expect(ids(buildManifest(doc).manifest)).toEqual(["a"]);
+    expect(buildManifest(doc).hidden).toEqual([]);
+  });
+
+  it("a visible child of a hidden group next to a visible one: only the first is hidden", () => {
+    const doc = design(["g", "group", { visible: false }], ["h", "group"], ["a", "text", { permission: "text", parentId: "g" }], ["b", "text", { permission: "text", parentId: "h" }]);
+    const { manifest, hidden } = buildManifest(doc);
+    expect(ids(manifest)).toEqual(["b"]);
+    expect(hidden.map((x) => x.nodeId)).toEqual(["a"]);
+  });
+
+  it("hidden protected layers do not matter: only editable ones can block a publish", () => {
+    const doc = design(["g", "group", { visible: false }], ["r", "rect", { parentId: "g" }], ["t", "text", { visible: false }]);
+    expect(buildManifest(doc).hidden).toEqual([]);
+  });
+
+  it("a parent chain that cannot be followed fails closed (hidden), and the walk always ends", () => {
+    const missing = design(["a", "text", { permission: "text", parentId: "nope" }]);
+    expect(buildManifest(missing).hidden).toHaveLength(1);
+    const loop = design(["g1", "group", { parentId: "g2" }], ["g2", "group", { parentId: "g1" }], ["a", "text", { permission: "text", parentId: "g1" }]); // the schema refuses a cycle; this must not hang
+    expect(buildManifest(loop).hidden).toHaveLength(1);
+  });
+
+  it("the message names the layers (the first five, then a count)", () => {
+    const one = hiddenMessage([{ nodeId: "a", name: "Title", group: null }]);
+    expect(one).toContain('"Title" is editable but hidden');
+    expect(hiddenMessage([{ nodeId: "a", name: "Title", group: "Hero" }])).toContain('"Title" is editable but hidden because its group "Hero" is hidden');
+    const seven = hiddenMessage(Array.from({ length: 7 }, (_, i) => ({ nodeId: `n${i}`, name: `L${i}`, group: null })));
+    expect(seven).toContain('"L4"');
+    expect(seven).not.toContain('"L5"');
+    expect(seven).toContain("and 2 more");
+  });
+});
+
+describe("the engine and the server derive the same manifest (parity)", () => {
+  const docs: Array<[string, CanvasDocument]> = [
+    ["empty", blank],
+    ["nothing editable", design(["a", "text"], ["b", "image"], ["c", "rect"])],
+    ["editable and shown", design(["a", "text", { permission: "text" }], ["b", "image", { permission: "image" }], ["c", "rect"])],
+    ["editable but hidden", design(["a", "text", { permission: "text", visible: false }], ["b", "image", { permission: "image" }])],
+    ["hidden group", design(["g", "group", { visible: false }], ["a", "text", { permission: "text", parentId: "g" }], ["b", "image", { permission: "image" }])],
+    ["hidden grandparent", design(["g1", "group", { visible: false }], ["g2", "group", { parentId: "g1" }], ["a", "image", { permission: "image", parentId: "g2" }])],
+    ["visible nest", design(["g1", "group"], ["g2", "group", { parentId: "g1" }], ["a", "text", { permission: "text", parentId: "g2" }])],
+    ["missing parent", design(["a", "text", { permission: "text", parentId: "nope" }])],
+    ["a loop", design(["g1", "group", { parentId: "g2" }], ["g2", "group", { parentId: "g1" }], ["a", "text", { permission: "text", parentId: "g1" }])],
+  ];
+  it.each(docs)("%s", (_label, doc) => {
+    const engine = editableLayers(doc);
+    const server = buildManifest(doc);
+    expect(server.manifest.fields).toEqual(engine.fields);
+    expect(server.hidden).toEqual(engine.hidden);
+  });
+
+  it("a permission the editor sets is one the schema accepts, and the manifest lists it", () => {
+    const withText = updateNode(addNode(createDocument(), { ...createText(createDocument()), id: "t" }), "t", { permission: "text" });
+    expect(accepts(withText)).toBe(true);
+    expect(buildManifest(canvasDocument.parse(withText)).manifest.fields).toEqual([{ nodeId: "t", kind: "text" }]);
+    const withImage = updateNode(addNode(createDocument(), { ...createImage(createDocument(), { id: "asset-1", width: 4, height: 4 }), id: "i" }), "i", { permission: "image" });
+    expect(accepts(withImage)).toBe(true);
+    expect(buildManifest(canvasDocument.parse(withImage)).manifest.fields).toEqual([{ nodeId: "i", kind: "image" }]);
+  });
+
+  it("the editor and the schema both refuse a permission the layer's type cannot have", () => {
+    const rectDoc = addNode(createDocument(), { ...createShape(createDocument(), "rect"), id: "r" });
+    expect(updateNode(rectDoc, "r", { permission: "text" })).toBe(rectDoc);
+    expect(accepts(withNode("r", { permission: "text" }))).toBe(false);
+    expect(accepts(withNode("t", { permission: "image" }))).toBe(false);
+    expect(accepts(withNode("i", { permission: "text" }))).toBe(false);
   });
 });

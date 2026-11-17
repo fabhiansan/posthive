@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { withAuth, withAuthOrToken, getUser, getWorkspaceId, getWorkspaceRole, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
 import { pillarFor } from "../lib/contentTypes.js";
 import type { StorageAdapter } from "../lib/storage.js";
-import { LIBRARY_SELECT, toLibraryTemplate, withoutTemplateMedia } from "../lib/templates.js";
+import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, sourceOf, toLibraryTemplate, withoutTemplateMedia } from "../lib/templates.js";
 import { templateBody, type TemplateBody } from "../lib/templateBody.js";
 
 function templateData(t: TemplateBody) {
@@ -30,6 +30,18 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 const duplicate = (category: string) => ({ error: `A template for ${category} already exists. Edit that template instead.` });
+
+// What Marketing can see depends on a template having something to show: a Figma link or a published Canvas revision.
+// R1: a template is published only if it has one. R2: a published template that has one cannot lose its last one.
+// A published template that already has none (the status migration published every row) is left as it is.
+const INCOMPLETE = {
+  error: "Add a Figma link or publish a Canvas revision of its design before publishing this template.",
+  code: "TEMPLATE_INCOMPLETE",
+} as const;
+const SOURCE_REQUIRED = {
+  error: "This template is published and this is its only source. Add a Figma link or publish a Canvas revision first, or unpublish the template.",
+  code: "SOURCE_REQUIRED",
+} as const;
 
 export async function templateRoutes(
   app: FastifyInstance,
@@ -69,7 +81,12 @@ export async function templateRoutes(
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       select: LIBRARY_SELECT,
     });
-    return reply.send({ templates: templates.map(toLibraryTemplate) });
+    const library = templates.map(toLibraryTemplate);
+    if (role === "designer") return reply.send({ templates: library });
+    // Everyone else is told whether a template is made in Canvas (canvasRevision, for the card and the reference) but not
+    // which design it is: no page of theirs uses the id, and every route that takes one is for the design team only.
+    // The row is checked with its design id first, so it is only removed after the visibility rule has read it.
+    return reply.send({ templates: library.filter(isLibraryVisible).map(({ designId, ...rest }) => rest) });
   });
 
   // Create a template — design team only (docs/role-access-matrix.md US-07). It starts as a draft.
@@ -137,7 +154,22 @@ export async function templateRoutes(
 
     let template;
     try {
-      template = await prisma.template.update({ where: { id }, data: templateData(body), select: LIBRARY_SELECT });
+      if (hasFigmaSource(body.linkUrl)) {
+        template = await prisma.template.update({ where: { id }, data: templateData(body), select: LIBRARY_SELECT });
+      } else {
+        // The edit leaves the template without a Figma link (R2): under the template's lock, a published template must
+        // still have its Canvas revision, unless it had no source to lose in the first place.
+        const outcome = await prisma.$transaction(async (tx) => {
+          if (!(await lockTemplate(tx, id, workspaceId))) return "missing" as const;
+          const before = await tx.template.findFirst({ where: { id, workspaceId }, select: SOURCE_SELECT });
+          if (!before) return "missing" as const;
+          if (before.published && hasUsableSource(sourceOf(before)) && !hasCanvasSource(sourceOf(before).canvasRevision)) return "required" as const;
+          return tx.template.update({ where: { id }, data: templateData(body), select: LIBRARY_SELECT });
+        });
+        if (outcome === "missing") return reply.status(404).send({ error: "Not found" });
+        if (outcome === "required") return reply.status(409).send(SOURCE_REQUIRED);
+        template = outcome;
+      }
     } catch (err) {
       if (isUniqueViolation(err)) return reply.status(409).send(duplicate(body.category));
       throw err;
@@ -160,7 +192,24 @@ export async function templateRoutes(
     const parsed = statusBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: "published must be true or false" });
 
-    const { count } = await prisma.template.updateMany({ where: { id, workspaceId }, data: { published: parsed.data.published } });
+    if (parsed.data.published) {
+      // R1: publishing needs a source. Checked under the template's lock, so a request that removes the source at the
+      // same moment (an edit, or unlinking the design) runs before or after this one, never between its check and write.
+      const outcome = await prisma.$transaction(async (tx) => {
+        if (!(await lockTemplate(tx, id, workspaceId))) return "missing" as const;
+        const current = await tx.template.findFirst({ where: { id, workspaceId }, select: SOURCE_SELECT });
+        if (!current) return "missing" as const;
+        if (!hasUsableSource(sourceOf(current))) return "incomplete" as const;
+        await tx.template.updateMany({ where: { id, workspaceId }, data: { published: true } });
+        return tx.template.findFirst({ where: { id, workspaceId }, select: LIBRARY_SELECT });
+      });
+      if (outcome === "missing" || outcome === null) return reply.status(404).send({ error: "Not found" });
+      if (outcome === "incomplete") return reply.status(409).send(INCOMPLETE);
+      return reply.send({ template: toLibraryTemplate(outcome) });
+    }
+
+    // Back to a draft: always allowed, and it touches nothing but the status (the design, its revisions and images stay).
+    const { count } = await prisma.template.updateMany({ where: { id, workspaceId }, data: { published: false } });
     if (count === 0) return reply.status(404).send({ error: "Not found" });
 
     const template = await prisma.template.findFirst({ where: { id, workspaceId }, select: LIBRARY_SELECT });

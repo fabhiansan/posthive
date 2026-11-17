@@ -24,6 +24,9 @@ export interface LoadedDesign {
   version: number;
   name: string;
   document: CanvasDocument;
+  /** The template this design is made for, and its latest published revision (null: not attached, or none yet). */
+  template: Design["template"];
+  latestRevision: Design["latestRevision"];
   images: ReadonlyMap<string, HTMLImageElement>;
   /** Images that could not be loaded for good (gone, or the API address is not set): their layers show a grey box. */
   missing: string[];
@@ -176,7 +179,10 @@ export function useCanvasBootstrap(designId?: string): Bootstrap {
 
   const ready = engine !== null && loaded !== null && (!designId || design !== null);
   const loadedDesign = useMemo<LoadedDesign | null>(
-    () => (design && loaded ? { id: design.id, version: design.version, name: design.name, document: design.document, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase } : null),
+    () =>
+      design && loaded
+        ? { id: design.id, version: design.version, name: design.name, document: design.document, template: design.template, latestRevision: design.latestRevision, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase }
+        : null,
     [design, loaded],
   );
 

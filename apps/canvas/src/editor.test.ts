@@ -9,6 +9,7 @@ import {
   createImage,
   createShape,
   createText,
+  editableLayers,
   foldScale,
   limitPatch,
   moveNode,
@@ -18,6 +19,7 @@ import {
   textTotal,
   updateNode,
   type CanvasDocument,
+  type CanvasNode,
   type NodePatch,
 } from "./document";
 import { canUndo, canRedo, commit, createHistory, MAX_HISTORY, redo, seal, undo } from "./history";
@@ -520,5 +522,127 @@ describe("derived and created values stay valid", () => {
     expect(field(moved, "r", "x")).toBe(LIMITS.position.max);
     expect(field(moved, "r", "y")).toBe(LIMITS.position.min);
     expect(field(moved, "r", "width")).toBe(LIMITS.size.max);
+  });
+});
+
+// ── Who may change a layer once the design is published (phase 4) ──────────────────────────────────────────────
+
+describe("setting a layer's Marketing access", () => {
+  it("a text layer can be Text editable and back to Protected, as one undoable step each", () => {
+    const doc = textDoc1();
+    expect(field(doc, "t", "permission")).toBe("protected");
+    let h = createHistory(doc);
+    h = commit(h, updateNode(h.present, "t", { permission: "text" }), "permission");
+    expect(field(h.present, "t", "permission")).toBe("text");
+    h = seal(h);
+    h = commit(h, updateNode(h.present, "t", { permission: "protected" }), "permission");
+    expect(field(h.present, "t", "permission")).toBe("protected");
+    h = undo(h);
+    expect(field(h.present, "t", "permission")).toBe("text");
+    h = undo(h);
+    expect(field(h.present, "t", "permission")).toBe("protected");
+    h = redo(h);
+    expect(field(h.present, "t", "permission")).toBe("text");
+  });
+
+  it("an image layer can be Image replaceable", () => {
+    expect(field(updateNode(imageDoc(), "i", { permission: "image" }), "i", "permission")).toBe("image");
+  });
+
+  it("a layer can never hold the permission of another kind of layer", () => {
+    const text = textDoc1();
+    const image = imageDoc();
+    const rect = rectDoc();
+    expect(updateNode(text, "t", { permission: "image" })).toBe(text);
+    expect(updateNode(image, "i", { permission: "text" })).toBe(image);
+    for (const p of ["text", "image"] as const) expect(updateNode(rect, "r", { permission: p })).toBe(rect);
+  });
+
+  it("anything that is not a permission is ignored, so no edit can invent one", () => {
+    const text = textDoc1();
+    for (const bad of ["admin", "TEXT", "", null, undefined, 1, {}, ["text"]]) {
+      expect(updateNode(text, "t", { permission: bad as never }), String(bad)).toBe(text);
+    }
+    expect(field(text, "t", "permission")).toBe("protected");
+  });
+
+  it("setting the permission it already has changes nothing (so it is no undo step)", () => {
+    const doc = updateNode(textDoc1(), "t", { permission: "text" });
+    expect(updateNode(doc, "t", { permission: "text" })).toBe(doc);
+  });
+
+  it("changing the permission changes nothing else about the layer", () => {
+    const before = textDoc1();
+    const after = updateNode(before, "t", { permission: "text" });
+    expect({ ...(nodeById(after, "t") as object), permission: "protected" }).toEqual(nodeById(before, "t"));
+  });
+});
+
+describe("editableLayers", () => {
+  const layer = (type: "text" | "image" | "rect" | "group", over: Partial<CanvasNode> & { id: string }): CanvasNode => {
+    const blank = createDocument();
+    const base = type === "text" ? createText(blank) : type === "image" ? createImage(blank, { id: "asset-1", width: 10, height: 10 }) : createShape(blank, type === "group" ? "rect" : type);
+    return { ...base, ...(type === "group" ? { type: "group" } : {}), name: `Layer ${over.id}`, ...over } as CanvasNode;
+  };
+  const docOf = (...nodes: CanvasNode[]): CanvasDocument => ({ ...createDocument(), nodes });
+  const idsOf = (list: Array<{ nodeId: string }>) => list.map((f) => f.nodeId);
+
+  it("lists a text layer set to text and an image layer set to image, in paint order, with what each is", () => {
+    const { fields, hidden } = editableLayers(docOf(layer("text", { id: "a", permission: "text" }), layer("rect", { id: "b" }), layer("image", { id: "c", permission: "image" }), layer("text", { id: "d" })));
+    expect(fields).toEqual([{ nodeId: "a", kind: "text" }, { nodeId: "c", kind: "image" }]);
+    expect(hidden).toEqual([]);
+  });
+
+  it("an empty design has nothing editable", () => {
+    expect(editableLayers(createDocument())).toEqual({ fields: [], hidden: [] });
+  });
+
+  it("an editable layer that is hidden is reported, not listed", () => {
+    const { fields, hidden } = editableLayers(docOf(layer("text", { id: "a", permission: "text", visible: false })));
+    expect(fields).toEqual([]);
+    expect(hidden).toEqual([{ nodeId: "a", name: "Layer a", group: null }]);
+  });
+
+  it("an editable layer inside a hidden group is hidden, and the group is named", () => {
+    const { fields, hidden } = editableLayers(docOf(layer("group", { id: "g", visible: false }), layer("text", { id: "a", permission: "text", parentId: "g" })));
+    expect(fields).toEqual([]);
+    expect(hidden).toEqual([{ nodeId: "a", name: "Layer a", group: "Layer g" }]);
+  });
+
+  it("a hidden grandparent hides a grandchild", () => {
+    const { fields, hidden } = editableLayers(docOf(layer("group", { id: "g1", visible: false }), layer("group", { id: "g2", parentId: "g1" }), layer("image", { id: "a", permission: "image", parentId: "g2" })));
+    expect(fields).toEqual([]);
+    expect(hidden).toMatchObject([{ nodeId: "a", group: "Layer g1" }]);
+  });
+
+  it("a visible child of visible groups is listed", () => {
+    const { fields, hidden } = editableLayers(docOf(layer("group", { id: "g1" }), layer("group", { id: "g2", parentId: "g1" }), layer("text", { id: "a", permission: "text", parentId: "g2" })));
+    expect(idsOf(fields)).toEqual(["a"]);
+    expect(hidden).toEqual([]);
+  });
+
+  it("hidden layers that are protected never matter", () => {
+    expect(editableLayers(docOf(layer("group", { id: "g", visible: false }), layer("rect", { id: "r", parentId: "g" }), layer("text", { id: "t", visible: false }))).hidden).toEqual([]);
+  });
+
+  it("a parent that is missing, or a loop, fails closed and never hangs", () => {
+    expect(editableLayers(docOf(layer("text", { id: "a", permission: "text", parentId: "nope" }))).hidden).toHaveLength(1);
+    expect(editableLayers(docOf(layer("group", { id: "g1", parentId: "g2" }), layer("group", { id: "g2", parentId: "g1" }), layer("text", { id: "a", permission: "text", parentId: "g1" }))).hidden).toHaveLength(1);
+  });
+
+  it("follows edits made through the editor: hiding the layer, or setting it back to protected, changes the answer", () => {
+    let doc = updateNode(textDoc1(), "t", { permission: "text" });
+    expect(idsOf(editableLayers(doc).fields)).toEqual(["t"]);
+    doc = updateNode(doc, "t", { visible: false });
+    expect(editableLayers(doc)).toMatchObject({ fields: [], hidden: [{ nodeId: "t" }] });
+    doc = updateNode(doc, "t", { permission: "protected" });
+    expect(editableLayers(doc)).toEqual({ fields: [], hidden: [] });
+  });
+
+  it("does not change its input", () => {
+    const doc = updateNode(textDoc1(), "t", { permission: "text" });
+    const copy = JSON.stringify(doc);
+    editableLayers(doc);
+    expect(JSON.stringify(doc)).toBe(copy);
   });
 });

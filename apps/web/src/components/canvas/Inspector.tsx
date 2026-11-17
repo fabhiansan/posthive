@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { MousePointerClickIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { CanvasDocument, CanvasNode, Limits, NodePatch, TextNode } from "posthive-canvas";
+import type { CanvasDocument, CanvasNode, Limits, NodePatch, Permission, TextNode } from "posthive-canvas";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
@@ -158,6 +158,24 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
           <Trash2Icon />
         </Button>
       </div>
+
+      {/* Who may change this layer once the design is published to a template. Only text and image layers can be opened up. */}
+      <section className="flex flex-col gap-2">
+        <h3 className="section-label">Marketing access</h3>
+        {text || n.type === "image" ? (
+          <>
+            <NativeSelect size="sm" aria-label="Marketing access" value={n.permission} onChange={(e) => onPatch({ permission: e.target.value as Permission }, key("permission"))} onBlur={onSeal}>
+              <NativeSelectOption value="protected">Protected</NativeSelectOption>
+              <NativeSelectOption value={text ? "text" : "image"}>{text ? "Text editable" : "Image replaceable"}</NativeSelectOption>
+            </NativeSelect>
+            <p className="type-body-r-xs text-muted">
+              {n.permission === "protected" ? "Marketing cannot change this layer." : text ? "Marketing can change this layer's text only." : "Marketing can replace this layer's image only."}
+            </p>
+          </>
+        ) : (
+          <p className="type-body-r-xs text-muted">Shapes are always protected: Marketing cannot change them.</p>
+        )}
+      </section>
 
       {text && (
         <section className="flex flex-col gap-2">

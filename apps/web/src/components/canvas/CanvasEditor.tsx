@@ -11,6 +11,7 @@ import { CanvasShell } from "./CanvasShell";
 import { ExportMenu } from "./ExportMenu";
 import { Inspector } from "./Inspector";
 import { LayersPanel } from "./LayersPanel";
+import { PublishAction } from "./PublishAction";
 import { needsBanner, SaveBanner, SaveStatus } from "./SaveStatus";
 import { Toolbar } from "./Toolbar";
 import { useAutosave } from "./useAutosave";
@@ -42,7 +43,7 @@ const slugOf = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, 
  * browser only; everything runtime is taken from it, never imported. Mount it once per design (key it by id).
  */
 export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?: LoadedDesign }) {
-  const { CanvasStage, createDocument, createShape, createText, createImage, addNode, updateNode, removeNode, moveNode, nodeById, canAdd, cleanName, textRoom, LIMITS } = engine;
+  const { CanvasStage, createDocument, createShape, createText, createImage, addNode, updateNode, removeNode, moveNode, nodeById, canAdd, cleanName, textRoom, editableLayers, LIMITS } = engine;
   const { createHistory, commit, seal, undo, redo, canUndo, canRedo, ExportError } = engine;
   const toast = useToast();
 
@@ -74,6 +75,8 @@ export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?
     [createHistory],
   );
   const autosave = useAutosave({ design, doc, name, onReload });
+  // The latest published revision, which a Publish in this editor replaces. Reload latest does not change it: revisions only grow.
+  const [revision, setRevision] = useState(design?.latestRevision ?? null);
 
   /** "Back to the dashboard": save first; if that cannot be done, ask before throwing the changes away. */
   const beforeLeave = async () => {
@@ -226,7 +229,25 @@ export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?
             onFit={() => stage.current?.fit()}
           />
         }
-        actions={<ExportMenu width={doc.width} height={doc.height} busy={exporting} onExport={onExport} />}
+        actions={
+          <>
+            {design && (
+              <PublishAction
+                designId={design.id}
+                template={design.template}
+                revision={revision}
+                version={autosave.version}
+                dirty={autosave.info.dirty}
+                doc={doc}
+                analyse={editableLayers}
+                flush={autosave.flush}
+                currentVersion={autosave.currentVersion}
+                onPublished={setRevision}
+              />
+            )}
+            <ExportMenu width={doc.width} height={doc.height} busy={exporting} onExport={onExport} />
+          </>
+        }
         layers={
           <LayersPanel
             nodes={doc.nodes}

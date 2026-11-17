@@ -20,28 +20,92 @@ interface DesignRow {
   updatedAt: Date;
 }
 
+interface TemplateRow {
+  id: string;
+  workspaceId: string;
+  category: string;
+  linkUrl: string | null;
+  published: boolean;
+  designId: string | null;
+}
+interface RevisionRow {
+  id: string;
+  designId: string;
+  number: number;
+  designVersion: number;
+  document: unknown;
+  manifest: unknown;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
 const h = vi.hoisted(() => ({
   authed: true,
   workspace: "ws-1" as string | null,
   role: "designer" as string | null,
   rows: [] as Array<{ id: string; workspaceId: string; storageRef: string }>,
   designs: [] as DesignRow[],
+  templates: [] as TemplateRow[],
+  revisions: [] as RevisionRow[],
   clock: 0,
   createFails: false,
+  // What ran, in order. "tx:" and "out:" say whether a read happened inside a $transaction; "lock:" is a FOR UPDATE.
+  log: [] as string[],
+  inTx: false,
+  // Makes the next write to the template's designId fail the way the unique index does (Prisma error P2002).
+  attachRaces: false,
+  // While a transaction runs: true only inside a call made through the transaction's own client, and the designs a call
+  // made through the plain client (outside the transaction) created, which a rollback must NOT undo, like in PostgreSQL.
+  viaTx: false,
+  outsideDesigns: [] as DesignRow[],
 }));
 
 type Where = { id?: string; workspaceId?: string; kind?: string; version?: number };
+const nul = (v: unknown) => typeof v === "string" && v.includes("\u0000");
+// PostgreSQL refuses a NUL in text (error 22021) and Prisma throws it: a test double that quietly matched nothing
+// would hide a 500 that the real database causes. Checked against the real dev database.
+const refuseNul = (...values: unknown[]) => {
+  if (values.some(nul)) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
+};
 const matches = (d: DesignRow, w: Where) => {
-  // PostgreSQL refuses a NUL in text (error 22021) and Prisma throws it: a test double that quietly matched nothing
-  // would hide a 500 that the real database causes. Checked against the real dev database.
-  if (w.id?.includes("\u0000")) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
+  refuseNul(w.id);
   return (w.id === undefined || d.id === w.id) && (w.workspaceId === undefined || d.workspaceId === w.workspaceId) && (w.kind === undefined || d.kind === w.kind) && (w.version === undefined || d.version === w.version);
 };
-/** What Prisma's `select` does: only the named fields come back. */
-const selectFrom = (row: DesignRow, select: Record<string, boolean>) => Object.fromEntries(Object.entries(select).filter(([, on]) => on).map(([k]) => [k, (row as unknown as Record<string, unknown>)[k]]));
 
-vi.mock("../lib/prisma.js", () => ({
-  prisma: {
+type Spec = true | { select?: Record<string, unknown>; take?: number; orderBy?: unknown };
+const pick = (row: object, select: Record<string, unknown>) => Object.fromEntries(Object.entries(select).filter(([, on]) => on).map(([k]) => [k, (row as Record<string, unknown>)[k]]));
+/** Revisions of a design, as a nested `revisions: { orderBy: number desc, take, select }` asks for them. */
+const revisionsOf = (designId: string, spec: Spec) =>
+  h.revisions
+    .filter((r) => r.designId === designId)
+    .sort((a, b) => b.number - a.number)
+    .slice(0, typeof spec === "object" && spec.take ? spec.take : undefined)
+    .map((r) => pick(r, (typeof spec === "object" && spec.select) || { number: true }));
+/** What Prisma's `select` does: only the named fields come back; a relation is resolved from the other stores. */
+const selectFrom = (row: DesignRow, select: Record<string, Spec>) =>
+  Object.fromEntries(
+    Object.entries(select)
+      .filter(([, spec]) => spec)
+      .map(([k, spec]) => {
+        if (k === "template") {
+          const t = h.templates.find((x) => x.designId === row.id);
+          return [k, t ? pick(t, (spec as { select: Record<string, unknown> }).select) : null];
+        }
+        if (k === "revisions") return [k, revisionsOf(row.id, spec)];
+        return [k, (row as unknown as Record<string, unknown>)[k]];
+      }),
+  );
+const selectTemplate = (t: TemplateRow, select: Record<string, Spec>) =>
+  Object.fromEntries(
+    Object.entries(select)
+      .filter(([, spec]) => spec)
+      .map(([k, spec]) => (k === "design" ? [k, t.designId ? { revisions: revisionsOf(t.designId, (spec as { select: { revisions: Spec } }).select.revisions) } : null] : [k, (t as unknown as Record<string, unknown>)[k]])),
+  );
+const trace = (op: string) => h.log.push(`${h.inTx ? "tx" : "out"}:${op}`);
+
+// The store lives in `h` and the helpers above are only called when a query runs, never while this factory runs.
+vi.mock("../lib/prisma.js", () => {
+  const client = {
     designAsset: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         if (h.createFails) throw new Error("db down");
@@ -54,24 +118,28 @@ vi.mock("../lib/prisma.js", () => ({
         if (where.id.includes("\u0000")) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
         return h.rows.find((r) => r.id === where.id && r.workspaceId === where.workspaceId) ?? null;
       }),
-      count: vi.fn(async ({ where }: { where: { id: { in: string[] }; workspaceId: string } }) =>
-        h.rows.filter((r) => where.id.in.includes(r.id) && r.workspaceId === where.workspaceId).length,
-      ),
+      count: vi.fn(async ({ where }: { where: { id: { in: string[] }; workspaceId: string } }) => {
+        trace("designAsset.count");
+        return h.rows.filter((r) => where.id.in.includes(r.id) && r.workspaceId === where.workspaceId).length;
+      }),
     },
     design: {
-      findMany: vi.fn(async ({ where, take, select }: { where: Where; take: number; select: Record<string, boolean> }) =>
+      findMany: vi.fn(async ({ where, take, select }: { where: Where; take: number; select: Record<string, Spec> }) =>
         h.designs
           .filter((d) => matches(d, where))
           .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || (a.id < b.id ? 1 : -1))
           .slice(0, take)
           .map((d) => selectFrom(d, select)),
       ),
-      create: vi.fn(async ({ data, select }: { data: Omit<DesignRow, "id" | "version" | "updatedAt">; select: Record<string, boolean> }) => {
+      create: vi.fn(async ({ data, select }: { data: Omit<DesignRow, "id" | "version" | "updatedAt">; select: Record<string, Spec> }) => {
+        h.log.push(h.inTx && !h.viaTx ? "write:design:OUTSIDE" : "write:design");
         const row: DesignRow = { id: `design-${h.designs.length + 1}`, version: 1, updatedAt: new Date(2026, 0, 1, 0, 0, ++h.clock), ...data };
         h.designs.push(row);
+        if (h.inTx && !h.viaTx) h.outsideDesigns.push(row); // committed on its own: the transaction's rollback cannot take it back
         return selectFrom(row, select);
       }),
-      findFirst: vi.fn(async ({ where, select }: { where: Where; select: Record<string, boolean> }) => {
+      findFirst: vi.fn(async ({ where, select }: { where: Where; select: Record<string, Spec> }) => {
+        trace("design.findFirst");
         const row = h.designs.find((d) => matches(d, where));
         return row ? selectFrom(row, select) : null;
       }),
@@ -91,8 +159,96 @@ vi.mock("../lib/prisma.js", () => ({
         return { count };
       }),
     },
-  },
-}));
+    template: {
+      // `designId: undefined` means no condition; `null` means "has no design", like Prisma.
+      findFirst: vi.fn(async ({ where, select }: { where: { id?: string; workspaceId?: string; designId?: string | null }; select: Record<string, Spec> }) => {
+        refuseNul(where.id, where.designId);
+        trace("template.findFirst");
+        const t = h.templates.find((x) => (where.id === undefined || x.id === where.id) && (where.workspaceId === undefined || x.workspaceId === where.workspaceId) && (where.designId === undefined || (x.designId ?? null) === where.designId));
+        return t ? selectTemplate(t, select) : null;
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; workspaceId: string; designId?: null }; data: { designId?: string | null; published?: boolean } }) => {
+        h.log.push("write:template");
+        if (h.attachRaces && typeof data.designId === "string") throw Object.assign(new Error("Unique constraint failed on the fields: (`designId`)"), { code: "P2002" });
+        const t = h.templates.find((x) => x.id === where.id && x.workspaceId === where.workspaceId && (where.designId === undefined || x.designId === null));
+        if (!t) return { count: 0 };
+        if ("designId" in data) t.designId = data.designId ?? null;
+        if (data.published !== undefined) t.published = data.published;
+        return { count: 1 };
+      }),
+    },
+    designRevision: {
+      findFirst: vi.fn(async ({ where, orderBy, select }: { where: { designId: string; designVersion?: number }; orderBy?: { number: "desc" }; select: Record<string, boolean> }) => {
+        trace("designRevision.findFirst");
+        const rows = h.revisions.filter((r) => r.designId === where.designId && (where.designVersion === undefined || r.designVersion === where.designVersion));
+        if (orderBy) rows.sort((a, b) => b.number - a.number);
+        return rows[0] ? pick(rows[0], select) : null;
+      }),
+      create: vi.fn(async ({ data, select }: { data: Omit<RevisionRow, "id" | "createdAt">; select: Record<string, boolean> }) => {
+        h.log.push("write:revision");
+        // The two unique keys of the table: (designId, number) and (designId, designVersion).
+        if (h.revisions.some((r) => r.designId === data.designId && (r.number === data.number || r.designVersion === data.designVersion))) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        const row: RevisionRow = { id: `rev-${h.revisions.length + 1}`, createdAt: new Date(2026, 0, 2, 0, 0, ++h.clock), ...data };
+        h.revisions.push(row);
+        return pick(row, select);
+      }),
+    },
+    // SELECT ... FOR UPDATE: the row's id when it exists in this workspace (and, for a design, is a template), else nothing.
+    $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      refuseNul(...values);
+      const sql = strings.join("?");
+      if (sql.includes('FROM "Template"')) {
+        h.log.push("lock:template");
+        const [id, workspaceId] = values;
+        return h.templates.some((t) => t.id === id && t.workspaceId === workspaceId) ? [{ id }] : [];
+      }
+      if (sql.includes('FROM "Design"')) {
+        h.log.push("lock:design");
+        const [id, workspaceId, kind] = values;
+        return h.designs.some((d) => d.id === id && d.workspaceId === workspaceId && d.kind === kind) ? [{ id }] : [];
+      }
+      throw new Error(`unexpected raw query: ${sql}`);
+    }),
+  };
+  return {
+    prisma: {
+      ...client,
+      // A transaction runs its callback with its OWN client over the same store. If the callback throws, everything written
+      // through that client is put back (a ROLLBACK); a write made through the plain client meanwhile is not (it committed).
+      $transaction: vi.fn(async (run: (tx: typeof client) => Promise<unknown>) => {
+        h.log.push("tx:begin");
+        h.inTx = true;
+        h.outsideDesigns = [];
+        const saved = { designs: h.designs.map((d) => ({ ...d })), templates: h.templates.map((t) => ({ ...t })), revisions: h.revisions.slice() };
+        const through = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A): Promise<R> => {
+          h.viaTx = true;
+          try {
+            return await fn(...a);
+          } finally {
+            h.viaTx = false;
+          }
+        };
+        const tx = {
+          ...client,
+          design: { ...client.design, create: through(client.design.create) },
+          template: { ...client.template, updateMany: through(client.template.updateMany), findFirst: through(client.template.findFirst) },
+        } as typeof client;
+        try {
+          return await run(tx);
+        } catch (err) {
+          h.designs = [...saved.designs, ...h.outsideDesigns];
+          h.templates = saved.templates;
+          h.revisions = saved.revisions;
+          h.log.push("tx:rollback");
+          throw err;
+        } finally {
+          h.inTx = false;
+          h.log.push("tx:end");
+        }
+      }),
+    },
+  };
+});
 vi.mock("../lib/auth/withAuth.js", () => ({
   withAuth: async (_req: unknown, reply: { status: (n: number) => { send: (b: unknown) => unknown } }) => {
     if (!h.authed) return reply.status(401).send({ error: "Unauthorized" });
@@ -111,7 +267,15 @@ import { prisma } from "../lib/prisma.js";
 import { BLANK_DOCUMENT } from "../lib/canvas.js";
 import { LocalDiskStorage } from "../lib/storage.js";
 
-const db = prisma as unknown as { design: Record<"findMany" | "create" | "findFirst" | "updateMany" | "deleteMany", ReturnType<typeof vi.fn>>; designAsset: { count: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> } };
+type Fn = ReturnType<typeof vi.fn>;
+const db = prisma as unknown as {
+  design: Record<"findMany" | "create" | "findFirst" | "updateMany" | "deleteMany", Fn>;
+  designAsset: { count: Fn; findFirst: Fn };
+  template: Record<"findFirst" | "updateMany", Fn>;
+  designRevision: Record<"findFirst" | "create", Fn>;
+  $transaction: Fn;
+  $queryRaw: Fn;
+};
 
 let dir: string;
 let app: FastifyInstance;
@@ -150,9 +314,16 @@ beforeEach(() => {
   h.role = "designer";
   h.rows = [];
   h.designs = [];
+  h.templates = [];
+  h.revisions = [];
+  h.log = [];
+  h.inTx = false;
+  h.attachRaces = false;
+  h.viaTx = false;
+  h.outsideDesigns = [];
   h.clock = 0;
   h.createFails = false;
-  for (const fn of Object.values(db.design)) fn.mockClear();
+  for (const fn of [...Object.values(db.design), ...Object.values(db.template), ...Object.values(db.designRevision), db.$transaction, db.$queryRaw]) fn.mockClear();
   db.designAsset.count.mockClear();
   db.designAsset.findFirst.mockClear();
 });
@@ -460,7 +631,32 @@ const imageDoc = (assetId: string) => ({
     },
   ],
 });
+const seedTemplate = (over: Partial<TemplateRow> = {}): TemplateRow => {
+  const row: TemplateRow = { id: `t${h.templates.length + 1}`, workspaceId: "ws-1", category: "Case Study", linkUrl: null, published: false, designId: null, ...over };
+  h.templates.push(row);
+  return row;
+};
+const seedRevision = (designId: string, number: number, over: Partial<RevisionRow> = {}): RevisionRow => {
+  const row: RevisionRow = { id: `r-${designId}-${number}`, designId, number, designVersion: number, document: BLANK_DOCUMENT, manifest: { schemaVersion: 1, fields: [] }, createdByUserId: "user-1", createdAt: new Date(2026, 0, 2, 0, 0, number), ...over };
+  h.revisions.push(row);
+  return row;
+};
+const FIGMA = "https://www.figma.com/design/AbC123/Case-study";
+/** A text layer of a design, valid for the server's schema. */
+const textLayer = (id: string, change: Record<string, unknown> = {}) => ({
+  id, name: `Layer ${id}`, parentId: null, x: 0, y: 0, width: 200, height: 40, rotation: 0, opacity: 1, visible: true, permission: "protected",
+  type: "text", text: "Hello", fontFamily: "Inter", fontSize: 24, fontStyle: "400", align: "left", lineHeight: 1.2, letterSpacing: 0, ...change,
+});
+const groupLayer = (id: string, change: Record<string, unknown> = {}) => ({
+  id, name: `Layer ${id}`, parentId: null, x: 0, y: 0, width: 50, height: 50, rotation: 0, opacity: 1, visible: true, permission: "protected", type: "group", ...change,
+});
+const docOf = (...nodes: unknown[]) => ({ ...BLANK_DOCUMENT, nodes });
 const put = (id: string, payload: unknown) => app.inject({ method: "PUT", url: `/canvas/designs/${id}`, payload: payload as object });
+const publish = (id: string, payload: unknown = { version: 1 }) => app.inject({ method: "POST", url: `/canvas/designs/${id}/publish`, payload: payload as object });
+const attach = (templateId: string, designId: string) => app.inject({ method: "PUT", url: `/canvas/templates/${templateId}/design`, payload: { designId } });
+const detach = (templateId: string) => app.inject({ method: "DELETE", url: `/canvas/templates/${templateId}/design` });
+/** What the log says about the order of two operations. */
+const before = (a: string, b: string) => h.log.indexOf(a) !== -1 && h.log.indexOf(a) < h.log.indexOf(b);
 const writes = () => db.design.create.mock.calls.length + db.design.updateMany.mock.calls.length + db.design.deleteMany.mock.calls.length;
 
 describe("designs: who may use them", () => {
@@ -470,7 +666,20 @@ describe("designs: who may use them", () => {
     () => app.inject({ method: "GET", url: "/canvas/designs/d1" }),
     () => put("d1", { version: 1, document: BLANK_DOCUMENT }),
     () => app.inject({ method: "DELETE", url: "/canvas/designs/d1" }),
+    () => app.inject({ method: "POST", url: "/canvas/designs/d1/publish", payload: { version: 1 } }),
+    () => app.inject({ method: "PUT", url: "/canvas/templates/t1/design", payload: { designId: "d1" } }),
+    () => app.inject({ method: "POST", url: "/canvas/templates/t1/design", payload: {} }),
+    () => app.inject({ method: "DELETE", url: "/canvas/templates/t1/design" }),
   ];
+  const touchedNothing = () => {
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(db.template.findFirst).not.toHaveBeenCalled();
+    expect(db.template.updateMany).not.toHaveBeenCalled();
+    expect(db.designRevision.findFirst).not.toHaveBeenCalled();
+    expect(db.designRevision.create).not.toHaveBeenCalled();
+    expect(h.revisions).toHaveLength(0);
+  };
 
   it("answers 401 on every endpoint when signed out, and touches nothing", async () => {
     seedDesign();
@@ -479,6 +688,7 @@ describe("designs: who may use them", () => {
     expect(h.designs).toHaveLength(1);
     expect(writes()).toBe(0);
     expect(db.design.findFirst).not.toHaveBeenCalled();
+    touchedNothing();
   });
 
   it.each(["member", "owner", "admin", "viewer", null])("answers 403 on every endpoint for the %s role, and touches nothing", async (role) => {
@@ -495,6 +705,7 @@ describe("designs: who may use them", () => {
     expect(db.design.findMany).not.toHaveBeenCalled();
     expect(db.design.findFirst).not.toHaveBeenCalled();
     expect(db.designAsset.count).not.toHaveBeenCalled();
+    touchedNothing();
   });
 });
 
@@ -502,8 +713,8 @@ describe("POST /canvas/designs", () => {
   it("creates a blank design named 'Untitled design' in the caller's workspace, and answers with a summary only", async () => {
     const res = await app.inject({ method: "POST", url: "/canvas/designs", payload: {} }); // JSON with no name: what the editor sends
     expect(res.statusCode).toBe(201);
-    expect(Object.keys(res.json().design).sort()).toEqual(["id", "name", "updatedAt", "version"]);
-    expect(res.json().design).toMatchObject({ name: "Untitled design", version: 1 });
+    expect(Object.keys(res.json().design).sort()).toEqual(["id", "latestRevision", "name", "template", "updatedAt", "version"]);
+    expect(res.json().design).toMatchObject({ name: "Untitled design", version: 1, template: null, latestRevision: null });
     expect(h.designs[0]).toMatchObject({ workspaceId: "ws-1", kind: "template", createdByUserId: "user-1", document: BLANK_DOCUMENT });
     expect(res.body).not.toContain("document");
   });
@@ -687,7 +898,7 @@ describe("GET /canvas/designs", () => {
     expect(res.headers["cache-control"]).toBe("no-store");
     const { designs } = res.json();
     expect(designs.map((d: { id: string }) => d.id)).toEqual(["new", "old"]);
-    for (const d of designs) expect(Object.keys(d).sort()).toEqual(["id", "name", "updatedAt", "version"]);
+    for (const d of designs) expect(Object.keys(d).sort()).toEqual(["id", "latestRevision", "name", "template", "updatedAt", "version"]);
     expect(res.body).not.toContain("document");
     expect(res.body).not.toContain("Not mine");
   });
@@ -875,5 +1086,566 @@ describe("DELETE /canvas/designs/:id", () => {
     seedDesign({ id: "instance", kind: "instance" });
     for (const id of ["other-ws", "instance", "nope"]) expect((await app.inject({ method: "DELETE", url: `/canvas/designs/${id}` })).statusCode).toBe(404);
     expect(h.designs).toHaveLength(2);
+  });
+});
+
+// ── Phase 4: the design list, linked designs, revisions and the template link ───────────────────────────────────
+
+describe("the design list and a single design carry their template and latest revision", () => {
+  it("a design with no template and no revision says so, in the list and in GET one", async () => {
+    seedDesign({ id: "d1" });
+    const list = (await app.inject({ method: "GET", url: "/canvas/designs" })).json().designs[0];
+    expect(list).toMatchObject({ id: "d1", template: null, latestRevision: null });
+    const one = (await app.inject({ method: "GET", url: "/canvas/designs/d1" })).json().design;
+    expect(one).toMatchObject({ template: null, latestRevision: null, document: BLANK_DOCUMENT });
+  });
+
+  it("shows the template it is attached to and the newest of its revisions, and nothing else of either", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1", designId: "d1", published: true, linkUrl: FIGMA });
+    seedRevision("d1", 1);
+    seedRevision("d1", 2);
+    const { designs } = (await app.inject({ method: "GET", url: "/canvas/designs" })).json();
+    expect(designs[0].template).toEqual({ id: "t1", category: "Case Study", published: true });
+    expect(Object.keys(designs[0].latestRevision).sort()).toEqual(["createdAt", "designVersion", "number"]);
+    expect(designs[0].latestRevision.number).toBe(2);
+    expect(JSON.stringify(designs)).not.toContain("manifest");
+    expect(JSON.stringify(designs)).not.toContain("linkUrl");
+    expect(JSON.stringify(designs)).not.toContain("workspaceId");
+  });
+});
+
+describe("DELETE /canvas/designs/:id: a design a template is made from cannot be deleted", () => {
+  it("answers 409 DESIGN_LINKED, deletes nothing, and keeps the revisions", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1", designId: "d1" });
+    seedRevision("d1", 1);
+    const res = await app.inject({ method: "DELETE", url: "/canvas/designs/d1" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "DESIGN_LINKED" });
+    expect(db.design.deleteMany).not.toHaveBeenCalled();
+    expect(h.designs).toHaveLength(1);
+    expect(h.revisions).toHaveLength(1);
+  });
+
+  it("the foreign key is the backstop: a link made after the check (P2003) is the same 409, not a 500", async () => {
+    seedDesign({ id: "d1" });
+    db.design.deleteMany.mockRejectedValueOnce(Object.assign(new Error("Foreign key constraint failed"), { code: "P2003" }));
+    const res = await app.inject({ method: "DELETE", url: "/canvas/designs/d1" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "DESIGN_LINKED" });
+  });
+
+  it("any other database error is still an error", async () => {
+    seedDesign({ id: "d1" });
+    db.design.deleteMany.mockRejectedValueOnce(new Error("db down"));
+    expect((await app.inject({ method: "DELETE", url: "/canvas/designs/d1" })).statusCode).toBe(500);
+  });
+
+  it("an unlinked design is deleted, with the check scoped to this workspace", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "elsewhere", workspaceId: "ws-2", designId: "d1" }); // another workspace's row never blocks this one
+    expect((await app.inject({ method: "DELETE", url: "/canvas/designs/d1" })).statusCode).toBe(200);
+    expect(db.template.findFirst.mock.calls[0][0].where).toEqual({ designId: "d1", workspaceId: "ws-1" });
+  });
+});
+
+describe("POST /canvas/designs/:id/publish", () => {
+  const editable = () => docOf(textLayer("t", { permission: "text" }), textLayer("p"));
+
+  it("freezes the STORED document, derives the manifest itself, numbers the revision and records who published it", async () => {
+    seedDesign({ id: "d1", version: 3, document: editable() });
+    const res = await publish("d1", { version: 3 });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().revision).toMatchObject({ number: 1, designVersion: 3 });
+    expect(Object.keys(res.json().revision).sort()).toEqual(["createdAt", "designVersion", "number"]);
+    expect(h.revisions).toHaveLength(1);
+    expect(h.revisions[0]).toMatchObject({ designId: "d1", number: 1, designVersion: 3, createdByUserId: "user-1", document: editable(), manifest: { schemaVersion: 1, fields: [{ nodeId: "t", kind: "text" }] } });
+    // The design itself is not touched: publishing only adds a row.
+    expect(h.designs[0].version).toBe(3);
+    expect(db.design.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("the next revision is numbered after the last one, and each working version is published once", async () => {
+    seedDesign({ id: "d1", version: 1, document: editable() });
+    expect((await publish("d1", { version: 1 })).statusCode).toBe(201);
+    expect((await publish("d1", { version: 1 })).json()).toMatchObject({ code: "NO_CHANGES" }); // same version again
+    h.designs[0].version = 2;
+    const second = await publish("d1", { version: 2 });
+    expect(second.json().revision).toMatchObject({ number: 2, designVersion: 2 });
+    expect(h.revisions.map((r) => r.number)).toEqual([1, 2]);
+    expect(h.revisions[0]).toMatchObject({ designVersion: 1 }); // the first one is exactly as it was
+  });
+
+  it("never overwrites a revision: the only write is an insert, and nothing updates or deletes one", async () => {
+    seedDesign({ id: "d1", version: 1, document: editable() });
+    seedRevision("d1", 1, { designVersion: 7 });
+    const first = structuredClone(h.revisions[0]);
+    await publish("d1", { version: 1 });
+    expect(h.revisions[0]).toEqual(first);
+    expect(Object.keys(db.designRevision).sort()).toEqual(["create", "findFirst"]); // no update, delete or upsert exists for the route to call
+  });
+
+  it("answers 409 VERSION_CONFLICT for a version that is not the stored one, and writes nothing", async () => {
+    seedDesign({ id: "d1", version: 4, document: editable() });
+    const res = await publish("d1", { version: 3 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "VERSION_CONFLICT" });
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it("locks the design's row first, and reads and writes only inside the transaction", async () => {
+    seedDesign({ id: "d1", version: 1, document: editable() });
+    await publish("d1", { version: 1 });
+    expect(h.log[0]).toBe("tx:begin");
+    expect(h.log[1]).toBe("lock:design");
+    expect(h.log.filter((x) => x.startsWith("out:"))).toEqual([]);
+    expect(before("lock:design", "tx:design.findFirst")).toBe(true);
+    expect(before("tx:design.findFirst", "write:revision")).toBe(true);
+    expect(h.log.at(-1)).toBe("tx:end");
+  });
+
+  it("refuses an editable layer that is hidden, and names it; nothing is written", async () => {
+    seedDesign({ id: "d1", version: 1, document: docOf(textLayer("t", { permission: "text", visible: false, name: "Headline" })) });
+    const res = await publish("d1", { version: 1 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: "INVALID_PUBLISH" });
+    expect(res.json().error).toContain('"Headline" is editable but hidden');
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it("refuses an editable layer inside a hidden group, and names the layer and the group", async () => {
+    seedDesign({ id: "d1", version: 1, document: docOf(groupLayer("g", { visible: false, name: "Hero" }), textLayer("t", { permission: "text", parentId: "g", name: "Title" })) });
+    const res = await publish("d1", { version: 1 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toContain('"Title" is editable but hidden because its group "Hero" is hidden');
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it("a hidden layer that is protected does not block a publish", async () => {
+    seedDesign({ id: "d1", version: 1, document: docOf(textLayer("p", { visible: false }), textLayer("t", { permission: "text" })) });
+    expect((await publish("d1", { version: 1 })).statusCode).toBe(201);
+    expect(h.revisions[0].manifest).toEqual({ schemaVersion: 1, fields: [{ nodeId: "t", kind: "text" }] });
+  });
+
+  it("a design with nothing editable can still be published (the manifest is empty)", async () => {
+    seedDesign({ id: "d1", version: 1 });
+    expect((await publish("d1", { version: 1 })).statusCode).toBe(201);
+    expect(h.revisions[0].manifest).toEqual({ schemaVersion: 1, fields: [] });
+  });
+
+  it("checks the images again: an asset of another workspace or a made-up one is UNKNOWN_ASSET, nothing is written", async () => {
+    h.rows = [{ id: "mine", workspaceId: "ws-1", storageRef: "x" }, { id: "theirs", workspaceId: "ws-2", storageRef: "y" }];
+    for (const assetId of ["theirs", "made-up"]) {
+      h.designs = [];
+      seedDesign({ id: "d1", version: 1, document: imageDoc(assetId) });
+      const res = await publish("d1", { version: 1 });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ code: "UNKNOWN_ASSET" });
+    }
+    expect(h.revisions).toHaveLength(0);
+    h.designs = [];
+    seedDesign({ id: "d1", version: 1, document: imageDoc("mine") });
+    expect((await publish("d1", { version: 1 })).statusCode).toBe(201);
+  });
+
+  it("validates the stored document again, so a bad stored row is not frozen", async () => {
+    seedDesign({ id: "d1", version: 1, document: { schemaVersion: 2, nodes: [] } });
+    const res = await publish("d1", { version: 1 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: "INVALID_DOCUMENT" });
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it.each([
+    ["a document", { version: 1, document: BLANK_DOCUMENT }],
+    ["a manifest", { version: 1, manifest: { schemaVersion: 1, fields: [{ nodeId: "p", kind: "text" }] } }],
+    ["a number", { version: 1, number: 99 }],
+    ["a design id", { version: 1, designId: "d2" }],
+    ["an author", { version: 1, createdByUserId: "someone" }],
+    ["a workspace", { version: 1, workspaceId: "ws-2" }],
+    ["a kind", { version: 1, kind: "instance" }],
+    ["no version", {}],
+    ["a zero version", { version: 0 }],
+    ["a text version", { version: "1" }],
+  ])("refuses a body with %s (a client chooses nothing but the version), and writes nothing", async (_label, payload) => {
+    seedDesign({ id: "d1", version: 1, document: editable() });
+    const res = await publish("d1", payload);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it("answers 415 for a body that is not JSON", async () => {
+    seedDesign({ id: "d1", version: 1, document: editable() });
+    const res = await app.inject({ method: "POST", url: "/canvas/designs/d1/publish", headers: { "content-type": "text/plain" }, payload: '{"version":1}' });
+    expect(res.statusCode).toBe(415);
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it("answers 404 for another workspace's design, an instance, an unknown id and a bad id; nothing is written", async () => {
+    seedDesign({ id: "other-ws", workspaceId: "ws-2", document: editable() });
+    seedDesign({ id: "instance", kind: "instance", document: editable() });
+    for (const id of ["other-ws", "instance", "nope", "a%00b", "a%20b"]) expect((await publish(id)).statusCode, id).toBe(404);
+    expect(h.revisions).toHaveLength(0);
+  });
+
+  it("a race past the check ends in the table's unique keys: P2002 is a 409, never a 500", async () => {
+    seedDesign({ id: "d1", version: 1, document: editable() });
+    db.designRevision.create.mockRejectedValueOnce(Object.assign(new Error("Unique constraint failed"), { code: "P2002" }));
+    const res = await publish("d1", { version: 1 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "NO_CHANGES" });
+  });
+});
+
+describe("PUT /canvas/templates/:id/design (attach)", () => {
+  it("links a design to a draft that has no source yet (a draft is prepared before it is published)", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1" });
+    const res = await attach("t1", "d1");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ designId: "d1" });
+    expect(h.templates[0].designId).toBe("d1");
+  });
+
+  it("locks the template first and then the design, reads and writes only inside the transaction, and writes last", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1" });
+    await attach("t1", "d1");
+    expect(h.log.filter((x) => x.startsWith("lock:"))).toEqual(["lock:template", "lock:design"]); // never the other way round
+    expect(h.log[0]).toBe("tx:begin");
+    expect(before("lock:template", "lock:design")).toBe(true);
+    expect(before("lock:design", "tx:template.findFirst")).toBe(true); // the reads come after both locks
+    expect(before("lock:design", "write:template")).toBe(true);
+    expect(h.log.filter((x) => x.startsWith("out:"))).toEqual([]);
+    expect(h.log.at(-1)).toBe("tx:end");
+  });
+
+  it("the design lock is scoped to the workspace and to template designs", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1" });
+    await attach("t1", "d1");
+    const lock = db.$queryRaw.mock.calls.find(([s]: [TemplateStringsArray]) => s.join("?").includes('FROM "Design"'))!;
+    expect(lock.slice(1)).toEqual(["d1", "ws-1", "template"]);
+    expect(lock[0].join("?")).toContain("FOR UPDATE");
+  });
+
+  it("answers 409 DESIGN_LINKED when the design already belongs to another template, and writes nothing", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1", designId: "d1" });
+    seedTemplate({ id: "t2", category: "Blog Post" });
+    const res = await attach("t2", "d1");
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "DESIGN_LINKED" });
+    expect(db.template.updateMany).not.toHaveBeenCalled();
+    expect(h.templates[1].designId).toBeNull();
+  });
+
+  it("answers 409 TEMPLATE_HAS_DESIGN when the template already has a design: replacing means removing the link first", async () => {
+    seedDesign({ id: "d1" });
+    seedDesign({ id: "d2" });
+    seedTemplate({ id: "t1", designId: "d1" });
+    const res = await attach("t1", "d2");
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "TEMPLATE_HAS_DESIGN" });
+    expect(h.templates[0].designId).toBe("d1");
+    expect(db.template.updateMany).not.toHaveBeenCalled();
+  });
+
+  describe("two requests for the same design at the same moment", () => {
+    it("the second one's check, made after both locks, sees the first one's committed link: 409, no write", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "t1" });
+      seedTemplate({ id: "t2", category: "Blog Post" });
+      expect((await attach("t1", "d1")).statusCode).toBe(200);
+      h.log = [];
+      const second = await attach("t2", "d1");
+      expect(second.statusCode).toBe(409);
+      expect(second.json()).toMatchObject({ code: "DESIGN_LINKED" });
+      expect(h.log).not.toContain("write:template"); // the re-check stopped it before any write
+      expect(h.log.filter((x) => x.startsWith("lock:"))).toEqual(["lock:template", "lock:design"]);
+      expect(h.templates.map((t) => t.designId)).toEqual(["d1", null]);
+    });
+
+    it("if both slip past the locks, the unique index decides: P2002 is 409 DESIGN_LINKED, not a 500", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "t1" });
+      h.attachRaces = true; // the write fails the way a unique violation on Template.designId does
+      const res = await attach("t1", "d1");
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: "DESIGN_LINKED" });
+      expect(h.templates[0].designId).toBeNull();
+    });
+
+    it("any other error from the write is not hidden", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "t1" });
+      db.template.updateMany.mockRejectedValueOnce(new Error("db down"));
+      expect((await attach("t1", "d1")).statusCode).toBe(500);
+    });
+  });
+
+  describe("R4: attaching must not strand a published template", () => {
+    it("a PUBLISHED legacy template with no link, and a design with no revision: refused, and the template is unchanged and still listed", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "legacy", published: true, linkUrl: null });
+      const res = await attach("legacy", "d1");
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: "DESIGN_NEEDS_REVISION" });
+      expect(res.json().error).toContain("Publish a revision of the design first");
+      expect(db.template.updateMany).not.toHaveBeenCalled();
+      expect(h.templates[0]).toMatchObject({ published: true, linkUrl: null, designId: null }); // not mutated: it keeps the status it had, and no design
+    });
+
+    it("the same for a published template whose link is not a Figma design (https://example.com is not a source)", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "legacy", published: true, linkUrl: "https://example.com" });
+      expect((await attach("legacy", "d1")).json()).toMatchObject({ code: "DESIGN_NEEDS_REVISION" });
+      expect(h.templates[0]).toMatchObject({ published: true, designId: null });
+    });
+
+    it("the same for a blank or whitespace link", async () => {
+      for (const linkUrl of ["", "   "]) {
+        h.templates = [];
+        h.designs = [];
+        seedDesign({ id: "d1" });
+        seedTemplate({ id: "legacy", published: true, linkUrl });
+        expect((await attach("legacy", "d1")).json(), JSON.stringify(linkUrl)).toMatchObject({ code: "DESIGN_NEEDS_REVISION" });
+      }
+    });
+
+    it("a published template WITH a valid Figma link may attach a design that has no revision (it stays listed through its link)", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "t1", published: true, linkUrl: FIGMA });
+      expect((await attach("t1", "d1")).statusCode).toBe(200);
+      expect(h.templates[0]).toMatchObject({ published: true, linkUrl: FIGMA, designId: "d1" });
+    });
+
+    it("a DRAFT with no source may attach a design that has no revision", async () => {
+      seedDesign({ id: "d1" });
+      seedTemplate({ id: "t1", published: false, linkUrl: null });
+      expect((await attach("t1", "d1")).statusCode).toBe(200);
+    });
+
+    it("a published legacy template may attach a design that already has a revision: it gains a real source", async () => {
+      seedDesign({ id: "d1" });
+      seedRevision("d1", 1);
+      seedTemplate({ id: "legacy", published: true, linkUrl: null });
+      expect((await attach("legacy", "d1")).statusCode).toBe(200);
+      expect(h.templates[0]).toMatchObject({ published: true, designId: "d1" });
+    });
+  });
+
+  it("answers 404 for a template or a design of another workspace, a design that is not a template one, or an unknown id", async () => {
+    seedDesign({ id: "d1" });
+    seedDesign({ id: "other-d", workspaceId: "ws-2" });
+    seedDesign({ id: "instance", kind: "instance" });
+    seedTemplate({ id: "t1" });
+    seedTemplate({ id: "other-t", workspaceId: "ws-2" });
+    for (const [t, d] of [["other-t", "d1"], ["t1", "other-d"], ["t1", "instance"], ["t1", "nope"], ["nope", "d1"]] as const) {
+      expect((await attach(t, d)).statusCode, `${t} ${d}`).toBe(404);
+    }
+    expect(h.templates.map((t) => t.designId)).toEqual([null, null]);
+    expect(db.template.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for a malformed template id, and refuses a malformed or extra body, with nothing locked", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1" });
+    expect((await attach("a%00b", "d1")).statusCode).toBe(404);
+    for (const payload of [{}, { designId: "../x" }, { designId: "d1", published: true }, { designId: "d1", templateId: "t2" }, { designId: 5 }]) {
+      const res = await app.inject({ method: "PUT", url: "/canvas/templates/t1/design", payload });
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400);
+    }
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /canvas/templates/:id/design (detach)", () => {
+  it("detaches a draft's design and keeps the design and its revisions", async () => {
+    seedDesign({ id: "d1" });
+    seedRevision("d1", 1);
+    seedTemplate({ id: "t1", designId: "d1", published: false });
+    const res = await detach("t1");
+    expect(res.statusCode).toBe(200);
+    expect(h.templates[0].designId).toBeNull();
+    expect(h.designs).toHaveLength(1);
+    expect(h.revisions).toHaveLength(1);
+    expect(db.design.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("locks the template first, then reads and writes inside the transaction", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1", designId: "d1" });
+    await detach("t1");
+    expect(h.log[0]).toBe("tx:begin");
+    expect(h.log[1]).toBe("lock:template");
+    expect(h.log).not.toContain("lock:design"); // detaching never takes the design's lock: no cycle is possible
+    expect(h.log.filter((x) => x.startsWith("out:"))).toEqual([]);
+  });
+
+  it("R2: a published template whose only source is the Canvas revision cannot lose it (409 SOURCE_REQUIRED), and is unchanged", async () => {
+    seedDesign({ id: "d1" });
+    seedRevision("d1", 1);
+    seedTemplate({ id: "t1", designId: "d1", published: true, linkUrl: null });
+    const res = await detach("t1");
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "SOURCE_REQUIRED" });
+    expect(h.templates[0].designId).toBe("d1");
+    expect(db.template.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("R2: the same when the template's link is not a Figma design (it is not a source)", async () => {
+    seedDesign({ id: "d1" });
+    seedRevision("d1", 1);
+    seedTemplate({ id: "t1", designId: "d1", published: true, linkUrl: "https://example.com" });
+    expect((await detach("t1")).json()).toMatchObject({ code: "SOURCE_REQUIRED" });
+  });
+
+  it("a published template that also has a valid Figma link may detach (it keeps a source)", async () => {
+    seedDesign({ id: "d1" });
+    seedRevision("d1", 1);
+    seedTemplate({ id: "t1", designId: "d1", published: true, linkUrl: FIGMA });
+    expect((await detach("t1")).statusCode).toBe(200);
+    expect(h.templates[0]).toMatchObject({ published: true, designId: null });
+  });
+
+  it("R3: a published template whose design has no revision and no Figma link had no source to lose, so it may detach", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1", designId: "d1", published: true, linkUrl: null }); // a state R4 now prevents, but one that must not be a trap
+    expect((await detach("t1")).statusCode).toBe(200);
+  });
+
+  it("answers 404 for a template with no design, another workspace's template, and an unknown or bad id", async () => {
+    seedTemplate({ id: "t1" });
+    seedTemplate({ id: "other-t", workspaceId: "ws-2", designId: "d9" });
+    for (const id of ["t1", "other-t", "nope", "a%00b"]) expect((await detach(id)).statusCode, id).toBe(404);
+    expect(h.templates[1].designId).toBe("d9");
+    expect(db.template.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /canvas/templates/:id/design (create a design for a template, in one step)", () => {
+  const createFor = (templateId: string, payload: unknown = {}) => app.inject({ method: "POST", url: `/canvas/templates/${templateId}/design`, payload: payload as object });
+
+  it("creates a blank design named after the category and attaches it, and answers with the design", async () => {
+    seedTemplate({ id: "t1", category: "Case Study" });
+    const res = await createFor("t1");
+    expect(res.statusCode).toBe(201);
+    const { design } = res.json();
+    expect(design).toMatchObject({ name: "Case Study", version: 1 });
+    expect(h.designs).toHaveLength(1);
+    expect(h.designs[0]).toMatchObject({ id: design.id, workspaceId: "ws-1", kind: "template", name: "Case Study", document: BLANK_DOCUMENT, createdByUserId: "user-1" });
+    expect(h.templates[0].designId).toBe(design.id);
+  });
+
+  it("does everything in ONE transaction, template locked first, and links last", async () => {
+    seedTemplate({ id: "t1" });
+    await createFor("t1");
+    expect(h.log[0]).toBe("tx:begin");
+    expect(h.log[1]).toBe("lock:template");
+    expect(h.log).not.toContain("lock:design"); // the design does not exist yet, so there is nothing to lock first
+    expect(h.log.filter((x) => x.startsWith("out:"))).toEqual([]);
+    expect(before("write:design", "write:template")).toBe(true);
+    expect(h.log.at(-1)).toBe("tx:end");
+  });
+
+  it("a failure while linking leaves NO design behind: the transaction is rolled back", async () => {
+    seedTemplate({ id: "t1" });
+    db.template.updateMany.mockRejectedValueOnce(new Error("db down"));
+    const res = await createFor("t1");
+    expect(res.statusCode).toBe(500);
+    expect(h.designs).toHaveLength(0); // the design that was created is gone with the rollback
+    expect(h.templates[0].designId).toBeNull();
+    expect(h.log).toContain("tx:rollback");
+  });
+
+  it("a link that finds the template already taken in between rolls the new design back too", async () => {
+    seedTemplate({ id: "t1" });
+    db.template.updateMany.mockImplementationOnce(async () => ({ count: 0 })); // someone linked it after the check
+    const res = await createFor("t1");
+    expect(res.statusCode).toBe(500);
+    expect(h.designs).toHaveLength(0);
+  });
+
+  it("a failure while creating the design changes nothing", async () => {
+    seedTemplate({ id: "t1" });
+    db.design.create.mockRejectedValueOnce(new Error("db down"));
+    expect((await createFor("t1")).statusCode).toBe(500);
+    expect(h.designs).toHaveLength(0);
+    expect(h.templates[0].designId).toBeNull();
+  });
+
+  it("a template that already has a design: 409 TEMPLATE_HAS_DESIGN, and no second design is made", async () => {
+    seedDesign({ id: "d1" });
+    seedTemplate({ id: "t1", designId: "d1" });
+    const res = await createFor("t1");
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "TEMPLATE_HAS_DESIGN" });
+    expect(db.design.create).not.toHaveBeenCalled();
+    expect(h.designs).toHaveLength(1);
+  });
+
+  it("R4: a PUBLISHED template with no usable source is refused (a new design has no revision), and nothing is created", async () => {
+    for (const linkUrl of [null, "", "   ", "https://example.com"]) {
+      h.templates = [];
+      seedTemplate({ id: "legacy", published: true, linkUrl });
+      const res = await createFor("legacy");
+      expect(res.statusCode, JSON.stringify(linkUrl)).toBe(409);
+      expect(res.json()).toMatchObject({ code: "DESIGN_NEEDS_REVISION" });
+      expect(h.templates[0]).toMatchObject({ published: true, designId: null });
+    }
+    expect(db.design.create).not.toHaveBeenCalled();
+    expect(h.designs).toHaveLength(0);
+  });
+
+  it("a published template WITH a valid Figma link may, and a draft with no source may", async () => {
+    seedTemplate({ id: "fig", published: true, linkUrl: FIGMA });
+    seedTemplate({ id: "draft", published: false, linkUrl: null, category: "Blog Post" });
+    expect((await createFor("fig")).statusCode).toBe(201);
+    expect((await createFor("draft")).statusCode).toBe(201);
+    expect(h.designs.map((d) => d.name)).toEqual(["Case Study", "Blog Post"]);
+  });
+
+  it("answers 404 for another workspace's template, an unknown id and a bad id, and creates nothing", async () => {
+    seedTemplate({ id: "other", workspaceId: "ws-2" });
+    for (const id of ["other", "nope", "a%00b"]) expect((await createFor(id)).statusCode, id).toBe(404);
+    expect(h.designs).toHaveLength(0);
+  });
+
+  it("the client sends nothing: any field (a name, a document, a design id, a workspace) is a 400, and nothing is created", async () => {
+    seedTemplate({ id: "t1" });
+    for (const payload of [{ name: "x" }, { document: BLANK_DOCUMENT }, { designId: "d9" }, { workspaceId: "ws-2" }, { kind: "instance" }, { createdByUserId: "u" }]) {
+      expect((await createFor("t1", payload)).statusCode, JSON.stringify(payload)).toBe(400);
+    }
+    expect(h.designs).toHaveLength(0);
+    expect(db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("answers 415 for a body that is not JSON", async () => {
+    seedTemplate({ id: "t1" });
+    const res = await app.inject({ method: "POST", url: "/canvas/templates/t1/design", headers: { "content-type": "text/plain" }, payload: "{}" });
+    expect(res.statusCode).toBe(415);
+    expect(h.designs).toHaveLength(0);
+  });
+
+  it("is for the design team only: 401 signed out, 403 for every other role, and nothing is touched", async () => {
+    seedTemplate({ id: "t1" });
+    h.authed = false;
+    expect((await createFor("t1")).statusCode).toBe(401);
+    h.authed = true;
+    for (const role of ["member", "owner", "admin", "viewer", null]) {
+      h.role = role;
+      expect((await createFor("t1")).statusCode, String(role)).toBe(403);
+    }
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(h.designs).toHaveLength(0);
+  });
+
+  it("the name is the category as the design-name rule accepts it (every category fits in 100 characters)", async () => {
+    seedTemplate({ id: "t1", category: "Geospatial Insight/Expertise" });
+    expect((await createFor("t1")).json().design.name).toBe("Geospatial Insight/Expertise");
   });
 });

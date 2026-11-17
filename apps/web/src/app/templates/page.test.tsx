@@ -270,3 +270,47 @@ describe("Template Library: Marketing", () => {
     expect(screen.queryByRole("button", { name: /^Use the / })).toBeNull();
   });
 });
+
+// ── Canvas designs (phase 4): what a card says about where a template's design lives ────────────────────────────
+
+describe("Template Library: a card says where the design lives", () => {
+  const cardOf = async (category: string) => within((await screen.findByText(category, { selector: "h3" })).closest("li")!);
+
+  it("a Canvas-native template shows its Canvas design and revision where it used to say 'No Figma link yet'", async () => {
+    list = [make(1, { id: "native", category: "Case Study", linkUrl: null, designId: "d1", canvasRevision: 3, published: true })];
+    render(<TemplatesPage />);
+    const card = await cardOf("Case Study");
+    expect(card.getByText("Canvas design · Revision 3")).toBeTruthy();
+    expect(card.queryByText("No Figma link yet")).toBeNull();
+  });
+
+  it("a linked design with no revision yet says so", async () => {
+    list = [make(1, { id: "bare", category: "Case Study", linkUrl: null, designId: "d1", canvasRevision: null, published: false })];
+    render(<TemplatesPage />);
+    expect((await cardOf("Case Study")).getByText("Canvas design · no revision yet")).toBeTruthy();
+  });
+
+  it("a link that is not a Figma design is not shown as a Figma link", async () => {
+    list = [make(1, { id: "odd", category: "Case Study", linkUrl: "https://example.com/file", published: true })];
+    render(<TemplatesPage />);
+    const card = await cardOf("Case Study");
+    expect(card.getByText("Not a Figma link")).toBeTruthy();
+    expect(card.queryByText(/figma\.com/i)).toBeNull(); // no shortened Figma address is shown for it
+    expect(card.queryByText("example.com/file")).toBeNull(); // and the stored value stays in the tooltip, not the label
+  });
+
+  it("a Figma-backed card is unchanged, whether or not it also has a Canvas design", async () => {
+    list = [make(1, { id: "both", category: "Case Study", designId: "d1", canvasRevision: 2, published: true })];
+    render(<TemplatesPage />);
+    expect((await cardOf("Case Study")).getByText("figma.com/design/AbC/File-1")).toBeTruthy();
+  });
+
+  it("Marketing sees the same label on a published Canvas-native template, and no way to change it", async () => {
+    h.role = "member";
+    list = [make(1, { id: "native", category: "Case Study", linkUrl: null, designId: "d1", canvasRevision: 1, published: true })];
+    render(<TemplatesPage />);
+    const card = await cardOf("Case Study");
+    expect(card.getByText("Canvas design · Revision 1")).toBeTruthy();
+    expect(card.queryByRole("button", { name: /Delete/ })).toBeNull();
+  });
+});

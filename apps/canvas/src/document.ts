@@ -142,6 +142,58 @@ export function textRoom(doc: CanvasDocument, id: string): number {
   return Math.max(current, Math.min(LIMITS.text.length, current + remaining));
 }
 
+/** A layer Marketing may change once the design is published, and what they may change in it. */
+export interface EditableField {
+  nodeId: string;
+  kind: "text" | "image";
+}
+
+/** An editable layer that is not shown, so it cannot be published. `group` names the hidden group that hides it (null: the layer itself is hidden). */
+export interface HiddenEditable {
+  nodeId: string;
+  name: string;
+  group: string | null;
+}
+
+/**
+ * The layers Marketing may change (a text layer set to "text", an image layer set to "image"), in paint order, and
+ * the editable layers that are hidden. A layer is shown only if it and every group above it is visible, so an editable
+ * child of a hidden group counts as hidden. Everything else, shapes and groups included, is protected by absence.
+ *
+ * MIRRORED by buildManifest in apps/api/src/lib/canvas.ts (the server derives the stored manifest from this same rule):
+ * KEEP IDENTICAL; the API test compares the two.
+ */
+export function editableLayers(doc: CanvasDocument): { fields: EditableField[]; hidden: HiddenEditable[] } {
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+  const fields: EditableField[] = [];
+  const hidden: HiddenEditable[] = [];
+  for (const n of doc.nodes) {
+    const kind = n.type === "text" && n.permission === "text" ? "text" : n.type === "image" && n.permission === "image" ? "image" : null;
+    if (!kind) continue;
+    // null = shown. Otherwise the hiding group's name, or "" for the layer itself. A parent chain that is broken or never ends fails closed (hidden).
+    let by: string | null = null;
+    if (!n.visible) by = "";
+    else {
+      let at: CanvasNode = n;
+      for (let steps = 0; at.parentId !== null; steps++) {
+        const parent = byId.get(at.parentId);
+        if (!parent || steps >= byId.size) {
+          by = "";
+          break;
+        }
+        if (!parent.visible) {
+          by = parent.name;
+          break;
+        }
+        at = parent;
+      }
+    }
+    if (by === null) fields.push({ nodeId: n.id, kind });
+    else hidden.push({ nodeId: n.id, name: n.name, group: by === "" ? null : by });
+  }
+  return { fields, hidden };
+}
+
 export function createDocument(): CanvasDocument {
   // A square social post.
   return { schemaVersion: SCHEMA_VERSION, width: 1080, height: 1080, background: { color: "#FFFFFF" }, nodes: [] };

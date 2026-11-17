@@ -384,6 +384,11 @@ model Template {
   slides      Int? // number of slides, carousel only
   platforms   String[]   @default([]) // instagram | linkedin
   content     String     @default("{}") // DEPRECATED: legacy template-kit JSON, no longer written
+  // The Canvas design this template is made in (a template may have this, a Figma link, or both). One design belongs to at
+  // most one template (unique). NO ACTION, not SET NULL: a linked design cannot be deleted from under a published
+  // template, but deleting a workspace (which cascades to both rows) still works.
+  designId    String?    @unique
+  design      Design?    @relation(fields: [designId], references: [id], onDelete: NoAction)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -431,8 +436,30 @@ model Design {
   createdByUserId String? // no FK: deleting a user must not delete workspace designs
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+  revisions       DesignRevision[]
+  template        Template?
 
   @@index([workspaceId, kind, updatedAt])
+}
+
+// A published, immutable revision of a Canvas design (phase 4). Rows are only ever inserted: triggers refuse an UPDATE and a
+// direct DELETE (only the cascade from deleting an unlinked Design removes them). `document` is the design as it was
+// published; `manifest` is the server-derived list of the layers Marketing may change (apps/api/src/lib/canvas.ts),
+// stored with the revision so it can never drift from it. Published template revisions only: review snapshots (a later
+// phase) get their own table.
+model DesignRevision {
+  id              String   @id @default(cuid())
+  designId        String
+  design          Design   @relation(fields: [designId], references: [id], onDelete: Cascade)
+  number          Int // 1, 2, 3 ... per design
+  designVersion   Int // the Design.version it was published from: one revision per working version
+  document        Json
+  manifest        Json
+  createdByUserId String? // no FK: deleting a user must not delete revisions
+  createdAt       DateTime @default(now())
+
+  @@unique([designId, number])
+  @@unique([designId, designVersion])
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.

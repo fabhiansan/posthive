@@ -2,7 +2,7 @@ import Link from "next/link";
 import { PlatformIcon } from "@/components/PlatformIcon";
 import { Button } from "@/components/ui/button";
 import { platformLabel } from "@/lib/platforms";
-import { createdLine, linkLabel, platformsText, subLine } from "@/lib/template-library";
+import { createdLine, platformsText, sourceLabel, subLine } from "@/lib/template-library";
 import type { DesignTemplate } from "@/lib/templates";
 import { TemplateCover } from "./TemplateCover";
 import { TemplateStatus } from "./TemplateStatus";
@@ -43,7 +43,7 @@ export function TemplateCard({ template: t, canManage, canUse, onDelete, onUse }
             <span>No platform yet</span>
           )}
         </p>
-        <p className="truncate" title={t.linkUrl ?? undefined}>{linkLabel(t.linkUrl)}</p>
+        <p className="truncate" title={t.linkUrl ?? undefined}>{sourceLabel(t)}</p>
         <p className="truncate">{createdLine(t)}</p>
       </div>
 

@@ -131,7 +131,10 @@ export function CanvasHome() {
                 <li key={d.id} className="card flex items-center gap-2 p-2">
                   <Link href={`/canvas/${d.id}`} className="min-w-0 flex-1 rounded-lg px-2 py-1 outline-none hover:bg-neutral-100 focus-visible:ring-2 focus-visible:ring-ring/40">
                     <p className="truncate type-body-sb-m text-fg">{d.name}</p>
-                    <p className="type-body-r-xs text-muted">Edited {edited(d.updatedAt)}</p>
+                    <p className="type-body-r-xs text-muted">
+                      Edited {edited(d.updatedAt)} · {d.latestRevision ? `Revision ${d.latestRevision.number}` : "No revision yet"} ·{" "}
+                      {d.template ? `Template: ${d.template.category} (${d.template.published ? "published" : "draft"})` : "Not attached to a template"}
+                    </p>
                   </Link>
                   <Button variant="ghost" size="icon-sm" aria-label={`Delete ${d.name}`} onClick={() => setDoomed(d)}>
                     <Trash2Icon />
@@ -148,8 +151,15 @@ export function CanvasHome() {
         open={doomed !== null}
         onOpenChange={(open) => !open && setDoomed(null)}
         title="Delete this design?"
-        description={doomed ? `“${doomed.name}” and everything in it will be deleted. This cannot be undone.` : undefined}
+        description={
+          doomed
+            ? doomed.template
+              ? `“${doomed.name}” is attached to the “${doomed.template.category}” template, so it cannot be deleted. Remove the link on the template's page first.`
+              : `“${doomed.name}” and everything in it${doomed.latestRevision ? `, including its ${doomed.latestRevision.number} published ${doomed.latestRevision.number === 1 ? "revision" : "revisions"},` : ""} will be deleted. This cannot be undone.`
+            : undefined
+        }
         confirmLabel="Delete design"
+        confirmDisabled={doomed?.template != null} // a linked design cannot be deleted: the dialog says why, and offers nothing that would fail
         pendingLabel="Deleting…"
         onConfirm={() => (doomed ? remove(doomed) : undefined)}
       />

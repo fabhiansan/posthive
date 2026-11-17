@@ -7,7 +7,7 @@ import type { Category } from "../lib/contentTypes";
 import { figmaLinkError } from "../lib/figmaLink";
 import { FORMATS, MAX_SLIDES, MIN_SLIDES, PLATFORMS } from "../lib/template-library";
 import { platformLabel } from "../lib/platforms";
-import { fileHref, type DesignTemplate, type TemplateFormat, type TemplatePlatform } from "../lib/templates";
+import { fileHref, hasFigmaSource, type DesignTemplate, type TemplateFormat, type TemplatePlatform } from "../lib/templates";
 import { ContentTypeSelects, type ContentType } from "./ContentTypeSelects";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -91,7 +91,7 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
     const link = linkUrl.trim();
     if (!type.category) return setError("Pick the content pillar and category.");
     setLinkTouched(true);
-    if (linkError) return;
+    if (linkError) return; // a blank link is allowed: a template designed in Canvas has none
     const slideCount = format === "carousel" && slides.trim() !== "" ? Number(slides) : null;
     if (slideCount !== null && (!Number.isInteger(slideCount) || slideCount < MIN_SLIDES || slideCount > MAX_SLIDES)) {
       return setError(`A carousel has ${MIN_SLIDES} to ${MAX_SLIDES} slides.`);
@@ -101,7 +101,7 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
       const body = {
         pillar: type.pillar,
         category: type.category,
-        linkUrl: link,
+        linkUrl: link || null,
         previewUrl: preview?.url ?? null,
         format: format || null,
         slides: slideCount,
@@ -121,7 +121,7 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
   }
 
   const busy = uploadingPreview;
-  const linkError = figmaLinkError(linkUrl);
+  const linkError = linkUrl.trim() ? figmaLinkError(linkUrl) : null;
   const showLinkError = linkTouched && !!linkError;
   const otherTaken = new Set([...takenCategories].filter((c) => c !== template?.category));
   const togglePlatform = (p: TemplatePlatform) => setPlatforms((on) => (on.includes(p) ? on.filter((x) => x !== p) : [...on, p]));
@@ -156,7 +156,7 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
           <div>
             <label htmlFor="template-link" className="type-body-sb-s text-fg">Figma link</label>
             <p id="template-link-hint" className="type-body-r-xs mt-0.5 text-muted">
-              Link to the design in Figma, like figma.com/design/…. It opens in a new tab.
+              Link to the design in Figma, like figma.com/design/…. It opens in a new tab. Optional when the template is designed in Canvas: a template needs a Figma link or a published Canvas revision before it can be published.
             </p>
             <input id="template-link" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value.slice(0, 2048))}
               onBlur={() => setLinkTouched(true)} type="url" inputMode="url" autoComplete="off"
@@ -164,6 +164,12 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
               aria-describedby={showLinkError ? "template-link-error" : "template-link-hint"}
               className={cn("field mt-1.5", showLinkError && "border-red-200 bg-red-50")} />
             {showLinkError && <p id="template-link-error" className="type-body-r-xs mt-1.5 text-red-600">{linkError}</p>}
+            {/* The API allows this (the Canvas revision is still a source) but the public API and MCP list a template with a Canvas design only through its Figma link. */}
+            {template?.published && template.designId && hasFigmaSource(template.linkUrl) && !linkUrl.trim() && (
+              <p role="status" className="type-body-r-xs mt-1.5 text-brand-800">
+                Without a Figma link this template is no longer returned by the public API and MCP. Marketing still sees it in the library.
+              </p>
+            )}
           </div>
 
           <section className="grid gap-3 sm:grid-cols-2">

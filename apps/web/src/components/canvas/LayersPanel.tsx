@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDownIcon, ChevronUpIcon, CircleIcon, EyeIcon, EyeOffIcon, ImageIcon, LayersIcon, SquareIcon, TypeIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, CircleIcon, EyeIcon, EyeOffIcon, ImageIcon, LayersIcon, PencilIcon, SquareIcon, TypeIcon } from "lucide-react";
 import type { CanvasNode, MoveTo, NodeType } from "posthive-canvas";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -103,6 +103,13 @@ export function LayersPanel({ nodes, selectedId, onSelect, onToggleVisible, onMo
                     >
                       <Icon className="size-4 shrink-0" />
                       <span className="truncate type-body-m-s">{node.name}</span>
+                      {/* Marketing may change this layer once published. A hidden one cannot be published as editable (shown in red). */}
+                      {node.permission !== "protected" && (
+                        <>
+                          <PencilIcon aria-hidden className={cn("size-3.5 shrink-0", node.visible ? "text-brand-800" : "text-red-600")} />
+                          <span className="sr-only">{node.visible ? "Editable by Marketing" : "Editable by Marketing, but hidden"}</span>
+                        </>
+                      )}
                     </button>
                   )}
                   {active && renaming !== node.id && (

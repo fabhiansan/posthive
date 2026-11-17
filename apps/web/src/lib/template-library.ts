@@ -3,7 +3,7 @@ import { wibDateKey } from "./datetime";
 import { shortName } from "./dashboard-format";
 import { formatPlanDate } from "./import-rows";
 import { platformLabel } from "./platforms";
-import type { DesignTemplate, TemplateFormat, TemplatePlatform } from "./templates";
+import { hasFigmaSource, hasUsableSource, type DesignTemplate, type TemplateFormat, type TemplatePlatform } from "./templates";
 
 // The Template Library page (docs/design/designer-template.png): what a card says, how the list is filtered, counted,
 // paged and exported. The design team sees drafts and published templates; Marketing is sent published ones only.
@@ -53,6 +53,44 @@ export function platformsText(platforms: readonly string[]): string | null {
 export function linkLabel(url: string | null): string {
   if (!url) return "No Figma link yet";
   return url.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, "");
+}
+
+type Source = Pick<DesignTemplate, "linkUrl" | "designId" | "canvasRevision">;
+
+/** Where the design lives, for a card and the detail page: the Figma link, the Canvas design, or what is missing. Never says "Figma" for a link that is not one. */
+export function sourceLabel(t: Source): string {
+  if (hasFigmaSource(t.linkUrl)) return linkLabel(t.linkUrl);
+  if (t.canvasRevision != null) return `Canvas design · Revision ${t.canvasRevision}`;
+  if (t.designId) return "Canvas design · no revision yet";
+  if (t.linkUrl?.trim()) return "Not a Figma link";
+  return linkLabel(null);
+}
+
+/** Why a draft cannot be published yet (null: it can). The API decides; this only says it first. */
+export function publishBlockedReason(t: Source): string | null {
+  if (hasUsableSource(t)) return null;
+  if (t.linkUrl?.trim()) return "The link is not a Figma design. Add a Figma link, or publish a Canvas revision, first.";
+  return "Add a Figma link or publish a Canvas revision first.";
+}
+
+type Attachable = Pick<DesignTemplate, "published" | "linkUrl" | "canvasRevision" | "designId">;
+
+/**
+ * Why `design` (null: a design that is about to be created, which has no revision) cannot be attached to this template
+ * right now (null: it can). A published template with nothing to show would stop being listed for Marketing, so it needs
+ * a design that already has a revision. The API refuses the same case.
+ */
+export function attachBlockedReason(t: Attachable, design: { latestRevision?: unknown } | null): string | null {
+  if (t.designId) return "This template already has a Canvas design.";
+  if (t.published && !hasUsableSource(t) && !design?.latestRevision) {
+    return "This template is published and has no source yet. Unpublish it first, or add a Figma link, or link a design that has a revision.";
+  }
+  return null;
+}
+
+/** What linking changes for the public API and MCP, said before it happens (null: nothing changes there). */
+export function attachNotice(t: Pick<DesignTemplate, "published" | "linkUrl">): string | null {
+  return t.published && !hasFigmaSource(t.linkUrl) ? "Once linked, this template is no longer returned by the public API and MCP unless it has a valid Figma link." : null;
 }
 
 /** "Created 12 Nov 2026 · Dewi K." in WIB; the person is left out when the account is gone. */

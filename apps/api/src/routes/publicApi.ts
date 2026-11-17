@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { withApiKey } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN } from "../lib/auth/withAuth.js";
-import { TEMPLATE_SELECT, designReference } from "../lib/templates.js";
+import { designReference, findExternalTemplate, listExternalTemplates } from "../lib/templates.js";
 import { firstSubmission } from "../lib/submitStamp.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
@@ -464,14 +464,18 @@ export async function publicApiRoutes(
   // Templates are design references: text/firstComment stay empty for older integrations.
   app.get("/api/v1/templates", { preHandler }, async (req, reply) => {
     const { workspaceId } = req.apiKeyUser!;
-    const { limit: limitStr } = req.query as { limit?: string };
-    const take = Math.min(Number(limitStr ?? 100), 100);
-    const templates = await prisma.template.findMany({
-      where: { workspaceId, category: { not: null }, published: true },
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      take,
-      select: TEMPLATE_SELECT,
-    });
+    const { limit: limitStr } = req.query as { limit?: unknown };
+    // `limit` contract: none means 100; a whole number from 0 up is accepted, 0 is an empty list and more than 100 is 100.
+    // Everything else is a 400: empty or blank, text, negative, a decimal, a value given twice (`?limit=5&limit=10` is
+    // ambiguous: Fastify hands over an array) and anything that is not finite (Infinity, -Infinity, NaN, or a number so
+    // large that it overflows to Infinity, like 1e309). Number.isInteger is false for every non-finite value, so they
+    // need no case of their own. A finite whole number of any size is accepted and capped (99999999999999999999 is 100).
+    // Before, the raw value went to the database call, where an empty or blank value meant 0: a silent empty list.
+    const n = limitStr === undefined ? 100 : typeof limitStr === "string" && limitStr.trim() !== "" ? Number(limitStr) : NaN;
+    if (!(Number.isInteger(n) && n >= 0)) return reply.status(400).send({ error: "limit must be a whole number from 0 to 100" });
+    const take = Math.min(n, 100);
+    // Published Figma references only (a Canvas-only template is not listed here); the limit counts what is returned.
+    const templates = await listExternalTemplates(workspaceId, take);
     return reply.send({
       templates: templates.map((t) => ({
         id: t.id,
@@ -508,7 +512,7 @@ export async function publicApiRoutes(
     if (!Array.isArray(body.accountIds) || body.accountIds.length === 0)
       return reply.status(400).send({ error: "accountIds must be a non-empty array" });
 
-    const template = await prisma.template.findFirst({ where: { id, workspaceId, category: { not: null }, published: true }, select: TEMPLATE_SELECT });
+    const template = await findExternalTemplate(id, workspaceId);
     if (!template) return reply.status(404).send({ error: "Template not found" });
 
     const text = body.contentOverride ?? "";

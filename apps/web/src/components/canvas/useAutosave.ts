@@ -31,10 +31,12 @@ export function useAutosave({ design, doc, name, onReload }: { design: SavedDesi
   const toast = useToast();
   const controller = useRef<Autosave<CanvasDocument> | null>(null);
   const [info, setInfo] = useState<AutosaveInfo>({ state: "saved", dirty: false });
+  // The version the server last confirmed, for the page to compare with the latest published revision.
+  const [version, setVersion] = useState(design?.version ?? 0);
 
   useEffect(() => {
     if (!design) return;
-    const c = createAutosave<CanvasDocument>(
+    const c: Autosave<CanvasDocument> = createAutosave<CanvasDocument>(
       { version: design.version, doc: design.document, name: design.name },
       {
         save: (version, snapshot) => saveDesign(design.id, { version, document: snapshot.doc, name: snapshot.name }),
@@ -42,7 +44,10 @@ export function useAutosave({ design, doc, name, onReload }: { design: SavedDesi
           const { design: latest } = await getDesign(design.id);
           return { version: latest.version, doc: latest.document, name: latest.name };
         },
-        onState: setInfo,
+        onState: (next) => {
+          setInfo(next);
+          setVersion(c.version);
+        },
         // The editor is gone, so this is the only way the person learns that their last changes did not reach the server.
         onAbandon: (_reason, snapshot, message) => toast.error(`Your last changes to “${snapshot.name}” could not be saved. ${message}`),
       },
@@ -81,14 +86,17 @@ export function useAutosave({ design, doc, name, onReload }: { design: SavedDesi
 
   const retry = useCallback(() => controller.current?.retry(), []);
   const flush = useCallback(() => controller.current?.flush() ?? Promise.resolve(true), []);
+  /** The version the server last confirmed, read at the moment it is needed (a publish names it right after flush()). */
+  const currentVersion = useCallback(() => controller.current?.version ?? null, []);
   /** Reload latest after a conflict: takes the server's version and discards the unsaved changes here. */
   const reload = useCallback(() => {
     const c = controller.current;
     const latest = c?.conflict;
     if (!c || !latest) return;
     c.reset(latest);
+    setVersion(latest.version);
     onReload(latest);
   }, [onReload]);
 
-  return { info, retry, flush, reload };
+  return { info, version, retry, flush, currentVersion, reload };
 }

@@ -161,6 +161,79 @@ export type CanvasDocumentJson = z.infer<typeof canvasDocument>;
 /** What a new design starts as. Same as the editor's createDocument() (canvas.test.ts checks). */
 export const BLANK_DOCUMENT: CanvasDocumentJson = { schemaVersion: 1, width: 1080, height: 1080, background: { color: "#FFFFFF" }, nodes: [] };
 
+// ── Field manifest (phase 4) ────────────────────────────────────────────────
+
+export interface ManifestField {
+  nodeId: string;
+  kind: "text" | "image";
+}
+
+/** The layers Marketing may change in one published revision. Default deny: a layer that is not listed is protected. */
+export interface FieldManifest {
+  schemaVersion: 1;
+  fields: ManifestField[];
+}
+
+/** An editable layer that is not shown. `group` names the hidden group that hides it (null: the layer itself is hidden). */
+export interface HiddenEditable {
+  nodeId: string;
+  name: string;
+  group: string | null;
+}
+
+/**
+ * Derives the manifest from the STORED document, and lists the editable layers that are hidden (the publish is refused
+ * while there are any, so every listed field is shown). A layer is shown only if it and every group above it is visible.
+ * A broken or endless parent chain fails closed (hidden). Deterministic: paint order. The client never supplies one.
+ *
+ * MIRRORS editableLayers in apps/canvas/src/document.ts. KEEP IDENTICAL; canvas.test.ts compares the two.
+ */
+export function buildManifest(doc: Pick<CanvasDocumentJson, "nodes">): { manifest: FieldManifest; hidden: HiddenEditable[] } {
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+  const fields: ManifestField[] = [];
+  const hidden: HiddenEditable[] = [];
+  for (const n of doc.nodes) {
+    const kind = n.type === "text" && n.permission === "text" ? "text" : n.type === "image" && n.permission === "image" ? "image" : null;
+    if (!kind) continue;
+    let by: string | null = null; // null = shown; the hiding group's name; "" = the layer itself (or a chain that cannot be followed)
+    if (!n.visible) by = "";
+    else {
+      let at: (typeof doc.nodes)[number] = n;
+      for (let steps = 0; at.parentId !== null; steps++) {
+        const parent = byId.get(at.parentId);
+        if (!parent || steps >= byId.size) {
+          by = "";
+          break;
+        }
+        if (!parent.visible) {
+          by = parent.name;
+          break;
+        }
+        at = parent;
+      }
+    }
+    if (by === null) fields.push({ nodeId: n.id, kind });
+    else hidden.push({ nodeId: n.id, name: n.name, group: by === "" ? null : by });
+  }
+  return { manifest: { schemaVersion: 1, fields }, hidden };
+}
+
+/** The message for a publish that is refused because editable layers are hidden: the first five by name, then a count. */
+export function hiddenMessage(hidden: HiddenEditable[]): string {
+  const shown = hidden.slice(0, 5).map((h) => (h.group === null ? `"${h.name}" is editable but hidden` : `"${h.name}" is editable but hidden because its group "${h.group}" is hidden`));
+  const more = hidden.length > 5 ? `; and ${hidden.length - 5} more` : "";
+  return `${shown.join("; ")}${more}. Show ${hidden.length === 1 ? "it" : "them"}, or set ${hidden.length === 1 ? "it" : "them"} to Protected, before publishing.`;
+}
+
+/** POST /canvas/designs/:id/publish. Only the version the editor last saved: the document, manifest, number and author are never sent. */
+export const publishBody = z.object({ version: z.number().int().min(1).max(2_000_000_000) }).strict();
+
+/** PUT /canvas/templates/:templateId/design. */
+export const attachBody = z.object({ designId: identifier }).strict();
+
+/** POST /canvas/templates/:templateId/design: no fields. The design is blank and named after the template's category, both decided by the server. */
+export const createForTemplateBody = z.object({}).strict();
+
 /** The assets a document draws, once each. */
 export const documentAssetIds = (doc: CanvasDocumentJson): string[] => [...new Set(doc.nodes.flatMap((n) => (n.type === "image" ? [n.assetId] : [])))];
 

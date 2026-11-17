@@ -23,7 +23,7 @@ import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
 import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
-import { TEMPLATE_SELECT, designReference } from "../lib/templates.js";
+import { designReference, findExternalTemplate, listExternalTemplates } from "../lib/templates.js";
 import { firstSubmission } from "../lib/submitStamp.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -717,11 +717,7 @@ export async function handleTool(
     }
 
     case "list_templates": {
-      const templates = await prisma.template.findMany({
-        where: { workspaceId, category: { not: null }, published: true },
-        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-        select: TEMPLATE_SELECT,
-      });
+      const templates = await listExternalTemplates(workspaceId); // published Figma references only, as before
       return ok({
         templates: templates.map((t) => ({
           id: t.id,
@@ -738,10 +734,7 @@ export async function handleTool(
     case "create_from_template": {
       if (!isContentEditorRole(ctx.role)) throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
       const templateId = args.template_id as string;
-      const template = await prisma.template.findFirst({
-        where: { id: templateId, workspaceId, category: { not: null }, published: true },
-        select: TEMPLATE_SELECT,
-      });
+      const template = await findExternalTemplate(templateId, workspaceId);
       if (!template) throw new Error("Template not found");
 
       const scheduleDirectly = args.schedule_directly === true;

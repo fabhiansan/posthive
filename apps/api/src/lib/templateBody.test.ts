@@ -27,9 +27,22 @@ describe("templateBody", () => {
     expect(issue({ ...base, linkUrl: "https://example.com/design/abc" })).toMatch(/Figma link/);
   });
 
-  it("rejects a missing link", () => {
-    expect(issue({ ...base, linkUrl: undefined })).toBe("Add a Figma link.");
-    expect(issue({ ...base, linkUrl: "  " })).toBe("Add a Figma link.");
+  // A template made in Canvas has no Figma link (it is published through its Canvas revision), so a missing, null, blank
+  // or whitespace-only link is no link. A link that is given must still be a Figma design link.
+  it.each([["missing", undefined], ["null", null], ["empty", ""], ["spaces", "   "]])("a %s link is no link", (_label, linkUrl) => {
+    const r = templateBody.safeParse({ ...base, linkUrl });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.linkUrl).toBeNull();
+  });
+
+  it.each(["https://example.com", "https://example.com/design/abc", "http://www.figma.com/design/AbC", "https://figma.com.evil.com/design/AbC", "https://www.figma.com/community/file/1", "figma"])("still rejects %s", (linkUrl) => {
+    expect(issue({ ...base, linkUrl })).toMatch(/Figma link/);
+  });
+
+  it("trims a link that is given", () => {
+    const r = templateBody.safeParse({ ...base, linkUrl: `  ${base.linkUrl}  ` });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.linkUrl).toBe(base.linkUrl);
   });
 
   it("rejects a preview that is not an image", () => {
