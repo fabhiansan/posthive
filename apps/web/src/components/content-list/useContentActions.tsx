@@ -261,6 +261,8 @@ export function useContentActions({ rows, reload, keepGone = true }: { rows: rea
   return {
     openId,
     open: setOpenId,
+    /** Opens the review dialog of a post without going through the drawer. */
+    review: (id: string) => openDialog(id, "review"),
     selected,
     count: picked.size,
     toggle,

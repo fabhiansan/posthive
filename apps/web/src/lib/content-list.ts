@@ -148,6 +148,11 @@ export function visibleFilters(role: RoleView): Exclude<ListFilter, "all">[] {
   ];
 }
 
+/** The tab a link asks for (`/jobs?filter=review`): only one this role has, else All. */
+export function filterFromQuery(raw: string | null, filters: readonly ListFilter[]): ListFilter {
+  return raw !== null && (filters as readonly string[]).includes(raw) ? (raw as ListFilter) : "all";
+}
+
 // ── Short texts ─────────────────────────────────────────────────────────────
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;

@@ -17,6 +17,7 @@ import type { PostJob, PostJobTarget, Account } from "@prisma/client";
 import { getAdapter } from "../adapters/index.js";
 import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
+import { firstSubmission } from "../lib/submitStamp.js";
 import { isSsrfBlocked } from "../lib/ssrf.js";
 import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
@@ -171,6 +172,7 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
             scheduledFor: next,
             status: needsApproval ? "draft" : "pending",
             approvalStatus: needsApproval ? "pending" : null,
+            ...(needsApproval ? firstSubmission(fullJob.userId) : {}),
             content: fullJob.content,
             commentText: fullJob.commentText,
             userId: fullJob.userId,

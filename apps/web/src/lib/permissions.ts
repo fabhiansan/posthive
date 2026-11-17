@@ -65,7 +65,7 @@ export function permissionsFor(
 // Only for what a person may SEE (sidebar links, page guard): an unknown role gets the narrowest
 // view, the same pages as a designer. It must not deny everything: RoleGuard sends a blocked
 // person to /jobs, and a role that cannot open /jobs would redirect forever.
-function normalizeRole(role: string | null | undefined): AppRole {
+export function normalizeRole(role: string | null | undefined): AppRole {
   return isAppRole(role) ? role : "designer";
 }
 

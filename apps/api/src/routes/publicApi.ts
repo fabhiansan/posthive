@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { withApiKey } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN } from "../lib/auth/withAuth.js";
 import { TEMPLATE_SELECT, designReference } from "../lib/templates.js";
+import { firstSubmission } from "../lib/submitStamp.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
@@ -127,6 +128,7 @@ export async function publicApiRoutes(
         scheduledFor: scheduledFor ?? new Date(0),
         status: staysDraft ? "draft" : "pending",
         approvalStatus: needsReview ? "pending" : null,
+        ...(needsReview ? firstSubmission(userId) : {}),
         content: contentPayload,
         commentText: body.commentText ?? null,
         dryRun: body.dryRun ?? false,
@@ -537,6 +539,7 @@ export async function publicApiRoutes(
         scheduledFor,
         status: staysDraft ? "draft" : "pending",
         approvalStatus: needsReview ? "pending" : null,
+        ...(needsReview ? firstSubmission(userId) : {}),
         content: JSON.stringify({ text, mediaUrls: [], pillar: template.pillar, category: template.category }),
         commentText,
         dryRun: false,

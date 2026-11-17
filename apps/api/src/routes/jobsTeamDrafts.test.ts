@@ -214,6 +214,14 @@ describe("POST /jobs/:id/submit: a colleague sends the head's draft for review",
     expect(call("update")[0].args).toMatchObject({ data: { approvalStatus: "pending" } });
   });
 
+  it("records who sent it, when, and that this is one more send (round 2 after a revision)", async () => {
+    h.job = draft();
+    await submit();
+    const { data } = call("update")[0].args as { data: Record<string, unknown> };
+    expect(data).toMatchObject({ submittedById: "colleague", submitCount: { increment: 1 } });
+    expect(data.submittedAt).toBeInstanceOf(Date);
+  });
+
   it("still refuses a draft that lacks a field, naming it", async () => {
     h.job = draft({ content: JSON.stringify({ title: "T", category: "Blog Post" }) });
     const res = await submit();
@@ -287,6 +295,14 @@ describe("POST /jobs/submit-bulk: a colleague sends several of the head's drafts
     ]);
   });
 
+  it("stamps every submitted draft with who sent it and one more send", async () => {
+    h.jobs = [draft({ id: ids[0] }), draft({ id: ids[1] })];
+    await bulk();
+    const { data } = call("updateMany")[0].args as { data: Record<string, unknown> };
+    expect(data).toMatchObject({ approvalStatus: "pending", submittedById: "colleague", submitCount: { increment: 1 } });
+    expect(data.submittedAt).toBeInstanceOf(Date);
+  });
+
   it("only the drafts of this workspace are read", async () => {
     h.jobs = [];
     await bulk();
@@ -296,5 +312,24 @@ describe("POST /jobs/submit-bulk: a colleague sends several of the head's drafts
   it("the design team still cannot", async () => {
     h.role = "designer";
     expect((await bulk()).statusCode).toBe(403);
+  });
+});
+
+describe("POST /jobs: a member's post that goes straight to review is its first send", () => {
+  const create = (payload: object) =>
+    app.inject({ method: "POST", url: "/jobs", payload: { content: { text: "Caption" }, accountIds: ["ckaaaaaaaaaaaaaaaaaaaaaaa"], ...payload } });
+  const created = () => (call("create")[0].args as { data: Record<string, unknown> }).data;
+
+  it("a scheduled post of a member under the approval flow waits for review, as send number 1 by that member", async () => {
+    expect((await create({ scheduledFor: "2030-01-01T01:00:00.000Z" })).statusCode).toBe(201);
+    expect(created()).toMatchObject({ status: "draft", approvalStatus: "pending", submittedById: "colleague", submitCount: 1 });
+    expect(created().submittedAt).toBeInstanceOf(Date);
+  });
+
+  it("a plain draft was not sent for review, so it carries no stamp", async () => {
+    expect((await create({ draft: true })).statusCode).toBe(201);
+    expect(created()).toMatchObject({ approvalStatus: null });
+    expect(created()).not.toHaveProperty("submittedAt");
+    expect(created()).not.toHaveProperty("submitCount");
   });
 });

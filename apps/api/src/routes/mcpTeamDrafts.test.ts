@@ -5,12 +5,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   job: null as null | Record<string, unknown>,
   updates: [] as unknown[],
+  created: [] as Array<{ data: Record<string, unknown> }>,
 }));
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
+    account: { findMany: vi.fn(async () => [{ id: "acc-1" }]) },
     postJob: {
       findUnique: vi.fn(async () => h.job),
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+        h.created.push(args);
+        return { id: "new", status: args.data.status, scheduledFor: null, targets: [] };
+      }),
       update: vi.fn(async (args: { data: Record<string, unknown> }) => {
         h.updates.push(args);
         return { id: "p1", status: h.job?.status, scheduledFor: null };
@@ -40,6 +46,7 @@ const update = (ctx: { role: string | null; approvalRequired: boolean }, userId 
 beforeEach(() => {
   h.job = null;
   h.updates = [];
+  h.created = [];
 });
 
 describe("update_post: a colleague edits the head of marketing's draft", () => {
@@ -87,5 +94,22 @@ describe("update_post: a colleague edits the head of marketing's draft", () => {
   it("an admin edits any draft or scheduled post, as before", async () => {
     h.job = stored({ status: "pending" });
     await expect(update({ role: "admin", approvalRequired: true })).resolves.toBeTruthy();
+  });
+});
+
+describe("create_post: a post that goes to review is its first send", () => {
+  const create = (ctx: { role: string | null; approvalRequired: boolean }) =>
+    handleTool("create_post", { content: "Caption", account_ids: ["acc-1"] }, "colleague", "ws-1", ctx);
+
+  it("a member key under the approval flow: waits for review, as send number 1 by that member", async () => {
+    await create({ role: "member", approvalRequired: true });
+    expect(h.created[0].data).toMatchObject({ status: "draft", approvalStatus: "pending", submittedById: "colleague", submitCount: 1 });
+    expect(h.created[0].data.submittedAt).toBeInstanceOf(Date);
+  });
+
+  it("an owner key is not under the flow, so nothing was sent for review and nothing is stamped", async () => {
+    await create({ role: "owner", approvalRequired: true });
+    expect(h.created[0].data).toMatchObject({ approvalStatus: null });
+    expect(h.created[0].data).not.toHaveProperty("submittedAt");
   });
 });

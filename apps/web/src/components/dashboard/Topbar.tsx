@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/cn";
 import { formatTodayPill, initialsOf } from "@/lib/dashboard-format";
 
 type ActionsProps = {
@@ -66,17 +67,19 @@ type Props = ActionsProps & {
   /** The product name: "Welcome to Postly, Puteri". */
   brand: string;
   subtitle: string;
+  /** Replaces the subtitle's own look (size, colour); the design team's dashboard sets its subtitle smaller. */
+  subtitleClassName?: string;
 };
 
 /** The greeting on the left; the actions on the right. */
-export function Topbar({ greeting, firstName, brand, fullName, avatarUrl, subtitle, today }: Props) {
+export function Topbar({ greeting, firstName, brand, fullName, avatarUrl, subtitle, subtitleClassName, today }: Props) {
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between xl:gap-6">
       <div className="min-w-0">
         <h1 className="type-display-m-6 text-fg">
           {greeting ?? `Welcome to ${brand}${firstName ? `, ${firstName}` : ""}`}
         </h1>
-        <p className="mt-1 max-w-2xl type-body-r-m text-fg">{subtitle}</p>
+        <p className={cn("mt-1 max-w-2xl type-body-r-m text-fg", subtitleClassName)}>{subtitle}</p>
       </div>
 
       <TopbarActions fullName={fullName} avatarUrl={avatarUrl} today={today} />

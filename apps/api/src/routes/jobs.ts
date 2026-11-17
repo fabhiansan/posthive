@@ -17,6 +17,7 @@ import { withoutTemplateMedia } from "../lib/templates.js";
 import { bucketJobCounts, jobFilterWhere } from "../lib/jobFilters.js";
 import { canEditJob, sameContent, shouldResetReview } from "../lib/jobEditRules.js";
 import { missingForReview, type MissingField } from "../lib/submitReadiness.js";
+import { firstSubmission, nextSubmission } from "../lib/submitStamp.js";
 import { CATEGORIES, PILLARS, pillarFor, type Category, type Pillar } from "../lib/contentTypes.js";
 
 /**
@@ -185,6 +186,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
           scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
           status: draft || needsReview ? "draft" : "pending",
           approvalStatus: needsReview ? "pending" : null,
+          ...(needsReview ? firstSubmission(userId) : {}),
           // Pillar is derived from the category, never trusted from the client
           content: JSON.stringify(type ? { ...postContent, ...type } : postContent),
           commentText: commentText ?? null,
@@ -644,7 +646,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     const updated = await prisma.postJob.update({
       where: { id },
-      data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null },
+      data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
       include: { targets: { select: TARGET_SELECT } },
     });
     return reply.send(updated);
@@ -690,7 +692,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (submit.length > 0) {
       await prisma.postJob.updateMany({
         where: { id: { in: submit }, workspaceId, status: "draft" },
-        data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null },
+        data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
       });
     }
     return reply.send({ submitted: submit, skipped });

@@ -24,6 +24,7 @@ import { schedulePostJob } from "../lib/queue.js";
 import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
 import { TEMPLATE_SELECT, designReference } from "../lib/templates.js";
+import { firstSubmission } from "../lib/submitStamp.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -464,6 +465,7 @@ export async function handleTool(
           scheduledFor,
           status: isDraft ? "draft" : "pending",
           approvalStatus: forcedDraft ? "pending" : null,
+          ...(forcedDraft ? firstSubmission(userId) : {}),
           content: contentPayload,
           commentText: (args.first_comment as string | undefined) ?? null,
           dryRun: args.dry_run === true,
@@ -785,6 +787,7 @@ export async function handleTool(
           scheduledFor,
           status: isDraft ? "draft" : "pending",
           approvalStatus: forcedDraft ? "pending" : null,
+          ...(forcedDraft ? firstSubmission(userId) : {}),
           content: contentPayload,
           commentText,
           dryRun: false,

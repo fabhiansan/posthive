@@ -39,6 +39,7 @@ model User {
   accounts           Account[]
   postJobs           PostJob[]
   reviewedJobs       PostJob[]           @relation("PostJobReviewedBy")
+  submittedJobs      PostJob[]           @relation("PostJobSubmittedBy")
   authSessions       AuthSession[]
   apiKeys            ApiKey[]
   emailVerifications EmailVerification[]
@@ -191,6 +192,12 @@ model PostJob {
   reviewedBy       User?     @relation("PostJobReviewedBy", fields: [reviewedByUserId], references: [id])
   reviewedAt       DateTime?
 
+  // Last time the post was sent for review, by whom, and how many times (1 = first). lib/submitStamp.ts
+  submittedAt   DateTime?
+  submittedById String?
+  submittedBy   User?     @relation("PostJobSubmittedBy", fields: [submittedById], references: [id], onDelete: SetNull)
+  submitCount   Int       @default(0)
+
   // Content-plan import idempotency — hash of title + date + platforms.
   importKey String?
 
@@ -216,6 +223,7 @@ model PostJob {
   @@index([workspaceId, scheduledFor])
   @@index([workspaceId, scheduledFor, id])
   @@index([workspaceId, approvalStatus])
+  @@index([workspaceId, submittedAt])
   @@index([repeatParentId])
   @@unique([workspaceId, importKey])
 }

@@ -112,6 +112,28 @@ describe("AppSidebar: links by role", () => {
     }
   });
 
+  it("a designer sees the design team's sidebar: Overview and Design workspace, no Content list, no Assets", () => {
+    h.workspace = { id: "w1", name: "Postly Studio", role: "designer", isActive: true };
+    render(<Shell />);
+    for (const group of ["Overview", "Design workspace"]) expect(screen.getByText(group)).toBeTruthy();
+    for (const gone of ["Content workspace", "Assets", "Channel", "Workspace"]) expect(screen.queryByText(gone), gone).toBeNull();
+    expect(screen.getByRole("link", { name: "Dashboard" }).getAttribute("href")).toBe("/dashboard");
+    expect(screen.getByRole("link", { name: "Master Template" }).getAttribute("href")).toBe("/templates");
+    expect(screen.queryByRole("link", { name: "Templates" })).toBeNull();
+    expect(labels().some((l) => l.startsWith("Content list"))).toBe(false);
+    expect(labels().some((l) => l.startsWith("Media library"))).toBe(false);
+  });
+
+  it("a designer's My task and Help & support are dimmed 'Soon' rows", () => {
+    h.workspace = { id: "w1", name: "Postly Studio", role: "designer", isActive: true };
+    render(<Shell />);
+    for (const name of ["My task", "Help & support"]) {
+      const row = screen.getByText(name).closest("[data-sidebar=menu-button]") as HTMLElement;
+      expect(row.getAttribute("aria-disabled"), name).toBe("true");
+    }
+    expect(screen.getAllByText("Soon")).toHaveLength(2);
+  });
+
   it("pages that do not exist yet are dimmed rows with 'Soon', not links", () => {
     render(<Shell />);
     for (const name of ["My task", "Media library", "Help & support"]) {

@@ -15,7 +15,7 @@ import {
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
-import { canAccessPage } from "@/lib/permissions";
+import { canAccessPage, normalizeRole } from "@/lib/permissions";
 
 // The sidebar's links, as data (no JSX). Role filtering uses the same page map as RoleGuard, so
 // the sidebar never links to a page the guard would bounce the person from.
@@ -64,6 +64,25 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+/**
+ * The design team's sidebar (docs/design/designer-dashboard.png): its dashboard, the Master Template library and its tasks.
+ * "My task" waits for the "assign to designer" step of add/edit content, so it is a dimmed "Soon" row for now.
+ * Content list and Media library are not here; a designer reaches the list through "View all" on the dashboard.
+ */
+export const DESIGN_GROUPS: NavGroup[] = [
+  {
+    label: "Overview",
+    items: [{ label: "Dashboard", href: "/dashboard", icon: LayoutGrid }],
+  },
+  {
+    label: "Design workspace",
+    items: [
+      { label: "Master Template", href: "/templates", icon: LayoutTemplate },
+      { label: "My task", href: null, icon: ListChecks },
+    ],
+  },
+];
+
 /** Team and billing: after "Add account", for the roles that may open them. */
 export const MANAGE_GROUP: NavGroup = {
   label: "Workspace",
@@ -87,9 +106,10 @@ export const ADD_ACCOUNT = { label: "Add account", href: "/accounts" } as const;
 
 const visible = (item: NavItem, role: string | null | undefined) => item.href === null || canAccessPage(item.href, role);
 
-/** The links a role may see. A group with nothing left is dropped. */
+/** The links a role may see. A group with nothing left is dropped. An unknown role has the narrowest view, a designer's. */
 export function navGroupsFor(role: string | null | undefined): NavGroup[] {
-  return NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter((i) => visible(i, role)) })).filter((g) => g.items.length > 0);
+  const groups = normalizeRole(role) === "designer" ? DESIGN_GROUPS : NAV_GROUPS;
+  return groups.map((g) => ({ ...g, items: g.items.filter((i) => visible(i, role)) })).filter((g) => g.items.length > 0);
 }
 
 /** The workspace group (team, billing), or null when the role may open neither. */

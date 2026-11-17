@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch, assetUrl: (u: string) => u }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }), useSearchParams: () => new URLSearchParams(window.location.search) }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
@@ -870,5 +870,51 @@ describe("Content List page: Kanban view", () => {
     await userEvent.click(screen.getByRole("radio", { name: "Table view" }));
     // the tick was kept, so the bar comes back with the table
     expect(await screen.findByText(/1 selected/)).toBeTruthy();
+  });
+});
+
+describe("Content List page: a link that opens a tab (?filter=)", () => {
+  const open = (search: string) => window.history.replaceState(null, "", `/jobs${search}`);
+  afterEach(() => open(""));
+
+  it("the designer's View all opens In Review at once: the first request already asks for it, with no request for All first", async () => {
+    h.perms = { canEditContent: false, canReview: true, canSubmitOwn: false };
+    open("?filter=review");
+    serve(() => answer({ items: [row(1, { status: "draft", approvalStatus: "pending" })], counts: counts({ all: 9, draft: 0, review: 9 }), total: 9, pageCount: 1 }));
+    render(<ContentListPage />);
+    await screen.findByText("Post 1");
+    expect(listCalls()[0]).toContain("filter=review");
+    expect(listCalls().every((c) => c.includes("filter=review"))).toBe(true);
+  });
+
+  it("a tab this role does not have opens All, not a tab with nothing to click: a designer has no Draft", async () => {
+    h.perms = { canEditContent: false, canReview: true, canSubmitOwn: false };
+    open("?filter=draft");
+    serve();
+    render(<ContentListPage />);
+    await screen.findByText("Post 1");
+    expect(listCalls()[0]).toContain("filter=all");
+  });
+
+  it("an unknown value, or no filter, opens All", async () => {
+    for (const search of ["?filter=nope", ""]) {
+      open(search);
+      h.apiFetch.mockReset();
+      serve();
+      const { unmount } = render(<ContentListPage />);
+      await screen.findByText("Post 1");
+      expect(listCalls()[0], search).toContain("filter=all");
+      unmount();
+    }
+  });
+
+  it("the tab can still be changed after a link opened it", async () => {
+    h.perms = { canEditContent: false, canReview: true, canSubmitOwn: false };
+    open("?filter=review");
+    serve();
+    render(<ContentListPage />);
+    await screen.findByText("Post 1");
+    await userEvent.click(screen.getByRole("button", { name: /Failed/ }));
+    await waitFor(() => expect(listCalls().some((c) => c.includes("filter=failed"))).toBe(true));
   });
 });

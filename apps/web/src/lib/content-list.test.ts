@@ -11,6 +11,7 @@ import {
   channelOptions,
   dayLabel,
   dayLine,
+  filterFromQuery,
   filterOf,
   footerLine,
   groupByDay,
@@ -153,6 +154,29 @@ describe("visibleFilters", () => {
 
   it("a role with nothing still sees the posts that are out", () => {
     expect(visibleFilters({ canEditContent: false, canReview: false, canSubmitOwn: false })).toEqual(["pending", "done", "failed"]);
+  });
+});
+
+describe("filterFromQuery", () => {
+  const designer = visibleFilters({ canEditContent: false, canReview: true, canSubmitOwn: false });
+
+  it("opens the tab a link asks for when this role has it", () => {
+    expect(filterFromQuery("review", designer)).toBe("review");
+    expect(filterFromQuery("done", designer)).toBe("done");
+    expect(filterFromQuery("all", designer)).toBe("all");
+  });
+
+  it("a tab this role does not have, an unknown one, or no ask at all, is All", () => {
+    expect(filterFromQuery("draft", designer)).toBe("all"); // the design team makes no drafts
+    expect(filterFromQuery("rejected", designer)).toBe("all");
+    expect(filterFromQuery("nope", designer)).toBe("all");
+    expect(filterFromQuery("", designer)).toBe("all");
+    expect(filterFromQuery(null, designer)).toBe("all");
+  });
+
+  it("a word of the object prototype is not a tab", () => {
+    expect(filterFromQuery("constructor", designer)).toBe("all");
+    expect(filterFromQuery("toString", designer)).toBe("all");
   });
 });
 

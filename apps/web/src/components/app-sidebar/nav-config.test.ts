@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canAccessPage } from "@/lib/permissions";
-import { ADD_ACCOUNT, FOOTER_ITEMS, MANAGE_GROUP, NAV_GROUPS, PROFILE_HREF, footerItemsFor, isActiveHref, manageGroupFor, navGroupsFor } from "./nav-config";
+import { ADD_ACCOUNT, DESIGN_GROUPS, FOOTER_ITEMS, MANAGE_GROUP, NAV_GROUPS, PROFILE_HREF, footerItemsFor, isActiveHref, manageGroupFor, navGroupsFor } from "./nav-config";
 
 const ROLES = ["owner", "admin", "designer", "member"] as const;
 
@@ -78,9 +78,29 @@ describe("navGroupsFor / footerItemsFor", () => {
     for (const r of ROLES) for (const href of hrefsOf(r)) expect(canAccessPage(href, r), `${r} ${href}`).toBe(true);
   });
 
-  it("a designer sees the dashboard, the posts and the templates, plus the pages that are not built yet", () => {
-    expect(hrefsOf("designer")).toEqual(["/dashboard", "/jobs", "/templates", "/profile"]);
-    expect(labelsOf("designer")).toEqual(expect.arrayContaining(["My task", "Media library", "Help & support"]));
+  it("a designer has the design team's sidebar: Dashboard, then Master Template and My task, then help and settings", () => {
+    expect(navGroupsFor("designer").map((g) => [g.label, g.items.map((i) => i.label)])).toEqual([
+      ["Overview", ["Dashboard"]],
+      ["Design workspace", ["Master Template", "My task"]],
+    ]);
+    expect(hrefsOf("designer")).toEqual(["/dashboard", "/templates", "/profile"]);
+    expect(labelsOf("designer")).toEqual(["Dashboard", "Master Template", "My task", "Help & support", "Setting & integration"]);
+  });
+
+  it("a designer's sidebar leaves out the Content list and the Media library, which the design does not have", () => {
+    expect(labelsOf("designer")).not.toContain("Content list");
+    expect(labelsOf("designer")).not.toContain("Media library");
+    expect(hrefsOf("designer")).not.toContain("/jobs");
+  });
+
+  it("My task waits for the 'assign to designer' step of add/edit content: a dimmed row, not a link", () => {
+    const row = DESIGN_GROUPS.flatMap((g) => g.items).find((i) => i.label === "My task");
+    expect(row?.href).toBeNull();
+  });
+
+  it("only a designer, and an unknown role, gets the design team's groups; the others keep theirs", () => {
+    for (const r of ["owner", "admin", "member"]) expect(navGroupsFor(r).map((g) => g.label), r).not.toContain("Design workspace");
+    expect(navGroupsFor("designer")).toEqual(DESIGN_GROUPS);
   });
 
   it("a member also gets import and analytics, but none of the manage pages", () => {
@@ -91,6 +111,7 @@ describe("navGroupsFor / footerItemsFor", () => {
   it("a group with nothing left is dropped", () => {
     for (const r of ROLES) for (const g of navGroupsFor(r)) expect(g.items.length).toBeGreaterThan(0);
     expect(navGroupsFor("designer").map((g) => g.label)).not.toContain("Channel");
+    expect(navGroupsFor("designer").map((g) => g.label)).not.toContain("Assets");
     expect(manageGroupFor("designer")).toBeNull();
     expect(manageGroupFor("member")).toBeNull();
     expect(manageGroupFor("owner")!.items.map((i) => i.label)).toEqual(["Team", "Billing"]);
@@ -98,7 +119,7 @@ describe("navGroupsFor / footerItemsFor", () => {
 
   it("an unknown role gets the narrowest view and cannot reach the owner pages", () => {
     for (const odd of [undefined, null, "superuser"]) {
-      expect(hrefsOf(odd as string)).toEqual(["/dashboard", "/jobs", "/templates", "/profile"]);
+      expect(hrefsOf(odd as string)).toEqual(["/dashboard", "/templates", "/profile"]);
     }
   });
 

@@ -14,6 +14,7 @@ import { useDashboard } from "@/lib/useDashboard";
 import { useDashboardRows } from "@/lib/useDashboardRows";
 import { usePermissions } from "@/lib/usePermissions";
 import { SelectionBar } from "@/components/content-list/SelectionBar";
+import { DesignerDashboard } from "@/components/dashboard/designer/DesignerDashboard";
 import { useContentActions } from "@/components/content-list/useContentActions";
 import { DashboardCalendar } from "@/components/dashboard/DashboardCalendar";
 import { ContentTable } from "@/components/dashboard/ContentTable";
@@ -23,11 +24,18 @@ import { SideColumn } from "@/components/dashboard/SideColumn";
 import { StatGrid } from "@/components/dashboard/StatGrid";
 import { Topbar } from "@/components/dashboard/Topbar";
 
+// The design team has its own dashboard (the designs waiting for its review); everyone else sees the marketing one below.
+// Each is its own component, so each calls its own hooks and none is called conditionally.
+export default function DashboardPage() {
+  const { canManageTemplates } = usePermissions(); // true only for the designer role
+  return canManageTemplates ? <DesignerDashboard /> : <MarketingDashboard />;
+}
+
 // The dashboard of the active workspace: what is planned, in production, scheduled and published.
 // Three states: the numbers (also while they refresh), a skeleton while the first answer is on its way,
 // and, when there never was one, only the alert (no zeroes that would pass for a real answer).
 // "use client": it reads the signed-in user, and the calendar and table are interactive.
-export default function DashboardPage() {
+function MarketingDashboard() {
   const { user } = useAuth();
   const { canAccess, canEditContent, canReview, canSubmitOwn } = usePermissions();
 

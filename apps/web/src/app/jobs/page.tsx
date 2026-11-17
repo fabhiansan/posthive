@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { CalendarDaysIcon, CloudUploadIcon, KanbanIcon, ListIcon, PlusIcon, Table2Icon } from "lucide-react";
 import { ContentListTable } from "@/components/content-list/ContentListTable";
 import { DraftBanner } from "@/components/content-list/DraftBanner";
@@ -24,7 +25,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/cn";
-import { LIST_STATUS, footerLine, listSubtitle, showDraftBanner, visibleFilters, type ListFilter, type ListView } from "@/lib/content-list";
+import { LIST_STATUS, filterFromQuery, footerLine, listSubtitle, showDraftBanner, visibleFilters, type ListFilter, type ListView } from "@/lib/content-list";
 import { wibDateKey } from "@/lib/datetime";
 import { useContentList } from "@/lib/useContentList";
 import { usePermissions } from "@/lib/usePermissions";
@@ -41,13 +42,16 @@ export default function ContentListPage() {
   const todayKey = wibDateKey(now);
   const calendarPosition = useCalendarPosition(todayKey);
 
-  const [filter, setFilter] = useState<ListFilter>("all");
+  const role = { canEditContent, canReview, canSubmitOwn };
+  const filters = visibleFilters(role);
+  // A link can open a tab (the designer's dashboard: View all -> /jobs?filter=review). It is read once, for the first request:
+  // useSearchParams already holds the address being opened, where window.location still shows the page the person came from.
+  const query = useSearchParams();
+  const [filter, setFilter] = useState<ListFilter>(() => filterFromQuery(query.get("filter"), filters));
   const [view, setView] = useState<ListView>("table");
   const [page, setPage] = useState(1);
   const { data, source, loading, error, reload, version } = useContentList(filter, page);
 
-  const role = { canEditContent, canReview, canSubmitOwn };
-  const filters = visibleFilters(role);
   const counts = data?.counts;
   const items = data?.items ?? [];
 
