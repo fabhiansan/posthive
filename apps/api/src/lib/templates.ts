@@ -14,6 +14,21 @@ export const TEMPLATE_SELECT = {
   updatedAt: true,
 } as const;
 
+/** What the Template Library page gets: the select above, the status, the format and who made it. */
+export const LIBRARY_SELECT = {
+  ...TEMPLATE_SELECT,
+  published: true,
+  format: true,
+  slides: true,
+  platforms: true,
+  user: { select: { name: true } },
+} as const;
+
+/** A library row as the page reads it: the author's name, not the user record. */
+export function toLibraryTemplate<T extends { user: { name: string | null } | null }>({ user, ...rest }: T) {
+  return { ...rest, createdBy: user?.name ?? null };
+}
+
 /**
  * Drops URLs still used by a design template or by a legacy template kit. Posts made
  * from a legacy kit share its design files, so post cleanup (delete, edit, after

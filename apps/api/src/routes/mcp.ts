@@ -313,7 +313,7 @@ const TOOLS = [
   {
     name: "list_templates",
     description:
-      "List the design templates in this Posthive workspace — one reference design per content category " +
+      "List the published design templates in this Posthive workspace — one reference design per content category " +
       "(pillar + category), with a Figma file and/or link. Templates carry no caption or post media.",
     inputSchema: { type: "object" as const, properties: {}, required: [] },
     outputSchema: {
@@ -716,7 +716,7 @@ export async function handleTool(
 
     case "list_templates": {
       const templates = await prisma.template.findMany({
-        where: { workspaceId, category: { not: null } },
+        where: { workspaceId, category: { not: null }, published: true },
         orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
         select: TEMPLATE_SELECT,
       });
@@ -737,7 +737,7 @@ export async function handleTool(
       if (!isContentEditorRole(ctx.role)) throw new Error(CONTENT_EDITOR_FORBIDDEN_MSG);
       const templateId = args.template_id as string;
       const template = await prisma.template.findFirst({
-        where: { id: templateId, workspaceId, category: { not: null } },
+        where: { id: templateId, workspaceId, category: { not: null }, published: true },
         select: TEMPLATE_SELECT,
       });
       if (!template) throw new Error("Template not found");

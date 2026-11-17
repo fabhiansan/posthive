@@ -1,334 +1,238 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch } from "../../lib/api";
-import { useToast } from "../../components/Toast";
-import { useWorkspace } from "../../context/WorkspaceContext";
-import { usePermissions } from "../../lib/usePermissions";
-import { PILLARS, categoriesFor, type Category, type Pillar } from "../../lib/contentTypes";
-import { fileHref, isIncomplete, templatesByCategory, type DesignTemplate } from "../../lib/templates";
-import { TemplateEditor } from "../../components/TemplateEditor";
-import { DesignReferenceCard } from "../../components/DesignReferenceCard";
-import { contentTypeLabel } from "../../components/ContentTypeSelects";
-import { cn } from "../../lib/cn";
+import { DownloadIcon, InfoIcon, LayoutTemplateIcon, SearchXIcon, UploadIcon } from "lucide-react";
+import { DesignStat } from "@/components/dashboard/designer/DesignStat";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EmptyState } from "@/components/EmptyState";
+import { InlineAlert } from "@/components/InlineAlert";
+import { Pager } from "@/components/Pager";
+import { TemplateEditor } from "@/components/TemplateEditor";
+import { TemplateCard } from "@/components/templates/TemplateCard";
+import { TemplateFilters } from "@/components/templates/TemplateFilters";
+import { TemplatesHeader } from "@/components/templates/TemplatesHeader";
+import { useToast } from "@/components/Toast";
+import { TrialUrgentBanner } from "@/components/TrialUrgentBanner";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { apiFetch } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { NO_FILTERS, downloadCsv, filterTemplates, footerLine, isFiltered, libraryCounts, marketingLine, pageOf, toCsv, type LibraryFilters, type StatusFilter } from "@/lib/template-library";
+import type { DesignTemplate } from "@/lib/templates";
+import { useTemplates } from "@/lib/useTemplates";
+import { usePermissions } from "@/lib/usePermissions";
 
-// Keyboard focus ring for template tiles (yellow accent is unreadable on cream, so brand-800)
-const TILE_FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-brand-800";
+const TABS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "All templates" },
+  { value: "published", label: "Published" },
+  { value: "draft", label: "Draft" },
+];
 
-type Group = Pillar | "No pillar";
-
-// One-line pillar definitions from docs/content-types.md
-const GROUP_SUMMARY: Record<Group, string> = {
-  Promotional: "Products, services and client results that turn prospects into qualified leads.",
-  Educational: "Geospatial insight, articles and how-tos that position Braga as a thought leader.",
-  Entertainment: "Lighter, human moments such as CSR and behind the scenes, kept professional.",
-  Conversational: "Polls, trend responses, events and commemorations that invite a reply.",
-  "No pillar": "Ask Me Anything sits outside the four pillars.",
-};
-
-const GROUPS: Group[] = [...PILLARS, "No pillar"];
-const categoriesOf = (g: Group) => categoriesFor(g === "No pillar" ? null : g);
-
+/**
+ * The Template Library (docs/design/designer-template.png). The design team sees every template, drafts included, and
+ * uploads and deletes them; a draft is published or taken back on the template's own page. Marketing sees the
+ * published ones only (the API sends nothing else), can open one and use it, and gets none of the controls.
+ */
 export default function TemplatesPage() {
   const router = useRouter();
-  const { activeWorkspace } = useWorkspace();
   const { canManageTemplates: canManage, canEditContent: canUse } = usePermissions();
-  const { success: toastSuccess, error: toastError } = useToast();
+  const { success, error: toastError } = useToast();
+  const { data, loading, error, reload } = useTemplates();
 
-  const [templates, setTemplates] = useState<DesignTemplate[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [group, setGroup] = useState<Group | "all">("all");
-  const [viewing, setViewing] = useState<DesignTemplate | null>(null);
-  const [editing, setEditing] = useState<{ template: DesignTemplate | null; category?: Category } | null>(null);
+  const [filters, setFilters] = useState<LibraryFilters>(NO_FILTERS);
+  const [page, setPage] = useState(1);
+  const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState<DesignTemplate | null>(null);
-  const [removing, setRemoving] = useState(false);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setLoadError(false);
-    apiFetch<{ templates: DesignTemplate[] }>("/templates")
-      .then((d) => setTemplates(d.templates))
-      .catch(() => setLoadError(true))
-      .finally(() => setLoading(false));
-  }, []);
+  const all = useMemo(() => data?.templates ?? [], [data]);
+  const counts = useMemo(() => libraryCounts(all), [all]);
+  const shown = useMemo(() => filterTemplates(all, filters), [all, filters]);
+  const current = pageOf(shown, page);
+  const taken = useMemo(() => new Set(all.map((t) => t.category)), [all]);
 
-  useEffect(() => { load(); }, [load, activeWorkspace?.id]);
-
-  const byCategory = useMemo(() => templatesByCategory(templates), [templates]);
-  const taken = useMemo(() => new Set(byCategory.keys()), [byCategory]);
-  const sections = GROUPS.filter((g) => group === "all" || g === group);
-
-  function saved(template: DesignTemplate) {
-    setTemplates((prev) => [template, ...prev.filter((t) => t.id !== template.id)]);
-    toastSuccess(editing?.template ? `Template for ${template.category} updated.` : `Template for ${template.category} saved.`);
-    setEditing(null);
-    setViewing(null);
+  function change(next: LibraryFilters) {
+    setFilters(next);
+    setPage(1);
   }
 
   async function remove() {
     if (!deleting) return;
     const { id, category } = deleting;
-    setRemoving(true);
     try {
       await apiFetch(`/templates/${id}`, { method: "DELETE" });
-      setTemplates((prev) => prev.filter((t) => t.id !== id));
-      toastSuccess(`Template for ${category} deleted.`);
-      setViewing(null);
-    } catch {
-      toastError("Couldn't delete the template.");
-    } finally {
-      setRemoving(false);
-      setDeleting(null);
+      success(`Template for ${category} deleted.`);
+      reload();
+    } catch (e) {
+      toastError(e instanceof Error && e.message ? e.message : "Couldn't delete the template.");
+      throw e;
     }
   }
 
+  const title = canManage ? "Master Template" : "Template Library";
+  const subtitle = canManage
+    ? "Templates you publish here appear in the Marketing Team's Pick from templates list in Compose."
+    : "The design team's published designs. Open one as a reference when you make a post.";
+
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-bg text-fg">
-      <div className="page-header">
-        <div className="min-w-0">
-          <h1 className="type-body-sb-l">Templates</h1>
-          <p className="type-body-r-xs mt-0.5 hidden sm:block truncate text-muted">
-            {canManage
-              ? "One design per content category. Marketing opens it as a reference when making a post."
-              : "The design team's reference design for each content category."}
-          </p>
-        </div>
-        {canManage && (
-          <button type="button" onClick={() => setEditing({ template: null })}
-            className="btn-primary gap-1.5 shrink-0">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            New template
-          </button>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6">
-        <div role="tablist" aria-label="Content pillar" className="flex flex-wrap gap-1 mb-8">
-          {(["all", ...GROUPS] as const).map((g) => (
-            <button key={g} type="button" role="tab" aria-selected={group === g} onClick={() => setGroup(g)}
-              className={cn("chip px-3 py-1.5 type-body-m-s", group === g ? "chip-active" : "border-transparent bg-transparent")}>
-              {g === "all" ? "All pillars" : g}
-            </button>
-          ))}
-        </div>
-
-        {loading && <p className="type-body-r-s text-muted">Loading templates…</p>}
-
-        {!loading && loadError && (
-          <div className="text-center py-16">
-            <p className="type-body-r-s mb-4 text-muted">Templates didn&apos;t load. Check your connection and try again.</p>
-            <button type="button" onClick={load} className="btn-primary">Try again</button>
-          </div>
-        )}
-
-        {!loading && !loadError && (
-          <div className="space-y-12">
-            {sections.map((g) => {
-              const categories = categoriesOf(g);
-              const filled = categories.filter((c) => byCategory.has(c)).length;
-              return (
-                <section key={g} aria-labelledby={`pillar-${g}`}>
-                  <div className="mb-4 max-w-[68ch]">
-                    <h2 id={`pillar-${g}`} className="type-body-sb-m">
-                      {g} <span className="type-body-r-s text-muted">{filled} of {categories.length}</span>
-                    </h2>
-                    <p className="type-body-r-s mt-0.5 text-muted">{GROUP_SUMMARY[g]}</p>
-                  </div>
-                  <ul className="grid gap-x-5 gap-y-7 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6">
-                    {categories.map((c) => {
-                      const t = byCategory.get(c);
-                      if (t) return <TemplateTile key={c} template={t} onOpen={() => setViewing(t)} />;
-                      return <EmptySlot key={c} category={c} canManage={canManage} onUpload={() => setEditing({ template: null, category: c })} />;
-                    })}
-                  </ul>
-                </section>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Hidden while the editor or delete confirm is on top, so Esc only closes that layer */}
-      {viewing && !editing && !deleting && (
-        <TemplateDetail
-          template={viewing}
-          canManage={canManage}
-          canUse={canUse}
-          onClose={() => setViewing(null)}
-          onUse={() => router.push(`/compose?template=${viewing.id}`)}
-          onEdit={() => setEditing({ template: viewing })}
-          onDelete={() => setDeleting(viewing)}
+    <div className="theme-dashboard flex-1 overflow-y-auto bg-background">
+      <TrialUrgentBanner />
+      <div className="mx-auto flex max-w-[110rem] flex-col gap-4 p-4 pt-16 md:p-6 md:pt-6">
+        <TemplatesHeader
+          crumbs={[{ label: canManage ? "Design workspace" : "Assets" }, { label: "Template Library" }]}
+          title={title}
+          subtitle={subtitle}
         />
-      )}
-      {editing && (
-        <TemplateEditor template={editing.template} presetCategory={editing.category} takenCategories={taken}
-          onClose={() => setEditing(null)} onSaved={saved} />
-      )}
-      {deleting && (
-        <div className="fixed inset-0 z-1000 flex items-center justify-center p-4 bg-black/70"
-          onMouseDown={(e) => { if (e.target === e.currentTarget && !removing) setDeleting(null); }}>
-          <div role="alertdialog" aria-modal="true" aria-labelledby="delete-template-title"
-            className="card w-full max-w-sm p-5">
-            <h2 id="delete-template-title" className="type-body-sb-s">Delete template</h2>
-            <p className="type-body-r-s mt-2 text-muted">
-              Delete the template for <span className="text-fg">{deleting.category}</span>? Its design file is removed and
-              Marketing no longer sees a design reference for this category. Existing posts are not changed.
-            </p>
-            <div className="flex gap-2 mt-5">
-              <button type="button" onClick={() => setDeleting(null)} disabled={removing} autoFocus
-                className="btn-secondary flex-1">Cancel</button>
-              <button type="button" onClick={remove} disabled={removing}
-                className="btn-danger flex-1">
-                {removing ? "Deleting…" : "Delete template"}
-              </button>
+
+        {error && (
+          <InlineAlert tone="danger" title={data ? "Couldn't refresh the templates" : "We couldn't load the templates"}>
+            {error}{" "}
+            <button type="button" onClick={reload} className="cursor-pointer underline underline-offset-2">
+              Try again
+            </button>
+          </InlineAlert>
+        )}
+
+        {loading && !data && (
+          <div aria-busy="true" aria-label="Loading the templates" className="space-y-4">
+            <Skeleton className="h-24 rounded-2xl" />
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-28 rounded-2xl" />)}
             </div>
+            <Skeleton className="h-96 rounded-2xl" />
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
+        )}
 
-function TemplateCover({ template }: { template: DesignTemplate }) {
-  if (template.previewUrl) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={fileHref(template.previewUrl)} alt="" className="w-full h-full object-cover" loading="lazy" />;
-  }
-  return (
-    <span className="flex h-full w-full flex-col items-center justify-center gap-2 bg-bg px-4 text-center">
-      <svg aria-hidden viewBox="0 0 24 24" className="h-8 w-8 text-neutral-500" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <rect x="4" y="3" width="16" height="18" rx="3" />
-        <path d="M9 8h6M9 12h6M9 16h3" strokeLinecap="round" />
-      </svg>
-      <span className="type-body-sb-xs text-fg line-clamp-2">{template.category}</span>
-      <span className="type-body-r-xs text-muted">No preview</span>
-    </span>
-  );
-}
+        {data && (
+          <>
+            <TemplateFilters filters={filters} onChange={change} canManage={canManage} onUpload={() => setUploading(true)} />
 
-function TemplateTile({ template, onOpen }: { template: DesignTemplate; onOpen: () => void }) {
-  const incomplete = isIncomplete(template);
-  return (
-    <li>
-      <button type="button" onClick={onOpen} className={cn("group w-full text-left rounded-2xl", TILE_FOCUS)}>
-        <div className="card rounded-xl relative overflow-hidden flex items-center justify-center transition-colors aspect-4/5 group-hover:border-neutral-300">
-          <TemplateCover template={template} />
-          {incomplete && (
-            <span className="absolute top-2 left-2 type-body-sb-xs px-1.5 py-0.5 rounded-sm bg-brand-100 text-brand-800 border border-brand-400">
-              Incomplete
-            </span>
-          )}
-        </div>
-        <p className="type-body-sb-s mt-2.5 line-clamp-2">{template.category}</p>
-        <p className="type-body-r-xs mt-0.5 text-muted">
-          {incomplete ? "Needs a Figma link" : "Figma link"}
-        </p>
-      </button>
-    </li>
-  );
-}
-
-function EmptySlot({ category, canManage, onUpload }: { category: Category; canManage: boolean; onUpload: () => void }) {
-  const box = (
-    <div className="dropzone bg-bg flex flex-col items-center justify-center gap-1 px-3 text-center aspect-4/5">
-      {canManage
-        ? <span className="type-body-m-s text-fg">+ Add template</span>
-        : <span className="type-body-r-xs text-muted">No template yet</span>}
-    </div>
-  );
-  return (
-    <li>
-      {canManage ? (
-        <button type="button" onClick={onUpload} className={cn("w-full text-left rounded-2xl", TILE_FOCUS)} aria-label={`Add the template for ${category}`}>
-          {box}
-          <p className="type-body-sb-s mt-2.5 line-clamp-2 text-muted">{category}</p>
-        </button>
-      ) : (
-        <>
-          {box}
-          <p className="type-body-sb-s mt-2.5 line-clamp-2 text-muted">{category}</p>
-        </>
-      )}
-    </li>
-  );
-}
-
-function TemplateDetail({ template, canManage, canUse, onClose, onUse, onEdit, onDelete }: {
-  template: DesignTemplate;
-  canManage: boolean;
-  canUse: boolean;
-  onClose: () => void;
-  onUse: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const updated = template.updatedAt ? new Date(template.updatedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Jakarta" }) : null;
-
-  return (
-    <div className="fixed inset-0 z-900 flex items-center justify-center p-4 bg-black/75"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <style>{`.template-detail :focus-visible { outline: 2px solid var(--color-brand-800); outline-offset: 2px; }`}</style>
-      <div role="dialog" aria-modal="true" aria-label={`Template for ${template.category}`}
-        className="template-detail card flex flex-col sm:flex-row overflow-hidden w-full max-w-190 max-h-[90vh]">
-        <div className="sm:w-[42%] shrink-0 flex items-center justify-center p-4 bg-bg border-r border-border">
-          <div className="w-full rounded-xl overflow-hidden flex items-center justify-center aspect-4/5 border border-border max-h-[40vh]">
-            <TemplateCover template={template} />
-          </div>
-        </div>
-
-        <div className="flex flex-col min-h-0 flex-1 min-w-0">
-          <div className="flex items-start gap-3 px-5 pt-5 pb-4 shrink-0 border-b border-border">
-            <div className="flex-1 min-w-0">
-              <h2 className="type-body-sb-m text-fg">{template.category}</h2>
-              <p className="type-body-r-xs mt-1 text-muted">
-                {contentTypeLabel(template.category, template.pillar)}{updated ? `. Updated ${updated}` : ""}
-              </p>
-            </div>
-            <button type="button" onClick={onClose} aria-label="Close"
-              className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border border-border text-muted">✕</button>
-          </div>
-
-          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3">
-            <DesignReferenceCard template={template} category={template.category} />
-            {isIncomplete(template) && canManage && (
-              <p className="type-body-r-xs text-brand-800">Add a Figma link so Marketing can open the design.</p>
+            {canManage && (
+              <>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <DesignStat value={counts.total} label="Total templates" />
+                  <DesignStat value={counts.published} label="Published · visible to Marketing" tone="good" />
+                  <DesignStat value={counts.draft} label="Draft · hidden from Marketing" tone="warn" />
+                  <DesignStat value={counts.pillars} label="Content pillars covered" />
+                </div>
+                <InlineAlert tone="warning" role="status" icon={<InfoIcon />} title="Published templates are shared with the Marketing Team" className="border-0">
+                  Drafts stay hidden. Once published, a template is listed in Compose under Pick from templates and shows as the design reference for posts of its category.
+                </InlineAlert>
+              </>
             )}
-          </div>
 
-          {(canManage || canUse) && (
-            <div className="flex gap-2 px-5 py-4 shrink-0 border-t border-border">
-              {canManage && (
+            <Card className="gap-4 border-0 p-4 sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {canManage ? (
+                  <Tabs value={filters.status} onValueChange={(v) => change({ ...filters, status: v as StatusFilter })} className="min-w-0 max-w-full">
+                    <TabsList aria-label="Template status" className="max-w-full flex-wrap justify-start border-0 bg-transparent p-0">
+                      {TABS.map((tab) => (
+                        <TabsTrigger key={tab.value} value={tab.value} className="group-data-[variant=default]/tabs-list:px-4 group-data-[variant=default]/tabs-list:py-2 group-data-[variant=default]/tabs-list:data-[state=active]:bg-neutral-50 group-data-[variant=default]/tabs-list:data-[state=active]:text-fg">
+                          {tab.label}
+                          <span className={cn("min-w-5 rounded-full px-1.5 text-center type-body-sb-xxs tabular-nums", tab.value === "all" ? "bg-brand-100 text-neutral-950" : "bg-green-600/10 text-green-700")}>
+                            {tab.value === "all" ? counts.total : tab.value === "published" ? counts.published : counts.draft}
+                          </span>
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
+                  </Tabs>
+                ) : (
+                  <p className="type-body-sb-s text-brand-950">Published templates</p>
+                )}
+                <p className="type-body-r-xs text-neutral-500">Sorted by created date · newest first</p>
+              </div>
+
+              {all.length === 0 ? (
+                <EmptyState
+                  size="compact"
+                  icon={<LayoutTemplateIcon />}
+                  title={canManage ? "No templates yet" : "No published templates yet"}
+                  description={
+                    canManage
+                      ? "Upload the first design for a content category. It stays a draft, hidden from Marketing, until you publish it."
+                      : "The design team has not published a template yet. They appear here once they do."
+                  }
+                  action={
+                    canManage && (
+                      <Button onClick={() => setUploading(true)}>
+                        <UploadIcon />
+                        Upload Template
+                      </Button>
+                    )
+                  }
+                />
+              ) : shown.length === 0 ? (
+                <EmptyState
+                  size="compact"
+                  icon={<SearchXIcon />}
+                  title="No templates match"
+                  description="Nothing fits the search and filters you picked."
+                  action={isFiltered(filters) && <Button variant="secondary" onClick={() => change(NO_FILTERS)}>Clear filters</Button>}
+                />
+              ) : (
                 <>
-                  <button type="button" onClick={onDelete}
-                    className="px-4 py-2 rounded-xl type-body-sb-s border border-red-200 text-red-600 transition-colors hover:bg-red-50">
-                    Delete
-                  </button>
-                  <button type="button" onClick={onEdit}
-                    className="btn-primary flex-1">
-                    Edit template
-                  </button>
+                  <ul aria-label="Templates" className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {current.items.map((t) => (
+                      <TemplateCard
+                        key={t.id}
+                        template={t}
+                        canManage={canManage}
+                        canUse={canUse}
+                        onDelete={() => setDeleting(t)}
+                        onUse={() => router.push(`/compose?template=${t.id}`)}
+                      />
+                    ))}
+                  </ul>
+                  <div className="flex flex-wrap items-center justify-between gap-2 type-body-r-xs text-neutral-500">
+                    <p aria-live="polite">{footerLine(current.items.length, shown.length, canManage)}</p>
+                    <Pager page={current.page} pageCount={current.pageCount} onPage={setPage} />
+                  </div>
                 </>
               )}
-              {canUse && (
-                <button type="button" onClick={onUse}
-                  className="btn-primary flex-1">
-                  Use template
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+            </Card>
+
+            {canManage && (
+              <Card className="flex-row flex-wrap items-center justify-between gap-3 border-0 px-5 py-4">
+                <p className="type-body-r-s text-neutral-600">{marketingLine(counts)}</p>
+                <Button
+                  variant="secondary"
+                  className="border-neutral-600 bg-transparent text-neutral-600 hover:bg-neutral-50"
+                  disabled={shown.length === 0}
+                  onClick={() => downloadCsv("templates.csv", toCsv(shown))}
+                >
+                  <DownloadIcon />
+                  Export list
+                </Button>
+              </Card>
+            )}
+          </>
+        )}
       </div>
+
+      {uploading && (
+        <TemplateEditor
+          template={null}
+          takenCategories={taken}
+          onClose={() => setUploading(false)}
+          onSaved={(t) => {
+            setUploading(false);
+            success(`Template for ${t.category} saved as a draft. Open it to publish.`);
+            reload();
+          }}
+        />
+      )}
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(open) => { if (!open) setDeleting(null); }}
+        title="Delete this template?"
+        description={deleting && `The template for ${deleting.category} and its preview are removed, and Marketing no longer sees a design reference for this category. Existing posts are not changed.`}
+        confirmLabel="Delete template"
+        pendingLabel="Deleting…"
+        onConfirm={remove}
+      />
     </div>
   );
 }

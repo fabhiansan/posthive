@@ -193,7 +193,7 @@ export default function ForDevelopersPage() {
                   ["POST /api/v1/posts", "Create a scheduled post"],
                   ["PATCH /api/v1/posts/:id", "Update a scheduled post"],
                   ["POST /api/v1/posts/:id/duplicate", "Duplicate a post"],
-                  ["GET /api/v1/templates", "List design templates"],
+                  ["GET /api/v1/templates", "List published design templates"],
                   ["POST /api/v1/upload", "Upload media for a post"],
                 ].map(([endpoint, desc]) => (
                   <div key={endpoint as string} className="flex items-start gap-3">
@@ -234,7 +234,7 @@ export default function ForDevelopersPage() {
                   "create_post — schedule content across platforms",
                   "approve_draft — promote a draft to scheduled",
                   "update_post — edit content or reschedule",
-                  "list_templates — browse design templates (one per content category)",
+                  "list_templates — browse published design templates (one per content category)",
                   "delete_post — remove from the queue",
                 ].map((tool) => (
                   <div key={tool} className="flex items-start gap-2.5">

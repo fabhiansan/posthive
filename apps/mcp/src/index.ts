@@ -237,7 +237,7 @@ const TOOLS = [
   {
     name: "list_templates",
     description:
-      "List the design templates in this Posthive workspace — one reference design per content category " +
+      "List the published design templates in this Posthive workspace — one reference design per content category " +
       "(pillar + category), with a Figma file and/or link. Templates carry no caption or post media.",
     inputSchema: { type: "object" as const, properties: {}, required: [] },
   },

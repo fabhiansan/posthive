@@ -465,7 +465,7 @@ export async function publicApiRoutes(
     const { limit: limitStr } = req.query as { limit?: string };
     const take = Math.min(Number(limitStr ?? 100), 100);
     const templates = await prisma.template.findMany({
-      where: { workspaceId, category: { not: null } },
+      where: { workspaceId, category: { not: null }, published: true },
       orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
       take,
       select: TEMPLATE_SELECT,
@@ -506,7 +506,7 @@ export async function publicApiRoutes(
     if (!Array.isArray(body.accountIds) || body.accountIds.length === 0)
       return reply.status(400).send({ error: "accountIds must be a non-empty array" });
 
-    const template = await prisma.template.findFirst({ where: { id, workspaceId, category: { not: null } }, select: TEMPLATE_SELECT });
+    const template = await prisma.template.findFirst({ where: { id, workspaceId, category: { not: null }, published: true }, select: TEMPLATE_SELECT });
     if (!template) return reply.status(404).send({ error: "Template not found" });
 
     const text = body.contentOverride ?? "";

@@ -4,6 +4,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 // Design template as returned by GET /templates (docs/content-types.md): the reference
 // design for one content type. A post only takes its pillar and category, never its files.
+export type TemplateFormat = "carousel" | "single" | "reel_cover" | "story" | "video";
+export type TemplatePlatform = "instagram" | "linkedin";
+
 export interface DesignTemplate {
   id: string;
   name: string;
@@ -11,6 +14,15 @@ export interface DesignTemplate {
   category: Category;
   linkUrl: string | null;
   previewUrl: string | null;
+  /** A draft is seen by the design team only; Marketing is sent published templates. */
+  published: boolean;
+  format: TemplateFormat | null;
+  /** Carousel only. */
+  slides: number | null;
+  platforms: TemplatePlatform[];
+  createdAt: string;
+  /** The name of the designer who made it; null once the account is gone. */
+  createdBy: string | null;
   updatedAt?: string;
 }
 
@@ -34,7 +46,7 @@ export function formatBytes(bytes: number): string {
 }
 
 /** Templates without a Figma link (migrated ones) need one from the design team. */
-export function isIncomplete(t: DesignTemplate): boolean {
+export function isIncomplete(t: Pick<DesignTemplate, "linkUrl">): boolean {
   return !t.linkUrl;
 }
 

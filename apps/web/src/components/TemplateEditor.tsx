@@ -5,7 +5,9 @@ import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 import type { Category } from "../lib/contentTypes";
 import { figmaLinkError } from "../lib/figmaLink";
-import { fileHref, type DesignTemplate } from "../lib/templates";
+import { FORMATS, MAX_SLIDES, MIN_SLIDES, PLATFORMS } from "../lib/template-library";
+import { platformLabel } from "../lib/platforms";
+import { fileHref, type DesignTemplate, type TemplateFormat, type TemplatePlatform } from "../lib/templates";
 import { ContentTypeSelects, type ContentType } from "./ContentTypeSelects";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -22,8 +24,8 @@ function discardUpload(url: string) {
 }
 
 // Design team only: the reference design for one content type (Pillar + Category) —
-// a Figma link, plus an optional preview image. Marketing sees it
-// as a reference in Compose; nothing here is ever copied into a post.
+// a Figma link, plus an optional preview image, format and platforms. A new template is a draft: Marketing sees it
+// as a reference in Compose once it is published (on the template's own page); nothing here is ever copied into a post.
 export function TemplateEditor({ template, presetCategory, takenCategories, onClose, onSaved }: {
   template: DesignTemplate | null; // null = new template
   presetCategory?: Category | null;
@@ -35,6 +37,9 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
   const initialCategory = template?.category ?? presetCategory ?? null;
   const [type, setType] = useState<ContentType>({ pillar: template?.pillar ?? null, category: initialCategory });
   const [linkUrl, setLinkUrl] = useState(template?.linkUrl ?? "");
+  const [format, setFormat] = useState<TemplateFormat | "">(template?.format ?? "");
+  const [slides, setSlides] = useState(template?.slides ? String(template.slides) : "");
+  const [platforms, setPlatforms] = useState<TemplatePlatform[]>(template?.platforms ?? []);
   const [preview, setPreview] = useState<UploadedFile | null>(() =>
     template?.previewUrl ? { url: template.previewUrl, fresh: false } : null);
   const [linkTouched, setLinkTouched] = useState(false);
@@ -87,6 +92,10 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
     if (!type.category) return setError("Pick the content pillar and category.");
     setLinkTouched(true);
     if (linkError) return;
+    const slideCount = format === "carousel" && slides.trim() !== "" ? Number(slides) : null;
+    if (slideCount !== null && (!Number.isInteger(slideCount) || slideCount < MIN_SLIDES || slideCount > MAX_SLIDES)) {
+      return setError(`A carousel has ${MIN_SLIDES} to ${MAX_SLIDES} slides.`);
+    }
     setSaving(true);
     try {
       const body = {
@@ -94,6 +103,9 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
         category: type.category,
         linkUrl: link,
         previewUrl: preview?.url ?? null,
+        format: format || null,
+        slides: slideCount,
+        platforms,
       };
       const res = await apiFetch<{ template: DesignTemplate }>(template ? `/templates/${template.id}` : "/templates", {
         method: template ? "PATCH" : "POST",
@@ -112,19 +124,22 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
   const linkError = figmaLinkError(linkUrl);
   const showLinkError = linkTouched && !!linkError;
   const otherTaken = new Set([...takenCategories].filter((c) => c !== template?.category));
+  const togglePlatform = (p: TemplatePlatform) => setPlatforms((on) => (on.includes(p) ? on.filter((x) => x !== p) : [...on, p]));
 
   return (
     <div className="fixed inset-0 z-1000 flex items-center justify-center bg-black/75 p-4"
       onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) close(); }}>
       <style>{`.template-editor :focus-visible { outline: 2px solid var(--color-brand-800); outline-offset: 2px; }`}</style>
-      <div role="dialog" aria-modal="true" aria-label={template ? "Edit template" : "New template"}
+      <div role="dialog" aria-modal="true" aria-label={template ? "Edit template" : "Upload template"}
         className="template-editor card w-full max-w-160 max-h-[92vh] flex flex-col overflow-hidden">
 
         <div className="flex items-start gap-3 px-6 pt-5 pb-4 shrink-0 border-b border-border">
           <div className="flex-1">
-            <h2 className="type-body-sb-m text-fg">{template ? "Edit template" : "New template"}</h2>
+            <h2 className="type-body-sb-m text-fg">{template ? "Edit template" : "Upload template"}</h2>
             <p className="type-body-r-xs mt-1 text-muted">
-              The design for one content type. Marketing opens it as a reference when making a post; it is never attached to posts.
+              {template
+                ? "The design for one content type. Marketing opens it as a reference when making a post; it is never attached to posts."
+                : "The design for one content type. It starts as a draft: Marketing sees it once you publish it from its page."}
             </p>
           </div>
           <button type="button" onClick={close} disabled={saving} aria-label="Close"
@@ -150,6 +165,37 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
               className={cn("field mt-1.5", showLinkError && "border-red-200 bg-red-50")} />
             {showLinkError && <p id="template-link-error" className="type-body-r-xs mt-1.5 text-red-600">{linkError}</p>}
           </div>
+
+          <section className="grid gap-3 sm:grid-cols-2">
+            <label className="block" htmlFor="template-format">
+              <span className="type-body-sb-xs text-muted">Content format <span className="type-body-r-xs">Optional</span></span>
+              <select id="template-format" value={format} onChange={(e) => setFormat(e.target.value as TemplateFormat | "")} className="field mt-1.5">
+                <option value="">No format yet</option>
+                {FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
+            </label>
+            {format === "carousel" && (
+              <label className="block" htmlFor="template-slides">
+                <span className="type-body-sb-xs text-muted">Slides <span className="type-body-r-xs">{MIN_SLIDES} to {MAX_SLIDES}</span></span>
+                <input id="template-slides" type="number" inputMode="numeric" min={MIN_SLIDES} max={MAX_SLIDES} value={slides}
+                  onChange={(e) => setSlides(e.target.value)} className="field mt-1.5" />
+              </label>
+            )}
+          </section>
+
+          <section>
+            <h3 className="type-body-sb-s text-fg">
+              Publishing platforms <span className="type-body-r-xs text-muted">Optional</span>
+            </h3>
+            <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Publishing platforms">
+              {PLATFORMS.map((p) => (
+                <button key={p} type="button" aria-pressed={platforms.includes(p)} onClick={() => togglePlatform(p)}
+                  className={cn("chip px-3 py-1.5 type-body-m-s", platforms.includes(p) && "chip-active")}>
+                  {platformLabel(p)}
+                </button>
+              ))}
+            </div>
+          </section>
 
           <section>
             <h3 className="type-body-sb-s text-fg">
@@ -183,7 +229,7 @@ export function TemplateEditor({ template, presetCategory, takenCategories, onCl
           <p role="alert" className="flex-1 type-body-r-xs text-red-600">{error}</p>
           <button type="button" onClick={close} disabled={saving} className="btn-secondary">Cancel</button>
           <button type="button" onClick={save} disabled={saving || busy} className="btn-primary">
-            {saving ? "Saving…" : template ? "Save changes" : "Save template"}
+            {saving ? "Saving…" : template ? "Save changes" : "Save as draft"}
           </button>
         </div>
       </div>

@@ -56,7 +56,7 @@ pnpm db:migrate   # Run pending migrations
 | `routes/publicApi.ts` | `/api/v1` | Public REST API — accounts, posts, upload, templates |
 | `routes/mcp.ts` | `/mcp` | MCP Streamable HTTP server (Bearer + key-in-URL) |
 | `routes/oauth.ts` | `/oauth`, `/.well-known` | OAuth 2.0 + PKCE server for Claude.ai MCP connector |
-| `routes/templates.ts` | `/templates` | Design templates: one per content category (Figma link + optional preview image); write = designer only. Never copied into posts |
+| `routes/templates.ts` | `/templates` | Design templates: one per content category (Figma link, optional preview, format, platforms); write = designer only; a new one is a Draft, `PATCH /templates/:id/status` publishes it, and only the designer's `GET /templates` lists drafts (the public API and MCP list published only). Never copied into posts |
 
 ### Platform Adapters — `src/adapters/`
 Each adapter implements `PlatformAdapter` from `types.ts`:
@@ -119,7 +119,7 @@ All 10 tools mirror the HTTP MCP server: `list_accounts`, `create_post`, `get_po
 | `/` | `app/page.tsx` | Landing page (public) |
 | `/compose` | `app/compose/page.tsx` | Compose — write post, pick accounts, schedule |
 | `/jobs` | `app/jobs/page.tsx` | Posts — list + calendar view |
-| `/templates` | `app/templates/page.tsx` | Template Library — one design reference per content category (Design manages, Marketing opens it from Compose) |
+| `/templates` | `app/templates/page.tsx` | Template Library — Master Template for the design team (drafts + published, upload, delete, export), published-only read mode for Marketing; `/templates/[id]` is the detail page (edit, publish/unpublish, delete) |
 | `/accounts` | `app/accounts/page.tsx` | Connect/disconnect social accounts |
 | `/billing` | `app/billing/page.tsx` | Plan status + upgrade |
 | `/docs` | `app/docs/page.tsx` | Documentation (includes full MCP section) |

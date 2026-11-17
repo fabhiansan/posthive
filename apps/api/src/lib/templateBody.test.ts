@@ -40,6 +40,37 @@ describe("templateBody", () => {
     expect(issue({ ...base, pillar: "Educational" })).toMatch(/belongs to/);
   });
 
+  it("format, slides and platforms are optional", () => {
+    const r = templateBody.safeParse(base);
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data).toMatchObject({ format: null, slides: null, platforms: [] });
+  });
+
+  it("a carousel keeps its slides; any other format drops them", () => {
+    expect(templateBody.parse({ ...base, format: "carousel", slides: 5 })).toMatchObject({ format: "carousel", slides: 5 });
+    expect(templateBody.parse({ ...base, format: "single", slides: 5 })).toMatchObject({ format: "single", slides: null });
+    expect(templateBody.parse({ ...base, slides: 5 })).toMatchObject({ format: null, slides: null });
+  });
+
+  it("slides are 2 to 20", () => {
+    expect(issue({ ...base, format: "carousel", slides: 1 })).toMatch(/2 to 20/);
+    expect(issue({ ...base, format: "carousel", slides: 21 })).toMatch(/2 to 20/);
+    expect(issue({ ...base, format: "carousel", slides: 2.5 })).toBeTruthy();
+  });
+
+  it("a format the app does not know is refused", () => {
+    expect(issue({ ...base, format: "hologram" })).toBeTruthy();
+  });
+
+  it("platforms are Instagram and LinkedIn, each once", () => {
+    expect(templateBody.parse({ ...base, platforms: ["instagram", "linkedin", "instagram"] }).platforms).toEqual(["instagram", "linkedin"]);
+    expect(issue({ ...base, platforms: ["tiktok"] })).toBeTruthy();
+  });
+
+  it("`published` is not part of the body: a template cannot publish itself", () => {
+    expect(templateBody.parse({ ...base, published: true })).not.toHaveProperty("published");
+  });
+
   it("ignores file fields: .fig can no longer be set", () => {
     const r = templateBody.safeParse({ ...base, fileUrl: "/uploads/x.fig", fileName: "x.fig", fileSize: 10 });
     expect(r.success).toBe(true);

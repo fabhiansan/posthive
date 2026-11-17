@@ -354,6 +354,10 @@ model Template {
   category    String? // one of CATEGORIES; becomes required once legacy rows are cleaned up
   linkUrl     String? // Figma link to the design
   previewUrl  String? // optional preview image, shown in the library and compose only
+  published   Boolean    @default(false) // Draft until the design team publishes it: only published templates reach Marketing
+  format      String? // carousel | single | reel_cover | story | video (lib/templateBody.ts)
+  slides      Int? // number of slides, carousel only
+  platforms   String[]   @default([]) // instagram | linkedin
   content     String     @default("{}") // DEPRECATED: legacy template-kit JSON, no longer written
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
