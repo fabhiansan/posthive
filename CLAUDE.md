@@ -33,6 +33,7 @@ pnpm dev:web      # Web on http://localhost:3000
 cd apps/api
 pnpm db:studio    # Prisma Studio at http://localhost:5555
 pnpm db:migrate   # Run pending migrations
+pnpm db:seed-dev <password>   # Local dev only: workspace with admin@/marketing@/designer@gmail.com
 ```
 
 ---

@@ -11,7 +11,8 @@
     "test": "vitest run",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:seed-dev": "tsx scripts/seed-dev.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
