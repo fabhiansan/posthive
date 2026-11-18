@@ -24,6 +24,8 @@ export interface ApiSignIn {
 
 export interface ApiDevices {
   devices: ApiDevice[];
+  /** How many days back the sign-in history goes (the API keeps it that long). */
+  days: number;
   signIns: ApiSignIn[];
 }
 

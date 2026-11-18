@@ -47,6 +47,7 @@ const DEVICES = {
     { id: "s-this", tile: "Mac", name: "Chrome on macOS", startedAt: "2026-11-17T03:00:00.000Z", lastActiveAt: "2026-11-17T04:58:00.000Z", current: true },
     { id: "s-phone", tile: "iOS", name: "Safari on iOS", startedAt: "2026-11-16T01:00:00.000Z", lastActiveAt: "2026-11-17T02:00:00.000Z", current: false },
   ],
+  days: 30,
   signIns: [
     { id: "e1", at: "2026-11-17T01:12:00.000Z", device: "Chrome on macOS", failure: null },
     { id: "e2", at: "2026-11-16T12:40:00.000Z", device: "Firefox on Linux", failure: "Wrong password" },
@@ -430,6 +431,20 @@ describe("My Profile: change password", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  // Changing the password signs the other devices out on the server, so the list on the page must be asked again.
+  it("a changed password asks for the device list again: the other devices are gone", async () => {
+    render(<ProfilePage />);
+    await screen.findByText("Safari on iOS");
+    expect(calls("/user/devices")).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Change password" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.type(within(dialog).getByLabelText("Current password"), "old-pass-1");
+    await userEvent.type(within(dialog).getByLabelText("New password"), "new-pass-12");
+    await userEvent.type(within(dialog).getByLabelText("Confirm new password"), "new-pass-12");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Update password" }));
+    await waitFor(() => expect(calls("/user/devices")).toHaveLength(2));
+  });
+
   it("a wrong current password is shown and the dialog stays open", async () => {
     h.apiFetch.mockImplementation(async (path: string) => {
       if (path === "/user/password") throw new Error("Current password is incorrect");
@@ -444,6 +459,7 @@ describe("My Profile: change password", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Update password" }));
     await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Current password is incorrect"));
     expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(calls("/user/devices")).toHaveLength(1); // nothing changed, so the list is not asked again
   });
 
   it("what was typed is gone when the dialog is opened again", async () => {
@@ -533,6 +549,12 @@ describe("My Profile: devices and login history", () => {
     expect(c.getByText("active now")).toBeTruthy();
     expect(c.getByText("Safari on iOS")).toBeTruthy();
     expect(c.getByText("last active 3 hours ago")).toBeTruthy();
+  });
+
+  it("the number of days the history covers is the one the API sends, not a number kept on the page", async () => {
+    answers["/user/devices"] = { ...DEVICES, days: 14 };
+    render(<ProfilePage />);
+    expect(within(await card()).getByText("Last 14 days")).toBeTruthy();
   });
 
   it("only the other devices have a Sign out", async () => {
@@ -630,7 +652,7 @@ describe("My Profile: devices and login history", () => {
   });
 
   it("no sign-ins yet says so; and there is no last sign-in line", async () => {
-    answers["/user/devices"] = { devices: [DEVICES.devices[0]], signIns: [] };
+    answers["/user/devices"] = { devices: [DEVICES.devices[0]], days: 30, signIns: [] };
     render(<ProfilePage />);
     expect(await screen.findByText("No sign-ins in the last 30 days.")).toBeTruthy();
     expect(screen.queryByText(/Last sign-in/)).toBeNull();

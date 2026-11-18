@@ -14,8 +14,6 @@ type Props = {
   now: Date;
   /** The id of the device being signed out, so its button can say so. */
   signingOut: string | null;
-  /** The recent sign-ins cover this many days. */
-  days: number;
   onRetry: () => void;
   onSignOut: (device: ApiDevice) => void;
   onSignOutOthers: () => void;
@@ -38,7 +36,7 @@ function ResultPill({ tone, children, className }: { tone: "good" | "bad"; child
 }
 
 /** Devices & login history: where the account is signed in, and the last sign-in attempts. */
-export function DevicesCard({ data, loading, error, now, signingOut, days, onRetry, onSignOut, onSignOutOthers }: Props) {
+export function DevicesCard({ data, loading, error, now, signingOut, onRetry, onSignOut, onSignOutOthers }: Props) {
   const devices = data?.devices ?? [];
   const signIns = data?.signIns ?? [];
   // the button has nothing to do when this is the only device
@@ -104,10 +102,10 @@ export function DevicesCard({ data, loading, error, now, signingOut, days, onRet
               <h3 id="recent-sign-ins" className="type-body-m-s text-fg">
                 Recent sign-ins
               </h3>
-              <p className="type-body-r-xs text-neutral-500">Last {days} days</p>
+              <p className="type-body-r-xs text-neutral-500">Last {data.days} days</p>
             </div>
             {signIns.length === 0 ? (
-              <p className="rounded-xl border border-neutral-50 px-4 py-6 text-center type-body-r-xs text-neutral-500">No sign-ins in the last {days} days.</p>
+              <p className="rounded-xl border border-neutral-50 px-4 py-6 text-center type-body-r-xs text-neutral-500">No sign-ins in the last {data.days} days.</p>
             ) : (
               <div className="overflow-x-auto rounded-xl border border-neutral-50">
                 <Table className="type-body-r-xs">

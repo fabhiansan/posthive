@@ -45,8 +45,6 @@ import { roleProfileOf } from "@/lib/role-profile";
 import type { AppRole } from "@/lib/permissions";
 
 const NOT_YET = "Not available yet";
-/** The sign-in history the API keeps and the card says (LOGIN_HISTORY_DAYS in the API). */
-const HISTORY_DAYS = 30;
 
 /** What the form holds that the server does not keep yet: it starts as the mock and goes back to it on Cancel. */
 interface Draft {
@@ -302,7 +300,6 @@ export default function ProfilePage() {
               error={devices.error}
               now={now}
               signingOut={signingOut}
-              days={HISTORY_DAYS}
               onRetry={devices.reload}
               onSignOut={(device) => void signOutDevice(device)}
               onSignOutOthers={() => setOthersOpen(true)}

@@ -13,6 +13,8 @@ import { isReviewerOnly, makerWhere, quarterRange, reviewerWhere, type ActivityR
 /** Rows each list answers with: a person has a handful of devices, and the page shows the latest sign-ins. */
 const DEVICES_LIMIT = 10;
 const SIGN_INS_LIMIT = 10;
+/** The wrong passwords that go with them: a few, so a flood of guesses cannot push the real sign-ins off the list. */
+const FAILED_LIMIT = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export async function profileSecurityRoutes(app: FastifyInstance): Promise<void> {
@@ -22,7 +24,15 @@ export async function profileSecurityRoutes(app: FastifyInstance): Promise<void>
     const now = new Date();
     const since = new Date(now.getTime() - LOGIN_HISTORY_DAYS * DAY_MS);
 
-    const [sessions, events] = await Promise.all([
+    const history = (success: boolean, take: number) =>
+      prisma.loginEvent.findMany({
+        where: { userId, at: { gte: since }, success },
+        orderBy: [{ at: "desc" }, { id: "asc" }],
+        take,
+        select: { id: true, at: true, userAgent: true, failure: true },
+      });
+
+    const [sessions, signedIn, wrongPassword] = await Promise.all([
       // an expired session is only waiting for the cleanup: it is not a device that is signed in
       prisma.authSession.findMany({
         where: { userId, expiresAt: { gt: now } },
@@ -30,13 +40,11 @@ export async function profileSecurityRoutes(app: FastifyInstance): Promise<void>
         take: DEVICES_LIMIT * 2,
         select: { id: true, userAgent: true, createdAt: true, lastActiveAt: true, expiresAt: true },
       }),
-      prisma.loginEvent.findMany({
-        where: { userId, at: { gte: since } },
-        orderBy: [{ at: "desc" }, { id: "asc" }],
-        take: SIGN_INS_LIMIT,
-        select: { id: true, at: true, userAgent: true, failure: true },
-      }),
+      // asked apart: someone who keeps guessing at the password would otherwise fill the list and hide every real sign-in
+      history(true, SIGN_INS_LIMIT),
+      history(false, FAILED_LIMIT),
     ]);
+    const events = [...signedIn, ...wrongPassword].sort((a, b) => b.at.getTime() - a.at.getTime() || a.id.localeCompare(b.id));
 
     const devices = sessions
       .filter((s) => sessionState(s, now) === "active")
@@ -51,6 +59,7 @@ export async function profileSecurityRoutes(app: FastifyInstance): Promise<void>
 
     return reply.send({
       devices,
+      days: LOGIN_HISTORY_DAYS,
       signIns: events.map((e) => ({ id: e.id, at: e.at.toISOString(), device: deviceOf(e.userAgent).name, failure: e.failure })),
     });
   });

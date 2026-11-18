@@ -42,7 +42,8 @@ vi.mock("../lib/prisma.js", () => {
         }),
       },
       loginEvent: {
-        findMany: rec("loginEvent", "findMany", (a) => h.events.filter((e) => e.userId === a.where.userId && e.at >= a.where.at.gte).sort((x, y) => y.at.getTime() - x.at.getTime()).slice(0, a.take)),
+        // a line worked when it has no failure (the table's `success` column)
+        findMany: rec("loginEvent", "findMany", (a) => h.events.filter((e) => e.userId === a.where.userId && e.at >= a.where.at.gte && (e.failure === null) === a.where.success).sort((x, y) => y.at.getTime() - x.at.getTime()).slice(0, a.take)),
       },
       postJob: {
         count: rec("postJob", "count", (a) => {
@@ -172,8 +173,23 @@ describe("GET /user/devices", () => {
     ]);
   });
 
-  it("nothing yet: empty lists, not an error", async () => {
-    expect(await get()).toEqual({ devices: [], signIns: [] });
+  it("nothing yet: empty lists, not an error, and how many days the history covers", async () => {
+    expect(await get()).toEqual({ devices: [], days: 30, signIns: [] });
+  });
+
+  it("a flood of wrong passwords does not push the real sign-ins off the list", async () => {
+    h.events = [
+      { id: "real", userId: "me", at: ago(3 * D), userAgent: CHROME_MAC, failure: null },
+      ...Array.from({ length: 12 }, (_, i) => ({ id: `bad${i}`, userId: "me", at: ago(i * 60_000 + 1000), userAgent: null, failure: "Wrong password" })),
+    ];
+    const { signIns } = await get();
+    expect(signIns.map((s: { id: string }) => s.id)).toEqual(["bad0", "bad1", "bad2", "real"]);
+  });
+
+  it("asks for the real sign-ins and the wrong passwords apart", async () => {
+    await get();
+    const asked = h.calls.filter((c) => c.model === "loginEvent").map((c) => [c.args.where.success, c.args.take]);
+    expect(asked).toEqual([[true, 10], [false, 3]]);
   });
 
   it("the lists are capped: a person with many sessions and sign-ins still gets a short answer", async () => {
