@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   calls: [] as string[],
+  /** what postJob.findUnique answers: the finished post, as the runner reads it back to spawn its next repeat */
+  full: null as null | Record<string, unknown>,
+  created: [] as Array<Record<string, any>>,
   createPost: vi.fn(async () => ({ platformPostId: "p-1", replyContext: { uri: "u", cid: "c" } })),
 }));
 
@@ -16,8 +19,16 @@ vi.mock("../lib/prisma.js", () => {
     });
   return {
     prisma: {
-      postJob: { update: note("postJob.update"), findUnique: note("postJob.findUnique", null) },
-      workspace: { findUnique: note("workspace.findUnique", { planStatus: "active" }) },
+      postJob: {
+        update: note("postJob.update"),
+        findUnique: note("postJob.findUnique", () => h.full),
+        create: vi.fn(async (args: { data: Record<string, any> }) => {
+          h.created.push(args.data);
+          return { id: "next-1" };
+        }),
+      },
+      // a plan that may post: without one, the runner reads the workspace as cancelled and spawns nothing
+      workspace: { findUnique: note("workspace.findUnique", { plan: "pro", planStatus: "active" }) },
       postJobTarget: {
         update: note("postJobTarget.update"),
         updateMany: note("postJobTarget.updateMany"),
@@ -52,6 +63,8 @@ const job = (content: object) =>
 
 beforeEach(() => {
   h.calls = [];
+  h.full = null;
+  h.created = [];
   h.createPost.mockClear();
 });
 
@@ -67,5 +80,38 @@ describe("runJob: the pictures of a post that went out", () => {
   it("the post is still marked done", async () => {
     await runJob(job(content));
     expect(h.calls.filter((c) => c === "postJob.update")).toHaveLength(2); // running, then done
+  });
+});
+
+describe("runJob: a repeating post's next occurrence", () => {
+  const content = { text: "Caption", mediaUrls: [] };
+  const finished = (patch: Record<string, unknown>) => ({
+    repeatInterval: "weekly",
+    repeatEndsAt: null,
+    repeatParentId: null,
+    scheduledFor: new Date("2026-11-10T02:00:00Z"),
+    content: JSON.stringify(content),
+    commentText: null,
+    userId: "putri",
+    workspaceId: "ws-1",
+    targets: [{ accountId: "a1" }],
+    ...patch,
+  });
+
+  it("went through review: the next one is a draft in review again, stamped as a first send by the same person", async () => {
+    h.full = finished({ approvalStatus: "approved" });
+    await runJob(job(content));
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]).toMatchObject({ status: "draft", approvalStatus: "pending", submittedById: "putri", submitCount: 1 });
+    expect(h.created[0].submittedAt).toBeInstanceOf(Date);
+    expect(h.created[0].scheduledFor).toEqual(new Date("2026-11-17T02:00:00Z"));
+  });
+
+  it("never needed review: the next one is queued as before, with no stamp", async () => {
+    h.full = finished({ approvalStatus: null });
+    await runJob(job(content));
+    expect(h.created[0]).toMatchObject({ status: "pending", approvalStatus: null });
+    expect(h.created[0]).not.toHaveProperty("submittedAt");
+    expect(h.created[0]).not.toHaveProperty("submitCount");
   });
 });

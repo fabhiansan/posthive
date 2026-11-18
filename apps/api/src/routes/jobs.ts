@@ -29,6 +29,13 @@ async function claimUploads(urls: string[] | undefined, userId: string): Promise
   await prisma.upload.updateMany({ where: { url: { in: urls }, userId }, data: { claimedAt: new Date() } });
 }
 
+/**
+ * A draft that can be sent for review: not in review and not sent back. It is part of the WHERE of the send itself
+ * (not only of the check before it), so two sends at the same moment cannot both win and count two rounds.
+ * `OR`, not `not`: a Prisma `not` drops the rows whose approvalStatus is NULL.
+ */
+const SUBMITTABLE: Prisma.PostJobWhereInput[] = [{ approvalStatus: null }, { approvalStatus: "approved" }];
+
 const TARGET_SELECT = {
   id: true, accountId: true, status: true,
   platformPostId: true, error: true, attempts: true,
@@ -644,12 +651,18 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       return reply.status(422).send({ error: `Complete the required fields first: ${missing.join(", ")}.`, code: "INCOMPLETE", missing });
     }
 
-    const updated = await prisma.postJob.update({
-      where: { id },
-      data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
-      include: { targets: { select: TARGET_SELECT } },
-    });
-    return reply.send(updated);
+    try {
+      const updated = await prisma.postJob.update({
+        where: { id, workspaceId, status: "draft", OR: SUBMITTABLE },
+        data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
+        include: { targets: { select: TARGET_SELECT } },
+      });
+      return reply.send(updated);
+    } catch (err) {
+      // P2025: no row matches any more: another send (or the reviewer) got there between the check above and this write
+      if ((err as { code?: string }).code === "P2025") return reply.status(409).send({ error: "Already awaiting review" });
+      throw err;
+    }
   });
 
   // Bulk "Send for Design Approval": complete drafts are submitted, the rest are skipped with a reason.
@@ -691,7 +704,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     if (submit.length > 0) {
       await prisma.postJob.updateMany({
-        where: { id: { in: submit }, workspaceId, status: "draft" },
+        where: { id: { in: submit }, workspaceId, status: "draft", OR: SUBMITTABLE },
         data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
       });
     }

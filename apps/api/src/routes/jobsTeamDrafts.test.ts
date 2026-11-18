@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
   job: null as null | Record<string, unknown>,
   jobs: [] as Array<Record<string, unknown>>,
   calls: [] as Array<{ fn: string; args: unknown }>,
+  /** what the next postJob.update throws: Prisma's "no row matches" (P2025) when another send got there first */
+  updateError: null as null | Error,
 }));
 
 vi.mock("../lib/prisma.js", () => {
@@ -23,7 +25,10 @@ vi.mock("../lib/prisma.js", () => {
       postJob: {
         findFirst: record("findFirst", () => h.job),
         findMany: record("findMany", () => h.jobs),
-        update: record("update", (args) => ({ id: "p1", ...(args as { data: object }).data })),
+        update: record("update", (args) => {
+          if (h.updateError) throw h.updateError;
+          return { id: "p1", ...(args as { data: object }).data };
+        }),
         updateMany: record("updateMany", () => ({ count: 1 })),
         create: record("create", (args) => ({ id: "new", ...(args as { data: object }).data })),
       },
@@ -72,6 +77,7 @@ beforeEach(() => {
   h.job = null;
   h.jobs = [];
   h.calls = [];
+  h.updateError = null;
   storage.delete.mockClear();
 });
 
@@ -265,6 +271,29 @@ describe("POST /jobs/:id/submit: a colleague sends the head's draft for review",
     expect((await submit()).statusCode).toBe(403);
     expect(call("update")).toHaveLength(0);
   });
+
+  // Two sends at the same moment both read "not in review"; only the write can tell which one was first.
+  it("the write itself only matches a draft that is not in review and was not sent back, in this workspace", async () => {
+    h.job = draft();
+    await submit();
+    expect(call("update")[0].args).toMatchObject({
+      where: { id: "p1", workspaceId: "ws-1", status: "draft", OR: [{ approvalStatus: null }, { approvalStatus: "approved" }] },
+    });
+  });
+
+  it("the second of two sends at the same moment finds no row to change: 409, one round counted", async () => {
+    h.job = draft();
+    h.updateError = Object.assign(new Error("Record to update not found."), { code: "P2025" });
+    const res = await submit();
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "Already awaiting review" });
+  });
+
+  it("any other database error is not turned into a 409", async () => {
+    h.job = draft();
+    h.updateError = Object.assign(new Error("connection lost"), { code: "P1001" });
+    expect((await submit()).statusCode).toBe(500);
+  });
 });
 
 describe("POST /jobs/submit-bulk: a colleague sends several of the head's drafts at once", () => {
@@ -301,6 +330,14 @@ describe("POST /jobs/submit-bulk: a colleague sends several of the head's drafts
     const { data } = call("updateMany")[0].args as { data: Record<string, unknown> };
     expect(data).toMatchObject({ approvalStatus: "pending", submittedById: "colleague", submitCount: { increment: 1 } });
     expect(data.submittedAt).toBeInstanceOf(Date);
+  });
+
+  it("the write only matches drafts that are still not in review and not sent back, so a double send counts one round", async () => {
+    h.jobs = [draft({ id: ids[0] })];
+    await bulk();
+    expect(call("updateMany")[0].args).toMatchObject({
+      where: { id: { in: [ids[0]] }, workspaceId: "ws-1", status: "draft", OR: [{ approvalStatus: null }, { approvalStatus: "approved" }] },
+    });
   });
 
   it("only the drafts of this workspace are read", async () => {
