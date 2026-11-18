@@ -17,9 +17,12 @@ const onSaved = vi.fn();
 const onClose = vi.fn();
 
 const open = (template: DesignTemplate | null = null) =>
-  render(<TemplateEditor template={template} presetCategory="Case Study" takenCategories={new Set()} onClose={onClose} onSaved={onSaved} />);
+  render(<TemplateEditor template={template} takenCategories={new Set()} onClose={onClose} onSaved={onSaved} />);
 
 const sent = () => JSON.parse(h.apiFetch.mock.calls[0][1].body);
+
+/** What a person does first in a new template: picks the category (the pillar follows it). */
+const pickCategory = () => userEvent.selectOptions(screen.getByLabelText("Content category"), "Case Study");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -28,8 +31,9 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("TemplateEditor: format and platforms", () => {
-  it("a new template asks for nothing but the link: format, slides and platforms are left out", async () => {
+  it("a new template asks for nothing but the category and the link: format, slides and platforms are left out", async () => {
     open();
+    await pickCategory();
     await userEvent.type(screen.getByLabelText("Figma link"), "https://www.figma.com/design/AbC/Case");
     await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalled());
@@ -40,6 +44,7 @@ describe("TemplateEditor: format and platforms", () => {
 
   it("a carousel asks for its slides; the format, the slides and the chosen platforms are sent", async () => {
     open();
+    await pickCategory();
     await userEvent.type(screen.getByLabelText("Figma link"), "https://www.figma.com/design/AbC/Case");
     expect(screen.queryByLabelText(/^Slides/)).toBeNull();
     await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "carousel");
@@ -54,6 +59,7 @@ describe("TemplateEditor: format and platforms", () => {
 
   it("another format sends no slides, even if a carousel had some typed in", async () => {
     open();
+    await pickCategory();
     await userEvent.type(screen.getByLabelText("Figma link"), "https://www.figma.com/design/AbC/Case");
     await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "carousel");
     await userEvent.type(screen.getByLabelText(/^Slides/), "6");
@@ -65,6 +71,7 @@ describe("TemplateEditor: format and platforms", () => {
 
   it("slides outside 2 to 20 are refused before anything is sent", async () => {
     open();
+    await pickCategory();
     await userEvent.type(screen.getByLabelText("Figma link"), "https://www.figma.com/design/AbC/Case");
     await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "carousel");
     await userEvent.type(screen.getByLabelText(/^Slides/), "1");
@@ -89,6 +96,7 @@ describe("TemplateEditor: format and platforms", () => {
 describe("TemplateEditor: the Figma link is optional (a template can be designed in Canvas)", () => {
   it("a new template with no link is saved as a draft with linkUrl null", async () => {
     open();
+    await pickCategory();
     await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalled());
     expect(sent().linkUrl).toBeNull();
@@ -98,6 +106,7 @@ describe("TemplateEditor: the Figma link is optional (a template can be designed
 
   it("a link of only spaces is no link: it is sent as null, not as spaces", async () => {
     open();
+    await pickCategory();
     await userEvent.type(screen.getByLabelText("Figma link"), "   ");
     await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalled());

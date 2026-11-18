@@ -26,16 +26,14 @@ function discardUpload(url: string) {
 // Design team only: the reference design for one content type (Pillar + Category) —
 // a Figma link, plus an optional preview image, format and platforms. A new template is a draft: Marketing sees it
 // as a reference in Compose once it is published (on the template's own page); nothing here is ever copied into a post.
-export function TemplateEditor({ template, presetCategory, takenCategories, onClose, onSaved }: {
+export function TemplateEditor({ template, takenCategories, onClose, onSaved }: {
   template: DesignTemplate | null; // null = new template
-  presetCategory?: Category | null;
   /** Categories that already have a template (one per category). */
   takenCategories: Set<Category>;
   onClose: () => void;
   onSaved: (template: DesignTemplate) => void;
 }) {
-  const initialCategory = template?.category ?? presetCategory ?? null;
-  const [type, setType] = useState<ContentType>({ pillar: template?.pillar ?? null, category: initialCategory });
+  const [type, setType] = useState<ContentType>({ pillar: template?.pillar ?? null, category: template?.category ?? null });
   const [linkUrl, setLinkUrl] = useState(template?.linkUrl ?? "");
   const [format, setFormat] = useState<TemplateFormat | "">(template?.format ?? "");
   const [slides, setSlides] = useState(template?.slides ? String(template.slides) : "");

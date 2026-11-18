@@ -212,5 +212,6 @@ export function downloadCsv(name: string, csv: string): void {
   a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(url);
+  // not at once: Safari and Firefox may still be reading the file when the click returns
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }

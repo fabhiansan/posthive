@@ -41,8 +41,7 @@ vi.mock("../lib/auth/withAuth.js", () => ({
   withAuth: async () => {},
   getUser: () => ({ id: h.userId }),
   getWorkspaceId: () => "ws-1",
-  requireManageRole: async () =>
-    h.role === "owner" || h.role === "admin" || h.role === "designer" ? null : { error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" },
+  isManageRole: (role: string | null) => role === "owner" || role === "admin" || role === "designer",
   // the Posts page rule, so a test can prove this route does not use it
   jobVisibilityWhere: () => ({ OR: [{ status: { not: "draft" } }, { approvalStatus: "pending" }] }),
   getWorkspaceRole: async () => h.role,
@@ -215,9 +214,15 @@ describe("GET /dashboard/design: templates", () => {
     ]);
   });
 
-  it("reads only the templates that have a category, of this workspace", async () => {
+  it("a designer reads the templates that have a category, of this workspace, drafts too", async () => {
     await get();
-    expect(argsOf(call("template", "findMany")[0])).toMatchObject({ where: { workspaceId: "ws-1", category: { not: null } } });
+    expect(argsOf(call("template", "findMany")[0]).where).toEqual({ workspaceId: "ws-1", category: { not: null } });
+  });
+
+  it.each(["admin", "owner"])("an %s reads the published ones only: a draft is the designers' own, in the counts and in the activity", async (role) => {
+    h.role = role;
+    await get();
+    expect(argsOf(call("template", "findMany")[0]).where).toEqual({ workspaceId: "ws-1", category: { not: null }, published: true });
   });
 });
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { getUser, getWorkspaceId, getWorkspaceRole, jobVisibilityWhere, requireManageRole, withAuth } from "../lib/auth/withAuth.js";
+import { getUser, getWorkspaceId, getWorkspaceRole, isManageRole, jobVisibilityWhere, withAuth } from "../lib/auth/withAuth.js";
 import { STATUS_GROUPS } from "../lib/jobFilters.js";
 import {
   ACTIVITY_DAYS,
@@ -71,8 +71,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { id: userId } = getUser(req);
       const workspaceId = getWorkspaceId(req);
-      const forbidden = await requireManageRole(userId, workspaceId);
-      if (forbidden) return reply.status(403).send(forbidden);
+      const role = await getWorkspaceRole(userId, workspaceId);
+      if (!isManageRole(role)) return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
 
       const now = new Date();
       const quarter = quarterOf(wibKey(now));
@@ -106,7 +106,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           select: { content: true, approvalStatus: true, reviewedAt: true, reviewedByUserId: true, reviewedBy: { select: { name: true } } },
         }),
         prisma.template.findMany({
-          where: { workspaceId, category: { not: null } },
+          // a draft is the designers' own: an admin sees the published ones (the same rule as GET /templates)
+          where: { workspaceId, category: { not: null }, ...(role === "designer" ? {} : { published: true }) },
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           take: TEMPLATE_LIMIT,
           select: { name: true, pillar: true, published: true, createdAt: true, userId: true, user: { select: { name: true } } },
