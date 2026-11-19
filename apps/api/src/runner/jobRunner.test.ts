@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   calls: [] as string[],
+  /** what each postJobTarget.update wrote: the status and the reason a person reads in the drawer */
+  targetWrites: [] as Array<Record<string, any>>,
   /** what postJob.findUnique answers: the finished post, as the runner reads it back to spawn its next repeat */
   full: null as null | Record<string, unknown>,
   created: [] as Array<Record<string, any>>,
@@ -30,7 +32,11 @@ vi.mock("../lib/prisma.js", () => {
       // a plan that may post: without one, the runner reads the workspace as cancelled and spawns nothing
       workspace: { findUnique: note("workspace.findUnique", { plan: "pro", planStatus: "active" }) },
       postJobTarget: {
-        update: note("postJobTarget.update"),
+        update: vi.fn(async (args: { data: Record<string, any> }) => {
+          h.calls.push("postJobTarget.update");
+          h.targetWrites.push(args.data);
+          return {};
+        }),
         updateMany: note("postJobTarget.updateMany"),
         findMany: note("postJobTarget.findMany", () => [{ status: "post_done" }]),
       },
@@ -63,6 +69,7 @@ const job = (content: object) =>
 
 beforeEach(() => {
   h.calls = [];
+  h.targetWrites = [];
   h.full = null;
   h.created = [];
   h.createPost.mockClear();
@@ -113,5 +120,38 @@ describe("runJob: a repeating post's next occurrence", () => {
     expect(h.created[0]).toMatchObject({ status: "pending", approvalStatus: null });
     expect(h.created[0]).not.toHaveProperty("submittedAt");
     expect(h.created[0]).not.toHaveProperty("submitCount");
+  });
+});
+
+describe("runJob: a post that does not go out says why in words a person can use", () => {
+  const withPlatform = (platform: string, text: string) => {
+    const j = job({ text, mediaUrls: [] }) as unknown as { targets: Array<{ account: { platform: string } }> };
+    j.targets[0].account.platform = platform;
+    return j as never;
+  };
+  const failedWith = () => h.targetWrites.find((w) => w.status === "post_failed")?.error as string | undefined;
+
+  it("the report: LinkedIn answers 426 NONEXISTENT_VERSION, and the drawer gets a sentence, not the JSON", async () => {
+    h.createPost.mockRejectedValueOnce(new Error('LinkedIn post failed: {"status":426,"code":"NONEXISTENT_VERSION","message":"Requested version 20251101 is not active"}'));
+    await runJob(withPlatform("linkedin", "Hello"));
+    expect(failedWith()).toMatch(/^LinkedIn changed how its connection works/);
+    expect(failedWith()).not.toMatch(/[{}]|NONEXISTENT|426/);
+  });
+
+  it("a post too long for the platform is stopped before the platform is called, with the numbers", async () => {
+    await runJob(withPlatform("linkedin", "x".repeat(3214)));
+    expect(h.createPost).not.toHaveBeenCalled();
+    expect(failedWith()).toBe("This post has 3,214 characters. LinkedIn allows up to 3,000. Shorten it and try again.");
+  });
+
+  it("a post that fits goes out as before", async () => {
+    await runJob(withPlatform("linkedin", "x".repeat(3000)));
+    expect(h.createPost).toHaveBeenCalledTimes(1);
+    expect(failedWith()).toBeUndefined();
+  });
+
+  it("a platform that cuts its own text is not refused for being long", async () => {
+    await runJob(withPlatform("tiktok", "x".repeat(5000)));
+    expect(h.createPost).toHaveBeenCalledTimes(1);
   });
 });

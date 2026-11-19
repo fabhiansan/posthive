@@ -216,7 +216,21 @@ describe("activityOf", () => {
     expect(activityOf(detail({ approvalStatus: "rejected", reviewedAt: null }), {})).toHaveLength(1);
   });
 
-  it("a failed channel is listed with its reason, cut at 300 characters; a target without an error is not", () => {
+  it("a reason saved before plain sentences existed, the platform's raw JSON, is explained when it is read", () => {
+    const saved = 'Error: LinkedIn post failed: {"status":426,"code":"NONEXISTENT_VERSION","message":"Requested version 20251101 is not active"}';
+    const j = detail({ targets: [{ status: "post_failed", error: saved, account: { platform: "linkedin", displayName: "L" } }] });
+    const [failure] = activityOf(j, {}).filter((e) => e.kind === "failed");
+    expect(failure.note).toMatch(/^LinkedIn changed how its connection works/);
+    expect(failure.note).not.toMatch(/[{}]|NONEXISTENT|Error:/);
+  });
+
+  it("a reason the runner already wrote as a sentence is not changed", () => {
+    const sentence = "This post has 3,214 characters. LinkedIn allows up to 3,000. Shorten it and try again.";
+    const j = detail({ targets: [{ status: "post_failed", error: sentence, account: { platform: "linkedin", displayName: "L" } }] });
+    expect(activityOf(j, {}).find((e) => e.kind === "failed")?.note).toBe(sentence);
+  });
+
+  it("a failed channel is listed with its reason, and a long dump from a platform never reaches the drawer; a target without an error is not", () => {
     const j = detail({
       targets: [
         { status: "post_failed", error: "e".repeat(900), account: { platform: "instagram", displayName: "@a" } },
@@ -226,7 +240,7 @@ describe("activityOf", () => {
     const failures = activityOf(j, {}).filter((e) => e.kind === "failed");
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatchObject({ channel: "instagram", at: null });
-    expect(failures[0].note).toHaveLength(300);
+    expect(failures[0].note).toBe("Posting to Instagram failed. Try again, and contact support if it keeps happening.");
   });
 });
 

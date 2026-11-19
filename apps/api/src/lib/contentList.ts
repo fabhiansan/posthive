@@ -4,6 +4,7 @@
 // hold a whole design copy.
 import { normalizeCategory, pillarFor } from "./contentTypes.js";
 import { contentOf, images, text } from "./dashboardData.js";
+import { explainPublishError } from "./publishError.js";
 import { missingForReview, type MissingField } from "./submitReadiness.js";
 
 /** Rows in a page of the table, as the design draws it. */
@@ -165,6 +166,11 @@ export interface PostDetail extends ListItem {
 }
 
 /** What is recorded about a post, oldest first: when it came in, who answered its review, what failed. */
+/** A saved reason as a person reads it: a sentence the runner wrote stays as it is, a platform's raw answer is explained. */
+function readableReason(platform: string, saved: string): string {
+  return explainPublishError(platform, saved);
+}
+
 export function activityOf(job: DetailRecord, content: Record<string, unknown>): ActivityEntry[] {
   const out: ActivityEntry[] = [];
   const source = importSourceOf(content);
@@ -182,7 +188,9 @@ export function activityOf(job: DetailRecord, content: Record<string, unknown>):
   }
 
   for (const t of job.targets) {
-    if (t.error && t.account) out.push({ kind: "failed", by: null, at: null, note: t.error.slice(0, 300), channel: t.account.platform });
+    // Rows saved before the runner wrote plain sentences hold the platform's JSON ("LinkedIn post failed: {...}"):
+    // explaining them here makes an old post's drawer read the same as a new one, with no backfill.
+    if (t.error && t.account) out.push({ kind: "failed", by: null, at: null, note: readableReason(t.account.platform, t.error).slice(0, 300), channel: t.account.platform });
   }
   return out;
 }

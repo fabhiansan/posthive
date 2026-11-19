@@ -4,7 +4,7 @@
  * Auth: OAuth 2.0 — scopes: openid profile email w_member_social
  * Tokens: access token (~60 days) + refresh token (~1 year), stored encrypted.
  *
- * Posting uses the newer Posts API (LinkedIn-Version: 202306):
+ * Posting uses the newer Posts API (the LinkedIn-Version header: see linkedInVersion below):
  *   POST https://api.linkedin.com/rest/posts
  *
  * Images require a 3-step flow:
@@ -17,10 +17,41 @@ import type { Account } from "@prisma/client";
 import { decrypt, encrypt } from "../lib/encryption.js";
 import { prisma } from "../lib/prisma.js";
 import type { StorageAdapter } from "../lib/storage.js";
+import { PublishError } from "../lib/publishError.js";
 import type { CommentResult, PlatformAdapter, PostResult } from "./types.js";
 
 const API_BASE = "https://api.linkedin.com";
-const LI_VERSION = "202511";
+
+/**
+ * LinkedIn's API version is a month (YYYYMM). LinkedIn retires each one about 12 months after it ships; from then on
+ * every call answers 426 NONEXISTENT_VERSION and no post goes out (that is how 202511 ended). The default is a month
+ * with plenty of life left; LINKEDIN_API_VERSION changes it on the server without a deploy.
+ * shortcut: a fixed month, moved by hand. The log warns once it is 10 months old; replace it with the newest month
+ * the API docs list as active before it is 12.
+ */
+export const DEFAULT_LI_VERSION = "202609";
+const LI_VERSION_AGE_WARN_MONTHS = 10;
+
+/** Months between a YYYYMM version and `now`; null when it is not a version. */
+export function versionAgeMonths(version: string, now: Date): number | null {
+  const m = /^(\d{4})(0[1-9]|1[0-2])$/.exec(version);
+  if (!m) return null;
+  return (now.getUTCFullYear() - Number(m[1])) * 12 + (now.getUTCMonth() + 1 - Number(m[2]));
+}
+
+/** The configured version when it is a month, else the default. A mistyped value must not take posting down. */
+export function linkedInVersion(env: string | undefined = process.env.LINKEDIN_API_VERSION): string {
+  const v = env?.trim();
+  return v && versionAgeMonths(v, new Date()) !== null ? v : DEFAULT_LI_VERSION;
+}
+
+const LI_VERSION = linkedInVersion();
+{
+  const age = versionAgeMonths(LI_VERSION, new Date());
+  if (age !== null && age >= LI_VERSION_AGE_WARN_MONTHS) {
+    console.warn(`[linkedin] API version ${LI_VERSION} is ${age} months old. LinkedIn retires versions after about 12 months: set LINKEDIN_API_VERSION to a newer one.`);
+  }
+}
 
 interface LinkedInCredentials {
   accessToken: string;
@@ -76,7 +107,7 @@ async function refreshAccessToken(creds: LinkedInCredentials): Promise<LinkedInC
       client_secret: clientSecret,
     }),
   });
-  if (!res.ok) throw new Error(`LinkedIn token refresh failed: ${await res.text()}`);
+  if (!res.ok) throw new PublishError("LinkedIn token refresh failed", await res.text(), res.status);
   const data = await res.json() as {
     access_token: string;
     expires_in: number;
@@ -103,7 +134,7 @@ async function uploadImage(
   const initRes = await liRequest("POST", "/rest/images?action=initializeUpload", token, {
     initializeUploadRequest: { owner: personUrn },
   });
-  if (!initRes.ok) throw new Error(`LinkedIn image init failed: ${await initRes.text()}`);
+  if (!initRes.ok) throw new PublishError("LinkedIn image init failed", await initRes.text(), initRes.status);
   const initData = await initRes.json() as { value: { uploadUrl: string; image: string } };
   const { uploadUrl, image: imageUrn } = initData.value;
 
@@ -112,7 +143,7 @@ async function uploadImage(
     headers: { "Content-Type": mimeType, Authorization: `Bearer ${token}` },
     body: new Uint8Array(buffer),
   });
-  if (!uploadRes.ok) throw new Error(`LinkedIn image upload failed: ${await uploadRes.text()}`);
+  if (!uploadRes.ok) throw new PublishError("LinkedIn image upload failed", await uploadRes.text(), uploadRes.status);
   return imageUrn;
 }
 
@@ -129,7 +160,7 @@ async function uploadVideo(
       uploadThumbnail: false,
     },
   });
-  if (!initRes.ok) throw new Error(`LinkedIn video init failed: ${await initRes.text()}`);
+  if (!initRes.ok) throw new PublishError("LinkedIn video init failed", await initRes.text(), initRes.status);
   const initData = await initRes.json() as {
     value: {
       uploadInstructions: Array<{ uploadUrl: string; firstByte: number; lastByte: number }>;
@@ -147,14 +178,14 @@ async function uploadVideo(
       headers: { "Content-Type": "application/octet-stream", Authorization: `Bearer ${token}` },
       body: new Uint8Array(chunk),
     });
-    if (!uploadRes.ok) throw new Error(`LinkedIn video chunk upload failed: ${await uploadRes.text()}`);
+    if (!uploadRes.ok) throw new PublishError("LinkedIn video chunk upload failed", await uploadRes.text(), uploadRes.status);
     uploadedPartIds.push(uploadRes.headers.get("etag") ?? "");
   }
 
   const finalRes = await liRequest("POST", "/rest/videos?action=finalizeUpload", token, {
     finalizeUploadRequest: { video: videoUrn, uploadToken, uploadedPartIds },
   });
-  if (!finalRes.ok) throw new Error(`LinkedIn video finalize failed: ${await finalRes.text()}`);
+  if (!finalRes.ok) throw new PublishError("LinkedIn video finalize failed", await finalRes.text(), finalRes.status);
 
   return videoUrn;
 }
@@ -237,7 +268,7 @@ export const linkedinAdapter: PlatformAdapter = {
     };
 
     const res = await liRequest("POST", "/rest/posts", token, postBody);
-    if (!res.ok) throw new Error(`LinkedIn post failed: ${await res.text()}`);
+    if (!res.ok) throw new PublishError("LinkedIn post failed", await res.text(), res.status);
 
     // /rest/posts returns 201 with no body; URN is in X-RestLi-Id header
     const postUrn = res.headers.get("x-restli-id") ?? res.headers.get("X-RestLi-Id") ?? "unknown";
@@ -258,7 +289,7 @@ export const linkedinAdapter: PlatformAdapter = {
       creds.accessToken,
       { actor: creds.personUrn, message: { text: comment } },
     );
-    if (!res.ok) throw new Error(`LinkedIn comment failed: ${await res.text()}`);
+    if (!res.ok) throw new PublishError("LinkedIn comment failed", await res.text(), res.status);
     const data = await res.json() as { id?: string };
     return { platformCommentId: data.id ?? "unknown" };
   },

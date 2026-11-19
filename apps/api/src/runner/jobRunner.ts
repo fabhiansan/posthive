@@ -21,6 +21,7 @@ import { firstSubmission } from "../lib/submitStamp.js";
 import { isSsrfBlocked } from "../lib/ssrf.js";
 import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
+import { explainPublishError, textLimitProblem } from "../lib/publishError.js";
 import type { PostResult, CommentResult } from "../adapters/types.js";
 
 const MAX_ATTEMPTS = 3;
@@ -89,7 +90,7 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
     if (ws?.planStatus === "on_hold" || ws?.planStatus === "cancelled") {
       await prisma.postJobTarget.updateMany({
         where: { postJobId: job.id },
-        data: { status: "post_failed", error: `Subscription ${ws.planStatus} — post skipped` },
+        data: { status: "post_failed", error: `Your subscription is ${ws.planStatus === "on_hold" ? "on hold" : "cancelled"}, so this post was not sent. Update your plan on the Billing page, then send it again.` },
       });
       await prisma.postJob.update({ where: { id: job.id }, data: { status: "failed" } });
       console.warn(`[runner] job ${job.id} skipped — workspace ${job.workspaceId} planStatus=${ws.planStatus}`);
@@ -212,10 +213,14 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
         select: { email: true },
       });
       if (user?.email && job.scheduledFor) {
-        const platforms = job.targets
-          .filter(t => t.status === "post_failed" || t.status === "comment_failed")
-          .map(t => t.account.platform);
-        sendPostFailedEmail(user.email, platforms, job.scheduledFor, job.id).catch((err) => {
+        // job.targets is as the job started; the statuses and reasons the targets just got are in the database
+        const failedTargets = await prisma.postJobTarget.findMany({
+          where: { postJobId: job.id, status: { in: ["post_failed", "comment_failed"] } },
+          select: { error: true, account: { select: { platform: true } } },
+        });
+        const platforms = failedTargets.map((t) => t.account.platform);
+        const failures = failedTargets.flatMap((t) => (t.error ? [{ platform: t.account.platform, reason: t.error }] : []));
+        sendPostFailedEmail(user.email, platforms, job.scheduledFor, job.id, failures).catch((err) => {
           console.warn(`[runner] failed to send failure email for job ${job.id}:`, err.message);
         });
       }
@@ -279,7 +284,7 @@ async function runTarget(
 
   if (target.status === "pending") {
     if (target.attempts >= MAX_ATTEMPTS) {
-      await setTargetStatus(target.id, "post_failed", { error: "Max attempts reached" });
+      await setTargetStatus(target.id, "post_failed", { error: "We tried to post this three times and it did not go through. Check your connection on the Accounts page, then send it again." });
       return;
     }
 
@@ -288,13 +293,21 @@ async function runTarget(
       data: { attempts: { increment: 1 } },
     });
 
+    // A post the platform would refuse for its length is stopped here, with the number, instead of by the platform's JSON.
+    const tooLong = textLimitProblem(target.account.platform, content.text);
+    if (tooLong) {
+      await setTargetStatus(target.id, "post_failed", { error: tooLong });
+      return;
+    }
+
     let refreshedAccount: Account;
     try {
       refreshedAccount = dryRun
         ? target.account
         : await adapter.refreshTokenIfNeeded(target.account);
     } catch (err) {
-      await setTargetStatus(target.id, "post_failed", { error: String(err) });
+      console.error(`[runner] token refresh failed for ${target.account.platform} (account ${target.accountId}):`, err);
+      await setTargetStatus(target.id, "post_failed", { error: explainPublishError(target.account.platform, err) });
       return;
     }
 
@@ -309,7 +322,8 @@ async function runTarget(
         tags: { component: "runner", platform: target.account.platform },
         extra: { postJobId: target.postJobId, accountId: target.accountId },
       });
-      await setTargetStatus(target.id, "post_failed", { error: String(err) });
+      // The raw answer is in the log and in Sentry above; the person is shown a sentence they can act on.
+      await setTargetStatus(target.id, "post_failed", { error: explainPublishError(target.account.platform, err) });
       return;
     }
 
@@ -336,7 +350,7 @@ async function runTarget(
   const replyContext = target.replyContext ? JSON.parse(target.replyContext) : null;
   if (!replyContext) {
     await setTargetStatus(target.id, "comment_failed", {
-      error: "post_done but replyContext is missing — cannot comment",
+      error: "The post went out, but we lost track of it, so the first comment could not be added. Add the comment on the platform itself.",
     });
     return;
   }
@@ -347,7 +361,8 @@ async function runTarget(
       ? target.account
       : await adapter.refreshTokenIfNeeded(target.account);
   } catch (err) {
-    await setTargetStatus(target.id, "comment_failed", { error: String(err) });
+    console.error(`[runner] token refresh failed for ${target.account.platform} (account ${target.accountId}):`, err);
+    await setTargetStatus(target.id, "comment_failed", { error: explainPublishError(target.account.platform, err) });
     return;
   }
 
@@ -363,7 +378,8 @@ async function runTarget(
       tags: { component: "runner", platform: target.account.platform, step: "createComment" },
       extra: { postJobId: target.postJobId, accountId: target.accountId },
     });
-    await setTargetStatus(target.id, "comment_failed", { error: String(err) });
+    console.error(`[runner] createComment failed for ${target.account.platform} (account ${target.accountId}):`, err);
+    await setTargetStatus(target.id, "comment_failed", { error: explainPublishError(target.account.platform, err) });
   }
 }
 

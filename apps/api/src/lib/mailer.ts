@@ -1,6 +1,7 @@
 import { Resend } from "resend";
 import { RESET_LINK_TTL_MIN } from "./auth/passwordPolicy.js";
 import { CODE_TTL_MIN } from "./auth/emailCode.js";
+import { platformName } from "./publishError.js";
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const FROM = process.env.EMAIL_FROM ?? "Posthive <noreply@posthive.co>";
@@ -475,13 +476,20 @@ export async function sendWorkspaceInviteEmail(
   });
 }
 
+const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** `failures` says why each platform failed, in the plain sentence the drawer shows (lib/publishError.ts). */
 export async function sendPostFailedEmail(
   to: string,
   platforms: string[],
   scheduledFor: Date,
   postJobId: string,
+  failures: { platform: string; reason: string }[] = [],
 ): Promise<void> {
-  const platformList = platforms.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(", ");
+  const platformList = platforms.map(p => platformName(p)).join(", ");
+  const reasons = failures
+    .map((f) => `<strong style="color:#ededed;">${escapeHtml(platformName(f.platform))}:</strong> ${escapeHtml(f.reason)}`)
+    .join("<br><br>");
   const scheduledStr = scheduledFor.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", hourCycle: "h23", timeZone: "Asia/Jakarta" }) + " WIB";
   const jobsUrl = `${APP_URL}/jobs`;
 
@@ -503,7 +511,7 @@ export async function sendPostFailedEmail(
         </tr>
       </table>
     `)}
-    ${bodyText("Common causes: expired account token, revoked platform permissions, or a platform API error. Reconnect your account and reschedule.")}
+    ${bodyText(reasons || "Common causes: expired account token, revoked platform permissions, or a platform API error. Reconnect your account and reschedule.")}
     ${ctaButton(jobsUrl, "View posts", "#ef4444", "#ffffff")}
     ${divider()}
     ${bodyText(`Post ID: <span style="color:#555;font-size:11px;font-family:monospace;">${postJobId}</span>`, "font-size:11.5px;")}
