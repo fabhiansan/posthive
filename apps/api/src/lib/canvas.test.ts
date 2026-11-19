@@ -2,9 +2,33 @@
 // place the API may reach into apps/canvas): every boundary below is driven by the ENGINE's numbers, so if the two
 // sides drift apart, a document the editor can make is refused here, or one the editor forbids gets through.
 import { describe, expect, it } from "vitest";
-import { addNode, createDocument, createImage, createShape, createText, editableLayers, foldScale, moveNode, removeNode, updateNode, type CanvasDocument, type CanvasNode, type NodePatch } from "../../../canvas/src/document";
+import { addNode, applyOverrides, createDocument, createImage, createShape, createText, editableLayers, foldScale, moveNode, normalizeOverrides, removeNode, setOverride, updateNode, type CanvasDocument, type CanvasNode, type NodePatch, type OverrideEntry as EngineEntry } from "../../../canvas/src/document";
 import { LIMITS as ENGINE } from "../../../canvas/src/limits";
-import { BLANK_DOCUMENT, LIMITS, attachBody, buildManifest, canvasDocument, createBody, designName, documentAssetIds, firstIssue, hiddenMessage, publishBody, saveBody } from "./canvas.js";
+import {
+  BLANK_DOCUMENT,
+  INSTANCE_PAGE,
+  LIMITS,
+  RevisionUnreadable,
+  attachBody,
+  buildManifest,
+  canvasDocument,
+  createBody,
+  createInstanceBody,
+  decodeCursor,
+  designName,
+  documentAssetIds,
+  encodeCursor,
+  firstIssue,
+  hiddenMessage,
+  parseLimit,
+  publishBody,
+  readOverrides,
+  sameOverrides,
+  saveBody,
+  saveInstanceBody,
+  validateOverrides,
+  type OverrideEntry,
+} from "./canvas.js";
 
 const accepts = (doc: unknown) => canvasDocument.safeParse(doc).success;
 const issuePath = (doc: unknown) => {
@@ -635,5 +659,348 @@ describe("the engine and the server derive the same manifest (parity)", () => {
     expect(accepts(withNode("r", { permission: "text" }))).toBe(false);
     expect(accepts(withNode("t", { permission: "image" }))).toBe(false);
     expect(accepts(withNode("i", { permission: "text" }))).toBe(false);
+  });
+});
+
+// ── Instance overrides (phase 5) ────────────────────────────────────────────
+
+describe("the instance request bodies", () => {
+  it("a customize request names a template and nothing else: no revision, kind, workspace or author comes from the client", () => {
+    expect(createInstanceBody.safeParse({ templateId: "tpl_1" }).success).toBe(true);
+    for (const bad of [{}, { templateId: "" }, { templateId: "a/b" }, { templateId: "a\u0000b" }, { templateId: 5 }, { templateId: "x".repeat(65) }, undefined, null, []]) expect(createInstanceBody.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    for (const extra of ["baseRevisionId", "revisionId", "kind", "workspaceId", "createdByUserId", "document", "overrides"]) expect(createInstanceBody.safeParse({ templateId: "t", [extra]: "x" }).success, extra).toBe(false);
+  });
+
+  it("a save is a whole version, the COMPLETE override list (required, possibly empty) and an optional name, and nothing else", () => {
+    expect(saveInstanceBody.safeParse({ version: 1, overrides: [] }).success).toBe(true);
+    expect(saveInstanceBody.safeParse({ version: 2, overrides: [{ nodeId: "a", text: "x" }, { nodeId: "b", assetId: "asset-1" }], name: " Spring post " }).success).toBe(true);
+    expect(saveInstanceBody.parse({ version: 1, overrides: [], name: "  Trim me " }).name).toBe("Trim me");
+    for (const version of [0, -1, 1.5, "1", null, undefined]) expect(saveInstanceBody.safeParse({ version, overrides: [] }).success, String(version)).toBe(false);
+    expect(saveInstanceBody.safeParse({ version: 1 }).success, "overrides is required: a missing list is never 'no change'").toBe(false);
+    expect(saveInstanceBody.safeParse({ version: 1, overrides: null }).success).toBe(false);
+    expect(saveInstanceBody.safeParse({ version: 1, overrides: {} }).success).toBe(false);
+    expect(saveInstanceBody.safeParse({ version: 1, overrides: [], name: "" }).success).toBe(false);
+    for (const extra of ["document", "manifest", "baseRevisionId", "kind", "workspaceId", "createdByUserId", "createdAt"]) expect(saveInstanceBody.safeParse({ version: 1, overrides: [], [extra]: "x" }).success, extra).toBe(false);
+  });
+
+  it("an entry carries a node id and EXACTLY one of text or assetId, and nothing else", () => {
+    const entry = (e: unknown) => saveInstanceBody.safeParse({ version: 1, overrides: [e] }).success;
+    expect(entry({ nodeId: "a", text: "x" })).toBe(true);
+    expect(entry({ nodeId: "a", text: "" })).toBe(true); // empty text is text
+    expect(entry({ nodeId: "a", assetId: "asset-1" })).toBe(true);
+    expect(entry({ nodeId: "a" })).toBe(false); // neither
+    expect(entry({ nodeId: "a", text: "x", assetId: "asset-1" })).toBe(false); // both
+    expect(entry({ text: "x" })).toBe(false);
+    expect(entry({ nodeId: "a b", text: "x" })).toBe(false);
+    expect(entry({ nodeId: "a", text: 5 })).toBe(false);
+    expect(entry({ nodeId: "a", assetId: "../x" })).toBe(false);
+    // None of the properties of a layer can be carried: only the two values.
+    for (const key of ["x", "y", "width", "height", "rotation", "opacity", "visible", "fill", "stroke", "fontSize", "fontFamily", "fontStyle", "align", "fit", "permission", "parentId", "name", "type", "url", "href"]) {
+      expect(entry({ nodeId: "a", text: "x", [key]: key === "visible" ? true : 1 }), key).toBe(false);
+    }
+  });
+
+  it("text is held to the same limits as a designer's: 5,000 characters, nothing PostgreSQL cannot store, and it is never trimmed", () => {
+    const text = (t: string) => saveInstanceBody.safeParse({ version: 1, overrides: [{ nodeId: "a", text: t }] });
+    expect(text("x".repeat(LIMITS.text.length)).success).toBe(true);
+    expect(text("x".repeat(LIMITS.text.length + 1)).success).toBe(false);
+    expect(text("a\u0000b").success).toBe(false);
+    expect(text("\uD800").success).toBe(false);
+    const kept = text("  two\n\nlines  ");
+    expect(kept.success && (kept.data.overrides[0] as { text: string }).text).toBe("  two\n\nlines  ");
+  });
+
+  it("at most as many entries as a design has layers", () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ nodeId: `n${i}`, text: "x" }));
+    expect(saveInstanceBody.safeParse({ version: 1, overrides: many(LIMITS.nodes) }).success).toBe(true);
+    expect(saveInstanceBody.safeParse({ version: 1, overrides: many(LIMITS.nodes + 1) }).success).toBe(false);
+  });
+
+  it("an override error is worded for the overrides field, so the route answers INVALID_OVERRIDES", () => {
+    const bad = saveInstanceBody.safeParse({ version: 1, overrides: [{ nodeId: "a" }] });
+    expect(!bad.success && firstIssue(bad.error)).toMatchObject({ field: "overrides", path: "overrides.0" });
+  });
+});
+
+describe("readOverrides: what is stored", () => {
+  it("reads the stored shape and refuses anything else, so a damaged row fails closed", () => {
+    expect(readOverrides({ schemaVersion: 1, fields: [] })).toEqual([]);
+    expect(readOverrides({ schemaVersion: 1, fields: [{ nodeId: "a", text: "x" }, { nodeId: "b", assetId: "asset-1" }] })).toEqual([{ nodeId: "a", text: "x" }, { nodeId: "b", assetId: "asset-1" }]);
+    for (const bad of [null, undefined, [], {}, { schemaVersion: 2, fields: [] }, { schemaVersion: 1 }, { schemaVersion: 1, fields: {} }, { schemaVersion: 1, fields: [{ nodeId: "a" }] }, { schemaVersion: 1, fields: [], extra: 1 }, "text"]) {
+      expect(readOverrides(bad), JSON.stringify(bad)).toBeNull();
+    }
+  });
+});
+
+// A revision as publishing stores it: the document, and the manifest derived from it.
+function revisionOf(doc: CanvasDocument) {
+  return { document: JSON.parse(JSON.stringify(doc)) as unknown, manifest: buildManifest(canvasDocument.parse(doc)).manifest as unknown };
+}
+function campaign(): CanvasDocument {
+  const empty = createDocument();
+  const text = (id: string, t: string, permission: "protected" | "text"): CanvasNode => ({ ...createText(empty), id, text: t, permission }) as CanvasNode;
+  const image = (id: string, assetId: string, permission: "protected" | "image"): CanvasNode => ({ ...createImage(empty, { id: assetId, width: 10, height: 10 }), id, assetId, permission }) as CanvasNode;
+  return {
+    ...empty,
+    nodes: [text("head", "Original headline", "text"), image("photo", "asset-1", "image"), text("legal", "Fixed legal text", "protected"), { ...createShape(empty, "rect"), id: "box" }, image("logo", "asset-logo", "protected"), text("sub", "Original subline", "text")],
+  };
+}
+const txt = (nodeId: string, text: string): OverrideEntry => ({ nodeId, text });
+const img = (nodeId: string, assetId: string): OverrideEntry => ({ nodeId, assetId });
+const ok = (entries: OverrideEntry[], rev = revisionOf(campaign())) => {
+  const r = validateOverrides(rev, entries);
+  if (!r.ok) throw new Error(`${r.code}: ${r.error}`);
+  return r.fields;
+};
+const fails = (entries: OverrideEntry[], rev = revisionOf(campaign())) => {
+  const r = validateOverrides(rev, entries);
+  return r.ok ? null : r.code;
+};
+
+describe("validateOverrides: only what the pinned revision's manifest allows", () => {
+  it("accepts the text of a text field and the asset of an image field", () => {
+    expect(ok([txt("head", "New"), img("photo", "asset-2")])).toEqual([txt("head", "New"), img("photo", "asset-2")]);
+  });
+
+  it("refuses every layer the manifest does not list: LOCKED_NODE", () => {
+    expect(fails([txt("legal", "x")]), "protected text").toBe("LOCKED_NODE");
+    expect(fails([img("logo", "asset-9")]), "protected image").toBe("LOCKED_NODE");
+    expect(fails([txt("box", "x")]), "a shape").toBe("LOCKED_NODE");
+    expect(fails([txt("head", "ok"), txt("legal", "x")]), "one bad entry refuses the whole set").toBe("LOCKED_NODE");
+  });
+
+  it("refuses the wrong kind of value for a field, both ways", () => {
+    expect(fails([img("head", "asset-2")])).toBe("LOCKED_NODE");
+    expect(fails([txt("photo", "text on an image")])).toBe("LOCKED_NODE");
+  });
+
+  it("a layer that is not in the revision is UNKNOWN_NODE; a prototype key finds nothing", () => {
+    expect(fails([txt("nope", "x")])).toBe("UNKNOWN_NODE");
+    expect(fails([txt("__proto__", "x")])).toBe("UNKNOWN_NODE");
+    expect(fails([txt("constructor", "x")])).toBe("UNKNOWN_NODE");
+    expect(fails([txt("toString", "x")])).toBe("UNKNOWN_NODE");
+  });
+
+  it("a layer named twice is DUPLICATE_NODE, even with the same value", () => {
+    expect(fails([txt("head", "a"), txt("head", "b")])).toBe("DUPLICATE_NODE");
+    expect(fails([txt("head", "a"), txt("head", "a")])).toBe("DUPLICATE_NODE");
+  });
+
+  it("a field whose layer is the wrong type in the document (a damaged revision) is locked, not written", () => {
+    const rev = revisionOf(campaign());
+    (rev.manifest as { fields: Array<{ nodeId: string; kind: string }> }).fields.push({ nodeId: "box", kind: "text" }); // the manifest says a rectangle is text
+    expect(fails([txt("box", "x")], rev)).toBe("LOCKED_NODE");
+  });
+
+  it("an entry the same as the revision is dropped, and the result is in the manifest's order", () => {
+    expect(ok([txt("head", "Original headline"), img("photo", "asset-1")])).toEqual([]);
+    expect(ok([txt("sub", "Two"), img("photo", "asset-2"), txt("head", "One")])).toEqual([txt("head", "One"), img("photo", "asset-2"), txt("sub", "Two")]);
+  });
+
+  it("is a pure check: it changes neither the revision nor the entries", () => {
+    const rev = revisionOf(campaign());
+    const copy = JSON.stringify(rev);
+    const entries = [txt("sub", "Two"), txt("head", "One")];
+    const entriesCopy = JSON.stringify(entries);
+    ok(entries, rev);
+    expect(JSON.stringify(rev)).toBe(copy);
+    expect(JSON.stringify(entries)).toBe(entriesCopy);
+  });
+
+  it("an empty revision manifest locks everything", () => {
+    const rev = { ...revisionOf(campaign()), manifest: { schemaVersion: 1, fields: [] } };
+    expect(fails([txt("head", "x")], rev)).toBe("LOCKED_NODE");
+    expect(ok([], rev)).toEqual([]);
+  });
+
+  it("a manifest or document that is not what publishing wrote fails CLOSED: it throws and nothing is accepted", () => {
+    const good = revisionOf(campaign());
+    for (const manifest of [null, undefined, {}, [], { schemaVersion: 2, fields: [] }, { schemaVersion: 1, fields: [{ nodeId: "head", kind: "audio" }] }, { schemaVersion: 1, fields: [], extra: true }, "x"]) {
+      expect(() => validateOverrides({ document: good.document, manifest }, [txt("head", "x")]), JSON.stringify(manifest)).toThrow(RevisionUnreadable);
+    }
+    for (const document of [null, {}, { nodes: "x" }, { nodes: [null] }, { nodes: [{ id: 1, type: "text" }] }, { nodes: [{ id: "head", type: "text" }] }, { nodes: [{ id: "photo", type: "image" }] }]) {
+      expect(() => validateOverrides({ document, manifest: good.manifest }, [txt("head", "x")]), JSON.stringify(document)).toThrow(RevisionUnreadable);
+    }
+  });
+});
+
+describe("validateOverrides: the text budget", () => {
+  // A revision whose protected text (the "legal" layer and as many filler layers as needed) adds up to `otherText`
+  // characters. Spread over layers of at most 5,000, because a real revision cannot hold more in one: it is parsed here
+  // with the real schema, so the fixture itself is proven valid.
+  const withBudget = (otherText: number) => {
+    const doc = campaign();
+    const chunks = Array.from({ length: Math.ceil(otherText / LIMITS.text.length) }, (_, i) => "y".repeat(Math.min(LIMITS.text.length, otherText - i * LIMITS.text.length)));
+    doc.nodes = doc.nodes.map((n) => (n.id === "legal" && n.type === "text" ? { ...n, text: chunks[0] ?? "" } : n));
+    chunks.slice(1).forEach((text, i) => doc.nodes.push({ ...createText(createDocument()), id: `fill${i}`, text, permission: "protected" } as CanvasNode));
+    return revisionOf(doc);
+  };
+  const fixed = "Original headline".length + "Original subline".length;
+
+  it("accepts text that brings the design exactly to the budget, and refuses one more character", () => {
+    const rev = withBudget(LIMITS.totalText - fixed - 1000);
+    const room = 1000 + "Original headline".length; // what the headline may become
+    expect(validateOverrides(rev, [txt("head", "x".repeat(room))]).ok).toBe(true);
+    expect(fails([txt("head", "x".repeat(room + 1))], rev)).toBe("TEXT_TOO_LONG");
+  });
+
+  it("counts the text a field REPLACES, not the original plus the new", () => {
+    const rev = withBudget(LIMITS.totalText - fixed); // the design is exactly full
+    expect(validateOverrides(rev, [txt("head", "Short")]).ok, "shorter text always fits").toBe(true);
+    expect(validateOverrides(rev, [txt("head", "x".repeat("Original headline".length))]).ok, "same length fits").toBe(true);
+    expect(fails([txt("head", "x".repeat("Original headline".length + 1))], rev)).toBe("TEXT_TOO_LONG");
+  });
+
+  it("a set of several fields is held to one budget together", () => {
+    const rev = withBudget(LIMITS.totalText - fixed - 100);
+    const each = 100 + "Original headline".length;
+    expect(fails([txt("head", "x".repeat(each)), txt("sub", "z".repeat(each))], rev)).toBe("TEXT_TOO_LONG");
+  });
+
+  it("every set it accepts makes a document the real schema accepts", () => {
+    const doc = campaign();
+    const rev = revisionOf(doc);
+    const sets: OverrideEntry[][] = [[], [txt("head", "")], [txt("head", "x".repeat(LIMITS.text.length))], [txt("head", "a\nb"), txt("sub", "  ")], [img("photo", "asset-2")], [txt("head", "New"), img("photo", "asset-2"), txt("sub", "Newer")]];
+    for (const set of sets) {
+      const stored = ok(set, rev);
+      const effective = applyOverrides(doc, buildManifest(canvasDocument.parse(doc)).manifest, stored as EngineEntry[]);
+      expect(canvasDocument.safeParse(effective).success, JSON.stringify(set).slice(0, 80)).toBe(true);
+    }
+  });
+});
+
+describe("a save replaces the WHOLE override set (not a patch): replace, remove, reset", () => {
+  // What the route does with a body: validate it, and the result IS the new stored set, nothing merged from the old one.
+  const store = (entries: OverrideEntry[]) => ok(entries);
+
+  it("REPLACE: the stored set is exactly the one sent", () => {
+    const first = store([txt("head", "One"), img("photo", "asset-2")]);
+    const second = store([txt("sub", "Only the subline now")]);
+    expect(first).toHaveLength(2);
+    expect(second).toEqual([txt("sub", "Only the subline now")]); // head and photo are NOT kept from `first`
+  });
+
+  it("REMOVE: leaving one field out sets it back to the revision's value", () => {
+    const before = store([txt("head", "One"), txt("sub", "Two")]);
+    const after = store(before.filter((e) => e.nodeId !== "head"));
+    expect(after).toEqual([txt("sub", "Two")]);
+    const base = campaign();
+    const manifest = buildManifest(canvasDocument.parse(base)).manifest;
+    const shown = applyOverrides(base, manifest, after as EngineEntry[]);
+    expect((shown.nodes.find((n) => n.id === "head") as { text: string }).text).toBe("Original headline"); // back to the base
+  });
+
+  it("RESET: an empty list puts every field back, and sending a field's base value is the same as sending nothing", () => {
+    expect(store([])).toEqual([]);
+    expect(store([txt("head", "Original headline")])).toEqual([]);
+    expect(store([img("photo", "asset-1")])).toEqual([]);
+  });
+
+  it("saving the same set twice stores the same thing (nothing to write the second time)", () => {
+    const set = [img("photo", "asset-2"), txt("head", "One")];
+    const once = store(set);
+    expect(sameOverrides(store(once), once)).toBe(true);
+    expect(sameOverrides(store(set), once)).toBe(true); // a different order in the body is the same set
+    expect(sameOverrides(store([txt("head", "Other")]), once)).toBe(false);
+  });
+});
+
+describe("the server and the engine agree on what a valid set looks like (parity)", () => {
+  const doc = campaign();
+  const manifest = buildManifest(canvasDocument.parse(doc)).manifest;
+  const rev = revisionOf(doc);
+  const cases: Array<[string, OverrideEntry[]]> = [
+    ["nothing", []],
+    ["a text", [txt("head", "New")]],
+    ["an image", [img("photo", "asset-2")]],
+    ["both, out of order", [img("photo", "asset-2"), txt("sub", "S"), txt("head", "H")]],
+    ["equal to the base", [txt("head", "Original headline"), img("photo", "asset-1")]],
+    ["empty text", [txt("head", "")]],
+    ["line breaks and spaces", [txt("head", "  a\n\nb  ")]],
+  ];
+  it.each(cases)("%s", (_label, entries) => {
+    const server = ok(entries, rev);
+    expect(normalizeOverrides(doc, manifest, entries as EngineEntry[])).toEqual(server);
+  });
+
+  it("what the editor's setOverride makes, one field after another, the server accepts and stores unchanged", () => {
+    let list: readonly EngineEntry[] = [];
+    for (const e of [txt("head", "H1"), img("photo", "asset-2"), txt("sub", "S1"), txt("head", "H2"), txt("sub", "Original subline")]) list = setOverride(doc, manifest, list, e as EngineEntry);
+    expect(ok([...list] as OverrideEntry[], rev)).toEqual(list);
+  });
+
+  it("the editor and the server refuse (or ignore) the same locked layers", () => {
+    for (const e of [txt("legal", "x"), img("logo", "x"), txt("box", "x"), txt("nope", "x")]) {
+      expect(fails([e], rev), JSON.stringify(e)).not.toBeNull(); // the server refuses
+      expect(normalizeOverrides(doc, manifest, [e as EngineEntry]), JSON.stringify(e)).toEqual([]); // the editor never makes one
+    }
+  });
+});
+
+describe("parseLimit: a page is 50 by default, at most 100, and a bad value is never guessed", () => {
+  it("absent is the default; a whole number from 1 is accepted and capped", () => {
+    expect(parseLimit(undefined)).toBe(INSTANCE_PAGE.default);
+    expect(INSTANCE_PAGE.default).toBe(50);
+    expect(parseLimit("1")).toBe(1);
+    expect(parseLimit("50")).toBe(50);
+    expect(parseLimit("100")).toBe(100);
+    expect(parseLimit("101")).toBe(100);
+    expect(parseLimit("9999999999999999999999")).toBe(100);
+    expect(parseLimit("007")).toBe(7);
+  });
+
+  it("everything else is refused (a 400), never turned into an empty or a default page", () => {
+    for (const bad of ["0", "-1", "+5", "1.5", "5.", ".5", "1e2", "0x10", "", " ", " 5", "5 ", "abc", "5abc", "NaN", "Infinity", "-Infinity", ["5", "10"], ["5"], 5, null, {}, true, "١٢"]) {
+      expect(parseLimit(bad), JSON.stringify(bad)).toBeNull();
+    }
+  });
+});
+
+describe("the page cursor: a value from the last row, in exactly one spelling", () => {
+  const row = { createdAt: new Date("2026-11-18T10:20:30.456Z"), id: "cld_abc-123" };
+
+  it("round-trips the creation time (to the millisecond, which is what the column holds) and the id", () => {
+    const decoded = decodeCursor(encodeCursor(row));
+    expect(decoded).toEqual({ t: row.createdAt.getTime(), i: row.id });
+    expect(new Date(decoded!.t).toISOString()).toBe("2026-11-18T10:20:30.456Z");
+  });
+
+  it("keeps rows whose times differ by one millisecond apart", () => {
+    const a = decodeCursor(encodeCursor({ createdAt: new Date(1_700_000_000_000), id: "a" }))!;
+    const b = decodeCursor(encodeCursor({ createdAt: new Date(1_700_000_000_001), id: "a" }))!;
+    expect(b.t - a.t).toBe(1);
+  });
+
+  it("is URL-safe (base64url, no padding)", () => {
+    expect(encodeCursor(row)).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it("refuses anything that is not exactly what encodeCursor writes", () => {
+    const forge = (v: unknown) => Buffer.from(JSON.stringify(v), "utf8").toString("base64url");
+    const bad: unknown[] = [
+      undefined, null, 5, {}, "", "   ", "!!!", "a".repeat(201), "e30", // {}
+      forge([]), forge(null), forge("x"), forge({ t: 1 }), forge({ i: "a" }), forge({ t: 1, i: "a", x: 1 }),
+      forge({ t: "1", i: "a" }), forge({ t: 1.5, i: "a" }), forge({ t: -1, i: "a" }), forge({ t: 1e300, i: "a" }), forge({ t: null, i: "a" }),
+      forge({ t: 1, i: "" }), forge({ t: 1, i: 5 }), forge({ t: 1, i: "a/b" }), forge({ t: 1, i: "a\u0000b" }), forge({ t: 1, i: "x".repeat(65) }),
+      Buffer.from('{"t":1,"i":"ab"}', "utf8").toString("base64"), // standard base64: this one ends in "==" padding
+      `${encodeCursor(row)}=`, `${encodeCursor(row)}A`,
+    ];
+    for (const raw of bad) expect(decodeCursor(raw), JSON.stringify(raw)).toBeNull();
+    expect(decodeCursor(forge({ t: 1, i: "a" }))).toEqual({ t: 1, i: "a" }); // and the forge helper itself writes a valid one
+  });
+
+  it("a time past the year 9999 is refused: it serializes as +010000-… and the database layer would fail on it, so a forged cursor must not be a 500", () => {
+    const LAST = 253_402_300_799_999; // 9999-12-31T23:59:59.999Z
+    const forge = (t: number) => Buffer.from(JSON.stringify({ t, i: "a" }), "utf8").toString("base64url");
+    expect(decodeCursor(forge(LAST))).toEqual({ t: LAST, i: "a" });
+    expect(new Date(LAST).toISOString()).toBe("9999-12-31T23:59:59.999Z");
+    for (const t of [LAST + 1, 8.64e15, Number.MAX_SAFE_INTEGER]) expect(decodeCursor(forge(t)), String(t)).toBeNull();
+  });
+
+  it("two spellings of the same value are not both accepted", () => {
+    const spaced = Buffer.from('{ "t": 1, "i": "a" }', "utf8").toString("base64url");
+    expect(decodeCursor(spaced)).toBeNull();
+    const swapped = Buffer.from('{"i":"a","t":1}', "utf8").toString("base64url");
+    expect(decodeCursor(swapped)).toBeNull();
   });
 });

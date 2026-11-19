@@ -237,6 +237,167 @@ export const createForTemplateBody = z.object({}).strict();
 /** The assets a document draws, once each. */
 export const documentAssetIds = (doc: CanvasDocumentJson): string[] => [...new Set(doc.nodes.flatMap((n) => (n.type === "image" ? [n.assetId] : [])))];
 
+// ── Instance overrides (phase 5) ────────────────────────────────────────────
+// A Marketing design stores no document: it pins one published revision and keeps only what Marketing changed, as a list
+// of overrides. Every write is checked against the PINNED REVISION'S stored manifest and document, never against anything
+// the client sends. The only values that can ever be written are a text layer's `text` and an image layer's `assetId`.
+
+/** One changed field: new text for a text layer, or the asset that replaces an image layer's image. */
+export type OverrideEntry = { nodeId: string; text: string } | { nodeId: string; assetId: string };
+
+/** What `Design.overrides` holds. The versioned wrapper leaves room to change the format without a migration. */
+export interface StoredOverrides {
+  schemaVersion: 1;
+  fields: OverrideEntry[];
+}
+
+export const EMPTY_OVERRIDES: StoredOverrides = { schemaVersion: 1, fields: [] };
+
+// One entry: a node id and EXACTLY one of `text` / `assetId`, nothing else. Text is validated and never rewritten, like a
+// designer's text (spaces, line breaks and empty text are all kept); only what PostgreSQL cannot store is refused.
+const overrideEntry = z
+  .object({
+    nodeId: identifier,
+    text: z.string().max(LIMITS.text.length).refine(storable, "Text contains a character that cannot be stored.").optional(),
+    assetId: identifier.optional(),
+  })
+  .strict()
+  .superRefine((e, ctx) => {
+    if ((e.text === undefined) === (e.assetId === undefined)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Give either text or assetId, not both and not neither." });
+  })
+  .transform((e): OverrideEntry => (e.text !== undefined ? { nodeId: e.nodeId, text: e.text } : { nodeId: e.nodeId, assetId: e.assetId as string }));
+
+const overrideList = z.array(overrideEntry).max(LIMITS.nodes);
+
+/** POST /canvas/instances. Only the template: the revision, kind, workspace and author are chosen by the server. */
+export const createInstanceBody = z.object({ templateId: identifier }).strict();
+
+/** What a stored `overrides` column holds, or null when it is not valid (the caller fails closed). */
+export function readOverrides(raw: unknown): OverrideEntry[] | null {
+  const parsed = z.object({ schemaVersion: z.literal(1), fields: overrideList }).strict().safeParse(raw);
+  return parsed.success ? parsed.data.fields : null;
+}
+
+const sameEntry = (a: OverrideEntry, b: OverrideEntry): boolean => a.nodeId === b.nodeId && ("text" in a ? "text" in b && a.text === b.text : "assetId" in b && a.assetId === b.assetId);
+
+/** Two normalized sets are the same: the same entries in the same (manifest) order. */
+export const sameOverrides = (a: readonly OverrideEntry[], b: readonly OverrideEntry[]): boolean => a.length === b.length && a.every((x, i) => sameEntry(x, b[i]));
+
+// What a revision must hold for an override to be checked against it. A revision that does not match is corrupt (it was
+// valid when published, and is immutable), so the write is refused: it fails closed instead of guessing.
+const manifestSchema = z
+  .object({ schemaVersion: z.literal(1), fields: z.array(z.object({ nodeId: identifier, kind: z.enum(["text", "image"]) }).strict()).max(LIMITS.nodes) })
+  .strict();
+
+/** A pinned revision whose stored manifest or document is not what publishing wrote. */
+export class RevisionUnreadable extends Error {}
+
+type BaseNode = { type: string; text: string; assetId: string };
+
+/** The few facts about the base document an override is checked against: each layer's type, its text and its image. */
+function indexDocument(document: unknown): Map<string, BaseNode> {
+  const nodes = typeof document === "object" && document !== null ? (document as { nodes?: unknown }).nodes : undefined;
+  if (!Array.isArray(nodes)) throw new RevisionUnreadable("The revision's document has no layers.");
+  const out = new Map<string, BaseNode>();
+  for (const n of nodes) {
+    if (typeof n !== "object" || n === null || typeof (n as { id?: unknown }).id !== "string" || typeof (n as { type?: unknown }).type !== "string") throw new RevisionUnreadable("A layer of the revision's document is malformed.");
+    const { id, type, text, assetId } = n as { id: string; type: string; text?: unknown; assetId?: unknown };
+    if ((type === "text" && typeof text !== "string") || (type === "image" && typeof assetId !== "string")) throw new RevisionUnreadable("A layer of the revision's document is malformed.");
+    out.set(id, { type, text: typeof text === "string" ? text : "", assetId: typeof assetId === "string" ? assetId : "" });
+  }
+  return out;
+}
+
+export type OverrideFailure = { code: "DUPLICATE_NODE" | "UNKNOWN_NODE" | "LOCKED_NODE" | "TEXT_TOO_LONG"; error: string };
+
+/**
+ * Checks a complete override set against one pinned revision's STORED manifest and document, and returns what to store:
+ * only entries that really change something, in the manifest's order. Throws RevisionUnreadable when the revision itself
+ * is not what publishing wrote. A layer is writable only if it is in the manifest, the entry is of the manifest's kind
+ * and the layer really is of that type; everything else (shapes, groups, protected layers, geometry, style, typography,
+ * `fit`) cannot be reached, because an entry can carry nothing but `text` or `assetId`.
+ *
+ * Does NOT check that an asset exists in the workspace: that is one query, made by the route.
+ * MIRRORED by normalizeOverrides in apps/canvas/src/document.ts for what a valid set looks like (canvas.test.ts compares).
+ */
+export function validateOverrides(
+  revision: { document: unknown; manifest: unknown },
+  entries: readonly OverrideEntry[],
+): { ok: true; fields: OverrideEntry[] } | ({ ok: false } & OverrideFailure) {
+  const manifest = manifestSchema.safeParse(revision.manifest);
+  if (!manifest.success) throw new RevisionUnreadable("The revision's manifest is not valid.");
+  const base = indexDocument(revision.document);
+  const order = new Map(manifest.data.fields.map((f, i) => [f.nodeId, { i, kind: f.kind }] as const)); // a Map: "__proto__" finds nothing
+
+  const seen = new Set<string>();
+  const kept: Array<{ entry: OverrideEntry; i: number; was: BaseNode }> = [];
+  for (const [at, entry] of entries.entries()) {
+    if (seen.has(entry.nodeId)) return { ok: false, code: "DUPLICATE_NODE", error: `overrides.${at}: a layer can be changed once.` };
+    seen.add(entry.nodeId);
+    const was = base.get(entry.nodeId);
+    if (!was) return { ok: false, code: "UNKNOWN_NODE", error: `overrides.${at}: this layer is not in the design.` };
+    const field = order.get(entry.nodeId);
+    const kind = "text" in entry ? "text" : "image";
+    if (!field || field.kind !== kind || was.type !== kind) return { ok: false, code: "LOCKED_NODE", error: `overrides.${at}: the design team has locked this layer.` };
+    const same = "text" in entry ? entry.text === was.text : entry.assetId === was.assetId;
+    if (!same) kept.push({ entry, i: field.i, was });
+  }
+  kept.sort((a, b) => a.i - b.i);
+
+  // The one rule of the document schema that spans layers: all the text together stays within the budget.
+  let total = 0;
+  for (const n of base.values()) if (n.type === "text") total += n.text.length;
+  for (const { entry, was } of kept) if ("text" in entry) total += entry.text.length - was.text.length;
+  if (total > LIMITS.totalText) return { ok: false, code: "TEXT_TOO_LONG", error: `A design can hold up to ${LIMITS.totalText} characters of text in all.` };
+
+  return { ok: true, fields: kept.map((k) => k.entry) };
+}
+
+// ── Pagination of "my designs" ──────────────────────────────────────────────
+// Keyset, in the order createdAt DESC, id DESC. createdAt is written once, by the database, so a save (which changes
+// updatedAt) can never move a row. A page boundary is a VALUE taken from the last row returned, never a row, so deleting
+// or changing that row between pages cannot end or repeat the walk (Prisma's own `cursor` returns nothing if its row is gone).
+
+export const INSTANCE_PAGE = { default: 50, max: 100 } as const;
+
+/** `limit` from the query string: absent = the default, a whole number from 1 is capped at the maximum, anything else is null (a 400). */
+export function parseLimit(raw: unknown): number | null {
+  if (raw === undefined) return INSTANCE_PAGE.default;
+  if (typeof raw !== "string" || !/^[0-9]+$/.test(raw)) return null; // a repeated parameter arrives as an array; blank, signs, decimals and text fail here
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, INSTANCE_PAGE.max) : null;
+}
+
+/** 9999-12-31T23:59:59.999Z: the latest instant that serializes as a plain four-digit year. */
+const LAST_CURSOR_MS = 253_402_300_799_999;
+
+export interface PageBoundary {
+  /** createdAt as epoch milliseconds: Design.createdAt is TIMESTAMP(3), so nothing finer exists to lose. */
+  t: number;
+  i: string;
+}
+
+export const encodeCursor = (row: { createdAt: Date; id: string }): string => Buffer.from(JSON.stringify({ t: row.createdAt.getTime(), i: row.id }), "utf8").toString("base64url");
+
+/** The boundary a cursor names, or null when it is not exactly what encodeCursor writes. Not signed: the owner filter is always applied, so a forged one can only move within the caller's own rows. */
+export function decodeCursor(raw: unknown): PageBoundary | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 200 || !/^[A-Za-z0-9_-]+$/.test(raw)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const keys = Object.keys(value).sort();
+  const { t, i } = value as { t?: unknown; i?: unknown };
+  if (keys.length !== 2 || keys[0] !== "i" || keys[1] !== "t") return null;
+  // Up to the last millisecond of 9999: a later date serializes as "+010000-…", which the database layer would refuse (a 500 on a forged cursor).
+  if (typeof t !== "number" || !Number.isSafeInteger(t) || t < 0 || t > LAST_CURSOR_MS || typeof i !== "string" || !LIMITS.id.test(i)) return null;
+  const canonical = encodeCursor({ createdAt: new Date(t), id: i });
+  return canonical === raw ? { t, i } : null; // a lenient base64 spelling of the same value is refused too
+}
+
 // ── Design name ─────────────────────────────────────────────────────────────
 
 export const DEFAULT_DESIGN_NAME = "Untitled design";
@@ -263,6 +424,15 @@ export const createBody = z.object({ name: designName.optional() }).strict();
 /** PUT /canvas/designs/:id. No name = keep the stored one. */
 export const saveBody = z
   .object({ version: z.number().int().min(1).max(2_000_000_000), document: canvasDocument, name: designName.optional() })
+  .strict();
+
+/**
+ * PUT /canvas/instances/:id. `overrides` is the COMPLETE set, not a patch (and is required): a field left out goes back to
+ * the base revision's value, and [] resets everything. No name = keep the stored one. Nothing else can be sent: no
+ * document, manifest, revision or kind. (After designName, which it uses.)
+ */
+export const saveInstanceBody = z
+  .object({ version: z.number().int().min(1).max(2_000_000_000), overrides: overrideList, name: designName.optional() })
   .strict();
 
 /** The first thing wrong with a body, as a short message (at most 200 characters) and the field it is about. Nothing of the client's data is echoed except the name of an unknown key. */

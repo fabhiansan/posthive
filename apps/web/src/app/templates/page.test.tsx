@@ -314,3 +314,56 @@ describe("Template Library: a card says where the design lives", () => {
     expect(card.queryByRole("button", { name: /Delete/ })).toBeNull();
   });
 });
+
+// ── Canvas designs (phase 5): Marketing can customize a template that is made in Canvas ─────────────────────────
+
+describe("Template Library: Customize in Canvas", () => {
+  const cardOf = async (category: string) => within((await screen.findByText(category, { selector: "h3" })).closest("li")!);
+
+  it.each(["member", "admin", "owner"])("%s: a published template with a Canvas revision has a Customize button on its card, and Use template is unchanged", async (role) => {
+    h.role = role;
+    list = [make(1, { id: "native", category: "Case Study", linkUrl: null, designId: undefined, canvasRevision: 2, published: true })];
+    render(<TemplatesPage />);
+    const card = await cardOf("Case Study");
+    expect(card.getByRole("button", { name: /Customize in Canvas: Case Study/ })).toBeTruthy();
+    expect(card.getByRole("button", { name: "Use the Case Study template" })).toBeTruthy();
+  });
+
+  it("a Figma-only template has no Customize button", async () => {
+    h.role = "member";
+    list = [make(1, { id: "figma", category: "Case Study", canvasRevision: null, published: true })];
+    render(<TemplatesPage />);
+    const card = await cardOf("Case Study");
+    expect(card.queryByRole("button", { name: /Customize/ })).toBeNull();
+    expect(card.getByRole("button", { name: "Use the Case Study template" })).toBeTruthy();
+  });
+
+  it("the design team has no Customize button: they make the templates, not designs from them", async () => {
+    h.role = "designer";
+    list = [make(1, { id: "native", category: "Case Study", linkUrl: null, designId: "d1", canvasRevision: 2, published: true })];
+    render(<TemplatesPage />);
+    expect((await cardOf("Case Study")).queryByRole("button", { name: /Customize/ })).toBeNull();
+  });
+
+  it("a person who may not make content has no Customize button", async () => {
+    h.role = "guest";
+    list = [make(1, { id: "native", category: "Case Study", linkUrl: null, canvasRevision: 2, published: true })];
+    render(<TemplatesPage />);
+    expect((await cardOf("Case Study")).queryByRole("button", { name: /Customize/ })).toBeNull();
+  });
+
+  it("Customize creates the design from this template (naming only the template) and opens it", async () => {
+    h.role = "member";
+    list = [make(1, { id: "native", category: "Case Study", linkUrl: null, canvasRevision: 2, published: true })];
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
+      if (path === "/templates" && !init) return { templates: list };
+      if (path === "/canvas/instances") return { instance: { id: "inst-1", name: "Case Study", version: 1, createdAt: "2026-11-18T00:00:00Z", baseRevision: { number: 2, createdAt: "2026-11-18T00:00:00Z" } } };
+      return { ok: true };
+    });
+    render(<TemplatesPage />);
+    await userEvent.click((await cardOf("Case Study")).getByRole("button", { name: /Customize in Canvas/ }));
+    await waitFor(() => expect(h.push).toHaveBeenCalledWith("/canvas/inst-1"));
+    const call = h.apiFetch.mock.calls.find(([p]) => p === "/canvas/instances")!;
+    expect(JSON.parse(call[1].body)).toEqual({ templateId: "native" });
+  });
+});

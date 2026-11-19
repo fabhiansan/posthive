@@ -2,8 +2,11 @@
 import { describe, expect, it } from "vitest";
 import {
   addNode,
+  applyOverrides,
   canAdd,
   cleanName,
+  clearOverride,
+  containCrop,
   coverCrop,
   createDocument,
   createImage,
@@ -14,13 +17,18 @@ import {
   limitPatch,
   moveNode,
   nodeById,
+  normalizeOverrides,
   removeNode,
+  sameOverrides,
+  setOverride,
   textRoom,
   textTotal,
   updateNode,
   type CanvasDocument,
   type CanvasNode,
+  type FieldManifest,
   type NodePatch,
+  type OverrideEntry,
 } from "./document";
 import { canUndo, canRedo, commit, createHistory, MAX_HISTORY, redo, seal, undo } from "./history";
 import { LIMITS } from "./limits";
@@ -644,5 +652,203 @@ describe("editableLayers", () => {
     const copy = JSON.stringify(doc);
     editableLayers(doc);
     expect(JSON.stringify(doc)).toBe(copy);
+  });
+});
+
+// ── Marketing's overrides (phase 5) ─────────────────────────────────────────
+
+describe("overrides: a published revision plus what Marketing changed", () => {
+  // A revision with two editable layers (a headline and a photo) and a protected text, a shape and an editable-looking
+  // image the manifest does not list.
+  const make = (): { base: CanvasDocument; manifest: FieldManifest } => {
+    const blank = createDocument();
+    const text = (id: string, text: string, permission: "protected" | "text"): CanvasNode => ({ ...createText(blank), id, text, permission }) as CanvasNode;
+    const image = (id: string, assetId: string, permission: "protected" | "image"): CanvasNode => ({ ...createImage(blank, { id: assetId, width: 10, height: 10 }), id, assetId, permission }) as CanvasNode;
+    const base: CanvasDocument = {
+      ...blank,
+      nodes: [text("head", "Original headline", "text"), image("photo", "asset-1", "image"), text("legal", "Fixed legal text", "protected"), { ...createShape(blank, "rect"), id: "box" }, image("logo", "asset-logo", "protected")],
+    };
+    return { base, manifest: { schemaVersion: 1, fields: [{ nodeId: "head", kind: "text" }, { nodeId: "photo", kind: "image" }] } };
+  };
+  const text = (nodeId: string, t: string): OverrideEntry => ({ nodeId, text: t });
+  const asset = (nodeId: string, assetId: string): OverrideEntry => ({ nodeId, assetId });
+  const node = (doc: CanvasDocument, id: string) => nodeById(doc, id) as unknown as Record<string, unknown>;
+
+  describe("applyOverrides", () => {
+    it("changes only the text of a text field and only the asset of an image field", () => {
+      const { base, manifest } = make();
+      const out = applyOverrides(base, manifest, [text("head", "New headline"), asset("photo", "asset-2")]);
+      expect(node(out, "head").text).toBe("New headline");
+      expect(node(out, "photo").assetId).toBe("asset-2");
+    });
+
+    it("leaves everything else of those layers, and every other layer, exactly as the revision has it", () => {
+      const { base, manifest } = make();
+      const out = applyOverrides(base, manifest, [text("head", "New headline"), asset("photo", "asset-2")]);
+      const strip = (n: Record<string, unknown>, key: string) => Object.fromEntries(Object.entries(n).filter(([k]) => k !== key));
+      expect(strip(node(out, "head"), "text")).toEqual(strip(node(base, "head"), "text")); // position, size, rotation, style, font, permission
+      expect(strip(node(out, "photo"), "assetId")).toEqual(strip(node(base, "photo"), "assetId")); // including its fit
+      for (const id of ["legal", "box", "logo"]) expect(node(out, id)).toEqual(node(base, id));
+      expect(out.nodes.map((n) => n.id)).toEqual(base.nodes.map((n) => n.id));
+      expect({ ...out, nodes: [] }).toEqual({ ...base, nodes: [] });
+    });
+
+    it("never changes the base, and a base with nothing to apply is returned as it is", () => {
+      const { base, manifest } = make();
+      const copy = JSON.stringify(base);
+      applyOverrides(base, manifest, [text("head", "x"), asset("photo", "y")]);
+      expect(JSON.stringify(base)).toBe(copy);
+      expect(applyOverrides(base, manifest, [])).toBe(base);
+      expect(applyOverrides(base, manifest, [text("head", "Original headline")])).toBe(base); // equal to the base: nothing to do
+    });
+
+    it("ignores an entry for a locked layer, a shape, an unknown layer, the wrong kind or a prototype key, however it got there", () => {
+      const { base, manifest } = make();
+      const hostile: OverrideEntry[] = [
+        text("legal", "Changed legal"), // protected text
+        asset("logo", "asset-evil"), // protected image
+        text("box", "on a rectangle"), // a shape
+        text("nope", "no such layer"),
+        asset("head", "asset-9"), // an image value on a text field
+        text("photo", "text on an image field"), // a text value on an image field
+        text("__proto__", "x"),
+        text("constructor", "x"),
+      ];
+      expect(applyOverrides(base, manifest, hostile)).toBe(base);
+    });
+
+    it("an empty or unknown-kind manifest locks everything", () => {
+      const { base } = make();
+      expect(applyOverrides(base, { schemaVersion: 1, fields: [] }, [text("head", "x"), asset("photo", "y")])).toBe(base);
+    });
+  });
+
+  describe("normalizeOverrides", () => {
+    it("keeps valid entries in the manifest's order, whatever order they came in", () => {
+      const { base, manifest } = make();
+      expect(normalizeOverrides(base, manifest, [asset("photo", "asset-2"), text("head", "New")])).toEqual([text("head", "New"), asset("photo", "asset-2")]);
+    });
+
+    it("drops what equals the base, what is locked, unknown or of the wrong kind, and keeps one entry per layer (the last)", () => {
+      const { base, manifest } = make();
+      expect(normalizeOverrides(base, manifest, [text("head", "Original headline"), asset("photo", "asset-1"), text("legal", "x"), text("nope", "x"), asset("head", "x")])).toEqual([]);
+      expect(normalizeOverrides(base, manifest, [text("head", "first"), text("head", "second")])).toEqual([text("head", "second")]);
+    });
+
+    it("is idempotent", () => {
+      const { base, manifest } = make();
+      const once = normalizeOverrides(base, manifest, [asset("photo", "asset-2"), text("head", "New")]);
+      expect(normalizeOverrides(base, manifest, once)).toEqual(once);
+    });
+  });
+
+  describe("setOverride and clearOverride (the editor's only way to change an override)", () => {
+    it("sets, replaces and removes a field, keeping the list normalized", () => {
+      const { base, manifest } = make();
+      let list: readonly OverrideEntry[] = [];
+      list = setOverride(base, manifest, list, text("head", "One"));
+      expect(list).toEqual([text("head", "One")]);
+      list = setOverride(base, manifest, list, asset("photo", "asset-2"));
+      expect(list).toEqual([text("head", "One"), asset("photo", "asset-2")]);
+      list = setOverride(base, manifest, list, text("head", "Two"));
+      expect(list).toEqual([text("head", "Two"), asset("photo", "asset-2")]);
+      list = clearOverride(list, "head");
+      expect(list).toEqual([asset("photo", "asset-2")]);
+    });
+
+    it("typing the base value back removes the override, and a no-op returns the SAME list (never an undo step)", () => {
+      const { base, manifest } = make();
+      const one = setOverride(base, manifest, [], text("head", "One"));
+      expect(setOverride(base, manifest, one, text("head", "Original headline"))).toEqual([]);
+      expect(setOverride(base, manifest, one, text("head", "One"))).toBe(one);
+      expect(setOverride(base, manifest, [], text("head", "Original headline"))).toEqual([]);
+      expect(clearOverride(one, "photo")).toBe(one);
+    });
+
+    it("refuses a locked layer, an unknown one and the wrong kind", () => {
+      const { base, manifest } = make();
+      const none: readonly OverrideEntry[] = [];
+      expect(setOverride(base, manifest, none, text("legal", "x"))).toBe(none);
+      expect(setOverride(base, manifest, none, text("box", "x"))).toBe(none);
+      expect(setOverride(base, manifest, none, asset("head", "x"))).toBe(none);
+      expect(setOverride(base, manifest, none, text("__proto__", "x"))).toBe(none);
+    });
+
+    it("keeps text exactly as typed (spaces, line breaks, empty) and removes only what cannot be stored", () => {
+      const { base, manifest } = make();
+      expect(setOverride(base, manifest, [], text("head", "  two\n\nlines  "))).toEqual([text("head", "  two\n\nlines  ")]);
+      expect(setOverride(base, manifest, [], text("head", ""))).toEqual([text("head", "")]);
+      expect(setOverride(base, manifest, [], text("head", "a\u0000b"))).toEqual([text("head", "ab")]);
+    });
+
+    it("cuts text to the field limit and to what the design's text budget leaves, so the server never refuses what the editor made", () => {
+      const { base, manifest } = make();
+      const long = setOverride(base, manifest, [], text("head", "x".repeat(LIMITS.text.length + 50)));
+      expect((long[0] as { text: string }).text).toHaveLength(LIMITS.text.length);
+      // A design whose other text already uses most of the budget leaves less for the headline. The filler is spread over
+      // layers of at most LIMITS.text.length, like a design the server would accept.
+      const filler = LIMITS.totalText - 100 - "Original headline".length - textTotal(base) + "Original headline".length;
+      const pieces = Array.from({ length: Math.ceil(filler / LIMITS.text.length) }, (_, i) => "y".repeat(Math.min(LIMITS.text.length, filler - i * LIMITS.text.length)));
+      const full: CanvasDocument = { ...base, nodes: [...base.nodes, ...pieces.map((text, i) => ({ ...createText(createDocument()), id: `fill${i}`, text, permission: "protected" }) as CanvasNode)] };
+      expect(full.nodes.every((n) => n.type !== "text" || n.text.length <= LIMITS.text.length)).toBe(true);
+      expect(textTotal(full)).toBe(LIMITS.totalText - 100);
+      const capped = setOverride(full, manifest, [], text("head", "x".repeat(500)));
+      expect(textTotal(applyOverrides(full, manifest, capped))).toBeLessThanOrEqual(LIMITS.totalText);
+    });
+  });
+
+  it("sameOverrides compares entries and order", () => {
+    expect(sameOverrides([text("a", "x")], [text("a", "x")])).toBe(true);
+    expect(sameOverrides([text("a", "x")], [text("a", "y")])).toBe(false);
+    expect(sameOverrides([text("a", "x")], [asset("a", "x")])).toBe(false);
+    expect(sameOverrides([text("a", "x"), text("b", "y")], [text("b", "y"), text("a", "x")])).toBe(false);
+    expect(sameOverrides([], [])).toBe(true);
+  });
+
+  it("an override edit is one undo step, and undo puts the field back", () => {
+    const { base, manifest } = make();
+    let h = createHistory<readonly OverrideEntry[]>([]);
+    h = commit(h, setOverride(base, manifest, h.present, text("head", "One")));
+    h = commit(h, setOverride(base, manifest, h.present, text("head", "One"))); // a no-op: the same list, so no entry
+    expect(h.past).toHaveLength(1);
+    h = undo(h);
+    expect(h.present).toEqual([]);
+    expect(node(applyOverrides(base, manifest, h.present), "head").text).toBe("Original headline");
+    h = redo(h);
+    expect(node(applyOverrides(base, manifest, h.present), "head").text).toBe("One");
+  });
+});
+
+describe("containCrop (fit: contain)", () => {
+  it("shows the whole image centered, with bars where it does not fill the box", () => {
+    // A 200x100 image in a 100x100 box: scaled to fit the width, so it fills the middle half of the height.
+    expect(containCrop(200, 100, 100, 100)).toEqual({ x: 0, y: -50, width: 200, height: 200 });
+    // A 100x200 image in the same box: the bars are on the sides.
+    expect(containCrop(100, 200, 100, 100)).toEqual({ x: -50, y: 0, width: 200, height: 200 });
+  });
+
+  it("an image that already has the box's proportions is drawn whole, like cover", () => {
+    expect(containCrop(300, 150, 200, 100)).toEqual(coverCrop(300, 150, 200, 100));
+    expect(containCrop(100, 100, 50, 50)).toEqual({ x: 0, y: 0, width: 100, height: 100 });
+  });
+
+  it("always contains the whole image: the crop reaches past it, never inside it", () => {
+    for (const [iw, ih, bw, bh] of [[800, 600, 1080, 1080], [10, 4000, 500, 300], [4000, 10, 300, 500], [1, 1, 8000, 20]] as const) {
+      const c = containCrop(iw, ih, bw, bh);
+      expect(c.x).toBeLessThanOrEqual(0.000001);
+      expect(c.y).toBeLessThanOrEqual(0.000001);
+      expect(c.x + c.width).toBeGreaterThanOrEqual(iw - 0.000001);
+      expect(c.y + c.height).toBeGreaterThanOrEqual(ih - 0.000001);
+      expect(c.width / c.height).toBeCloseTo(bw / bh, 6); // the box's proportions, so the picture is never stretched
+    }
+  });
+
+  it("the designer can set an image layer's fit, and nothing else about the layer changes", () => {
+    const blank = createDocument();
+    const doc: CanvasDocument = { ...blank, nodes: [createImage(blank, { id: "a1", width: 10, height: 10 })] };
+    const id = doc.nodes[0].id;
+    const after = updateNode(doc, id, { fit: "contain" });
+    expect(nodeById(after, id)).toEqual({ ...nodeById(doc, id), fit: "contain" });
+    expect(updateNode(after, id, { fit: "stretch" as never })).toBe(after); // not a fit: dropped
   });
 });

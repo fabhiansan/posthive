@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { InlineAlert } from "@/components/InlineAlert";
 import { TemplateEditor } from "@/components/TemplateEditor";
 import { CanvasDesignBlock } from "@/components/templates/CanvasDesignBlock";
+import { CustomizeButton } from "@/components/templates/CustomizeButton";
 import { TemplateCover } from "@/components/templates/TemplateCover";
 import { TemplateStatus } from "@/components/templates/TemplateStatus";
 import { TemplatesHeader } from "@/components/templates/TemplatesHeader";
@@ -194,6 +195,7 @@ export default function TemplateDetailPage() {
                     {canUse && (
                       <Button onClick={() => router.push(`/compose?template=${template.id}`)}>Use template</Button>
                     )}
+                    {canUse && template.canvasRevision != null && <CustomizeButton template={template} size="default" label="Customize in Canvas" />}
                   </>
                 )}
               </div>

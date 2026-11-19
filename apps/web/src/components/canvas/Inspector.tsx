@@ -220,6 +220,20 @@ export function Inspector({ doc, selected, onPatch, onBackground, onSeal, onDele
         </section>
       )}
 
+      {n.type === "image" && (
+        <section className="flex flex-col gap-2">
+          <h3 className="section-label">Image</h3>
+          <div className="flex flex-col gap-1">
+            <Label>Fit</Label>
+            <NativeSelect size="sm" aria-label="Fit" value={n.fit} onChange={(e) => onPatch({ fit: e.target.value as "cover" | "contain" }, key("fit"))} onBlur={onSeal}>
+              <NativeSelectOption value="cover">Fill the box (crops)</NativeSelectOption>
+              <NativeSelectOption value="contain">Show the whole image</NativeSelectOption>
+            </NativeSelect>
+          </div>
+          <p className="type-body-r-xs text-muted">When Marketing replaces this image, it keeps this fit. Marketing cannot change it.</p>
+        </section>
+      )}
+
       <section className="flex flex-col gap-2">
         <h3 className="section-label">Position and size</h3>
         <div className="grid grid-cols-2 gap-2">

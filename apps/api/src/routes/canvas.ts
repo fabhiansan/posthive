@@ -1,11 +1,38 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Prisma } from "@prisma/client";
 import type { ZodError } from "zod";
-import { withAuth, getUser, getWorkspaceId, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
+import { withAuth, getUser, getWorkspaceId, requireContentEditorRole, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
 import { prisma } from "../lib/prisma.js";
 import type { StorageAdapter } from "../lib/storage.js";
 import { AssetRejected, CANVAS_PRIVATE_DIR, MAX_ASSET_BYTES, isPrivateAssetStorage, processAsset } from "../lib/canvasAssets.js";
-import { BLANK_DOCUMENT, DEFAULT_DESIGN_NAME, LIMITS, attachBody, buildManifest, canvasDocument, createBody, createForTemplateBody, designName, documentAssetIds, firstIssue, hiddenMessage, publishBody, saveBody, type CanvasDocumentJson } from "../lib/canvas.js";
+import {
+  BLANK_DOCUMENT,
+  DEFAULT_DESIGN_NAME,
+  EMPTY_OVERRIDES,
+  LIMITS,
+  RevisionUnreadable,
+  attachBody,
+  buildManifest,
+  canvasDocument,
+  createBody,
+  createForTemplateBody,
+  createInstanceBody,
+  decodeCursor,
+  designName,
+  documentAssetIds,
+  encodeCursor,
+  firstIssue,
+  hiddenMessage,
+  parseLimit,
+  publishBody,
+  readOverrides,
+  sameOverrides,
+  saveBody,
+  saveInstanceBody,
+  validateOverrides,
+  type CanvasDocumentJson,
+  type OverrideEntry,
+} from "../lib/canvas.js";
 import { SOURCE_SELECT, hasFigmaSource, hasUsableSource, lockTemplate, sourceOf } from "../lib/templates.js";
 
 const STORAGE_UNSUPPORTED = {
@@ -13,7 +40,8 @@ const STORAGE_UNSUPPORTED = {
   code: "CANVAS_STORAGE_UNSUPPORTED",
 } as const;
 
-const KIND = "template"; // the designer's working copies; instances come with the Marketing phase
+const KIND = "template"; // the designer's working copies
+const INSTANCE = "instance"; // what Marketing makes from a published template (phase 5)
 const DESIGN_LIST_MAX = 200;
 
 // A design as the editor and the designer's list read it (never the document, except GET one): which template it is
@@ -31,6 +59,10 @@ const SUMMARY = {
 const withLatestRevision = <T extends { revisions: unknown[] }>({ revisions, ...design }: T) => ({ ...design, latestRevision: revisions[0] ?? null });
 
 const json = (doc: CanvasDocumentJson) => doc as unknown as Prisma.InputJsonObject;
+const overridesJson = (fields: OverrideEntry[]) => ({ ...EMPTY_OVERRIDES, fields }) as unknown as Prisma.InputJsonObject;
+
+// A design in "My designs": no document and no overrides, which are only read when one is opened.
+const INSTANCE_SUMMARY = { id: true, name: true, version: true, createdAt: true, updatedAt: true, baseRevision: { select: { number: true } } } as const;
 
 /** The same refusal as a status and a body, so a transaction can hand it back and the route can send it after the transaction ends. */
 type Refusal = { status: number; body: { error: string; code?: string } };
@@ -49,7 +81,7 @@ async function lockDesign(tx: Prisma.TransactionClient, id: string, workspaceId:
 /** A body the schema refused: which part it was decides the code, so the editor can say what to fix. */
 function invalidBody(error: ZodError) {
   const { field, message } = firstIssue(error);
-  return { error: message, code: field === "document" ? "INVALID_DOCUMENT" : field === "name" ? "INVALID_NAME" : "INVALID_REQUEST" };
+  return { error: message, code: field === "document" ? "INVALID_DOCUMENT" : field === "name" ? "INVALID_NAME" : field === "overrides" ? "INVALID_OVERRIDES" : "INVALID_REQUEST" };
 }
 
 export async function canvasRoutes(app: FastifyInstance, { storage }: { storage: StorageAdapter }): Promise<void> {
@@ -219,16 +251,27 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   });
 
   // A design that a template is made from cannot be deleted: unlink it first (that is refused while it is the template's
-  // only source). An unlinked design goes with its revisions. The foreign key is the backstop for a link made in between.
+  // only source). Neither can one that Marketing made designs from: each of those pins one of its revisions, which this
+  // delete would take with it. An unlinked design nobody used goes with its revisions. The foreign keys are the backstop
+  // for a link or an instance made in between.
+  const inUse = (count: number) => refuse(409, `Marketing has made ${count} ${count === 1 ? "design" : "designs"} from this design's published revisions, so it cannot be deleted.`, "DESIGN_IN_USE");
+  const pinned = (id: string, workspaceId: string) => prisma.design.count({ where: { workspaceId, kind: INSTANCE, baseRevision: { designId: id } } });
   app.delete("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
     if (await prisma.template.findFirst({ where: { designId: id, workspaceId }, select: { id: true } })) return reply.status(DESIGN_LINKED.status).send(DESIGN_LINKED.body);
+    const used = await pinned(id, workspaceId);
+    if (used > 0) return reply.status(409).send(inUse(used).body);
     let count: number;
     try {
       ({ count } = await prisma.design.deleteMany({ where: { id, workspaceId, kind: KIND } }));
     } catch (err) {
-      if (errorCode(err) === "P2003") return reply.status(DESIGN_LINKED.status).send(DESIGN_LINKED.body); // a template linked it just now
+      if (errorCode(err) === "P2003") {
+        // A template linked it, or Marketing made a design from it, just now. The phase 4 answer stays the default; the
+        // instance is named only when one is really there, as the checks above would have.
+        const made = await pinned(id, workspaceId);
+        return reply.status(409).send(made > 0 ? inUse(made).body : DESIGN_LINKED.body);
+      }
       throw err;
     }
     if (count === 0) return notFound(reply);
@@ -377,5 +420,163 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
     });
     if (isRefusal(outcome)) return reply.status(outcome.status).send(outcome.body);
     return reply.send(outcome);
+  });
+
+  // ── Marketing's designs: instances (phase 5) ────────────────────────────────
+  // An instance is a Design row of kind "instance". It has no document: it pins ONE published revision (baseRevisionId,
+  // chosen here, never by the client, and never changed) and stores only `overrides`, the text and images that revision's
+  // manifest lets Marketing change. The base revision and its document are never copied or modified, and the effective
+  // document (base + overrides) is composed in memory by the editor; nothing here ever stores it. Content editors only
+  // (owner, admin, member): a designer makes templates, not designs from them. An instance is PERSONAL: every query names
+  // its creator, so another person's instance, an admin's included, is a plain 404.
+  //
+  // Unpublishing a template is NOT a way to take back designs Marketing already made. Creating needs a template that is
+  // Published right now; once an instance exists it is unaffected by anything the design team does to the template
+  // afterwards (unpublish, detach, delete, a newer revision), because it pins an immutable revision.
+  const contentEditorOnly = async (req: FastifyRequest, reply: FastifyReply) => {
+    const forbidden = await requireContentEditorRole(getUser(req).id, getWorkspaceId(req));
+    if (forbidden) return reply.status(403).send(forbidden);
+  };
+  const NO_REVISION = refuse(409, "This template has no published Canvas design to customize.", "NO_CANVAS_REVISION");
+  const YOURS = (id: string, workspaceId: string, userId: string) => ({ id, workspaceId, kind: INSTANCE, createdByUserId: userId });
+
+  // Customize a template. ONE transaction, with the same lock order as every other writer of a template (the Template row,
+  // then its Design), so that it cannot race an unpublish: whichever takes the Template lock first wins, and the other
+  // waits and then re-reads. Creation first: valid, the unpublish waits. Unpublish first: creation re-reads it as unpublished
+  // (404). The revision is read while the Design is locked, and is the one the instance is created pinned to.
+  app.post("/canvas/instances", { preHandler: [withAuth, contentEditorOnly, jsonOnly], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+    const workspaceId = getWorkspaceId(req);
+    const userId = getUser(req).id;
+    const parsed = createInstanceBody.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(invalidBody(parsed.error));
+    const { templateId } = parsed.data;
+
+    let outcome;
+    try {
+      outcome = await prisma.$transaction(async (tx) => {
+        if (!(await lockTemplate(tx, templateId, workspaceId))) return refuse(404, "Template not found");
+        // Read only now, under the lock: a Draft, and a template unpublished a moment ago, are the same 404.
+        const template = await tx.template.findFirst({ where: { id: templateId, workspaceId, published: true, category: { not: null } }, select: { designId: true, category: true } });
+        if (!template) return refuse(404, "Template not found");
+        if (!template.designId) return NO_REVISION; // a Figma-only or legacy template, or one whose design was just detached
+        if (!(await lockDesign(tx, template.designId, workspaceId))) return NO_REVISION;
+        const revision = await tx.designRevision.findFirst({ where: { designId: template.designId }, orderBy: { number: "desc" }, select: { id: true, number: true, createdAt: true } });
+        if (!revision) return NO_REVISION;
+
+        const name = designName.safeParse(template.category ?? "");
+        const instance = await tx.design.create({
+          data: { workspaceId, kind: INSTANCE, name: name.success ? name.data : DEFAULT_DESIGN_NAME, overrides: overridesJson([]), baseRevisionId: revision.id, createdByUserId: userId },
+          select: { id: true, name: true, version: true, createdAt: true },
+        });
+        return { instance: { ...instance, baseRevision: { number: revision.number, createdAt: revision.createdAt } } };
+      });
+    } catch (err) {
+      if (errorCode(err) === "P2003") return reply.status(NO_REVISION.status).send(NO_REVISION.body); // the revision's design went away in between
+      throw err;
+    }
+    if (isRefusal(outcome)) return reply.status(outcome.status).send(outcome.body);
+    return reply.status(201).send(outcome);
+  });
+
+  // My designs, newest first by CREATION time (an autosave changes updatedAt, so that could not be a stable order).
+  app.get("/canvas/instances", { preHandler: [withAuth, contentEditorOnly] }, async (req, reply) => {
+    const workspaceId = getWorkspaceId(req);
+    const userId = getUser(req).id;
+    const { limit: rawLimit, cursor: rawCursor } = req.query as { limit?: unknown; cursor?: unknown };
+    const limit = parseLimit(rawLimit);
+    if (limit === null) return reply.status(400).send({ error: `limit must be a whole number from 1 to 100`, code: "INVALID_LIMIT" });
+    const boundary = rawCursor === undefined ? null : decodeCursor(rawCursor);
+    if (rawCursor !== undefined && boundary === null) return reply.status(400).send({ error: "cursor is not valid. Start again from the first page.", code: "INVALID_CURSOR" });
+
+    const mine = { workspaceId, kind: INSTANCE, createdByUserId: userId };
+    const after = boundary ? new Date(boundary.t) : null;
+    const rows = await prisma.design.findMany({
+      where: boundary && after ? { AND: [mine, { OR: [{ createdAt: { lt: after } }, { createdAt: after, id: { lt: boundary.i } }] }] } : mine,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1, // one more than the page, only to know whether there is a next one
+      select: INSTANCE_SUMMARY,
+    });
+    const instances = rows.slice(0, limit);
+    // From the last row actually returned, never from the extra one: the next page starts strictly after it.
+    const nextCursor = rows.length > limit ? encodeCursor(instances[instances.length - 1]) : null;
+    return reply.header("Cache-Control", "no-store").send({ instances, nextCursor });
+  });
+
+  // One of mine, ready to draw: its overrides, and the base revision's document and manifest.
+  app.get("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const row = await prisma.design.findFirst({
+      where: YOURS(id, getWorkspaceId(req), getUser(req).id),
+      select: { id: true, name: true, version: true, createdAt: true, updatedAt: true, overrides: true, baseRevision: { select: { number: true, createdAt: true, document: true, manifest: true } } },
+    });
+    if (!row) return notFound(reply);
+    const overrides = readOverrides(row.overrides);
+    // The check constraint and the foreign key make both of these impossible; a row that has them is damaged, not missing.
+    if (!row.baseRevision || !overrides) throw new Error(`Design ${id} is not a valid instance.`);
+    const { baseRevision, ...rest } = row;
+    return reply.header("Cache-Control", "no-store").send({
+      instance: { ...rest, overrides, baseRevision: { number: baseRevision.number, createdAt: baseRevision.createdAt }, document: baseRevision.document, manifest: baseRevision.manifest },
+    });
+  });
+
+  // Autosave of an instance. The body is the COMPLETE override set (not a patch): a field left out goes back to the base
+  // revision's value. It is checked against the pinned revision's stored manifest and document, never against the client.
+  app.put("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")], config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
+    const workspaceId = getWorkspaceId(req);
+    const userId = getUser(req).id;
+    const { id } = req.params as { id: string };
+
+    const parsed = saveInstanceBody.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send(invalidBody(parsed.error));
+    const { version, overrides, name } = parsed.data;
+
+    // shortcut: each save reads the base revision's document (typically tens of KB, at most about 0.9 MB) by primary key.
+    // Revisions are immutable, so a cache keyed by revision id would be exactly right if saves ever show up in profiling.
+    const row = await prisma.design.findFirst({
+      where: YOURS(id, workspaceId, userId),
+      select: { version: true, name: true, overrides: true, baseRevision: { select: { document: true, manifest: true } } },
+    });
+    if (!row) return notFound(reply);
+    const stored = readOverrides(row.overrides);
+    if (!row.baseRevision || !stored) throw new Error(`Design ${id} is not a valid instance.`);
+
+    let checked;
+    try {
+      checked = validateOverrides(row.baseRevision, overrides);
+    } catch (err) {
+      if (err instanceof RevisionUnreadable) throw new Error(`The revision behind design ${id} cannot be read: ${err.message}`); // fails closed: nothing is written
+      throw err;
+    }
+    if (!checked.ok) return reply.status(400).send({ error: checked.error, code: checked.code });
+
+    if (row.version !== version) return reply.status(409).send({ error: "This design was changed somewhere else.", code: "VERSION_CONFLICT" });
+    // Nothing to write: the same set (already normalized and checked when it was stored) under the same name. R3: no version bump.
+    if (sameOverrides(checked.fields, stored) && (name === undefined || name === row.name)) return reply.send({ version });
+
+    // Images: each one must be an asset of this workspace, like a designer's. Every image in the set is asked about, not only
+    // the new ones: one query, and an image that was valid when it was stored is still valid.
+    const assetIds = [...new Set(checked.fields.flatMap((f) => ("assetId" in f ? [f.assetId] : [])))];
+    if (assetIds.length > 0 && (await prisma.designAsset.count({ where: { id: { in: assetIds }, workspaceId } })) !== assetIds.length) {
+      return reply.status(400).send({ error: "An image in this design is not available in this workspace.", code: "UNKNOWN_ASSET" });
+    }
+
+    // Only overrides, the name and the version are ever written; the pinned revision, the kind, the owner and the dates never are.
+    const { count } = await prisma.design.updateMany({
+      where: { ...YOURS(id, workspaceId, userId), version },
+      data: { overrides: overridesJson(checked.fields), ...(name === undefined ? {} : { name }), version: { increment: 1 } },
+    });
+    if (count === 0) {
+      const exists = await prisma.design.findFirst({ where: YOURS(id, workspaceId, userId), select: { id: true } });
+      if (!exists) return notFound(reply);
+      return reply.status(409).send({ error: "This design was changed somewhere else.", code: "VERSION_CONFLICT" });
+    }
+    return reply.send({ version: version + 1 });
+  });
+
+  app.delete("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")] }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { count } = await prisma.design.deleteMany({ where: YOURS(id, getWorkspaceId(req), getUser(req).id) });
+    if (count === 0) return notFound(reply);
+    return reply.send({ ok: true }); // the images stay: there is no asset clean-up yet
   });
 }

@@ -2,7 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
 import { Ellipse, Image as KonvaImage, Layer, Rect, Stage, Text, Transformer } from "react-konva";
-import { clamp, coverCrop, foldScale, limitPatch, MAX_ZOOM, MIN_ZOOM, round2, type CanvasDocument, type CanvasNode, type NodePatch } from "./document";
+import { clamp, containCrop, coverCrop, foldScale, limitPatch, MAX_ZOOM, MIN_ZOOM, round2, type CanvasDocument, type CanvasNode, type NodePatch } from "./document";
 import { exportStage, type ExportOptions } from "./exportImage";
 
 export interface CanvasStageHandle {
@@ -14,6 +14,14 @@ export interface CanvasStageHandle {
 
 export interface CanvasStageProps {
   doc: CanvasDocument;
+  /**
+   * "designer" (the default) edits everything. "marketing" is for a design made from a published template: nothing can be
+   * dragged, resized or rotated, and only the layers in `selectable` react to the pointer; a click anywhere else, on a
+   * locked layer included, goes through to the artboard and clears the selection. The server enforces the same rule.
+   */
+  mode?: "designer" | "marketing";
+  /** The layer ids Marketing may select (the revision's manifest). Used only in "marketing" mode. */
+  selectable?: ReadonlySet<string>;
   selectedId: string | null;
   /** Decoded image per asset id. A layer whose image is not here yet is drawn as a grey placeholder. */
   images: ReadonlyMap<string, HTMLImageElement>;
@@ -44,7 +52,8 @@ const SELECTION = "#876114";
 
 const isTextField = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-export function CanvasStage({ doc, selectedId, images, fonts, onSelect, onChange, onEditText, onZoomChange, className, ref }: CanvasStageProps) {
+export function CanvasStage({ doc, mode = "designer", selectable, selectedId, images, fonts, onSelect, onChange, onEditText, onZoomChange, className, ref }: CanvasStageProps) {
+  const marketing = mode === "marketing";
   const host = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const shadowLayer = useRef<Konva.Layer>(null);
@@ -154,7 +163,9 @@ export function CanvasStage({ doc, selectedId, images, fonts, onSelect, onChange
     rotation: n.rotation,
     opacity: n.opacity,
     visible: n.visible,
-    draggable: !panning,
+    draggable: !panning && !marketing,
+    // Marketing: a locked layer does not listen, so a click passes through it to a field beneath, or to the artboard.
+    listening: !marketing || (selectable?.has(n.id) ?? false),
     perfectDrawEnabled: false,
     onMouseDown: pick(n.id),
     onTouchStart: pick(n.id),
@@ -229,7 +240,7 @@ export function CanvasStage({ doc, selectedId, images, fonts, onSelect, onChange
             image={img}
             width={n.width}
             height={n.height}
-            crop={coverCrop(img.naturalWidth, img.naturalHeight, n.width, n.height)}
+            crop={(n.fit === "contain" ? containCrop : coverCrop)(img.naturalWidth, img.naturalHeight, n.width, n.height)}
           />
         );
       }
@@ -271,7 +282,9 @@ export function CanvasStage({ doc, selectedId, images, fonts, onSelect, onChange
               ref={transformer}
               flipEnabled={false}
               keepRatio={keepRatio}
-              enabledAnchors={selected?.type === "text" ? TEXT_ANCHORS : ALL_ANCHORS}
+              enabledAnchors={marketing ? [] : selected?.type === "text" ? TEXT_ANCHORS : ALL_ANCHORS}
+              rotateEnabled={!marketing}
+              resizeEnabled={!marketing}
               rotationSnaps={[0, 90, 180, 270]}
               rotationSnapTolerance={4}
               anchorSize={9}

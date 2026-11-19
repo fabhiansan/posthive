@@ -456,25 +456,37 @@ model DesignAsset {
   @@index([workspaceId])
 }
 
-// A Canvas design. Phase 3 saves the designer's working copy ("template"); instances come with the Marketing phase.
-// `document` is a CanvasDocument (apps/api/src/lib/canvas.ts validates it on every save); it is never null: a new
-// design starts from the blank document. `version` is the optimistic lock: a save names the version it was based on
-// and only succeeds while that is still the stored one.
+// A Canvas design, of one of two kinds (the CHECK constraint Design_shape_check, in the migration, pins each shape):
+//  - "template": the designer's working copy. `document` is a CanvasDocument (apps/api/src/lib/canvas.ts validates it on
+//    every save) and is never null; baseRevisionId and overrides are null.
+//  - "instance" (phase 5): what one Marketing person made from a published template. It has NO document of its own: it
+//    pins one exact, immutable DesignRevision (`baseRevisionId`, never changed: a trigger refuses it) and stores only
+//    `overrides`, the text and images that revision's manifest lets Marketing change. The effective document is the
+//    revision's document plus the overrides, composed in memory when it is drawn; it is never stored.
+// `version` is the optimistic lock: a save names the version it was based on and only succeeds while that is still the
+// stored one.
 model Design {
   id              String    @id @default(cuid())
   workspaceId     String
   workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  kind            String // template (the only kind so far)
+  kind            String // template | instance
   name            String
-  document        Json
+  document        Json? // null for kind = "instance"
+  overrides       Json? // instances only: { schemaVersion: 1, fields: [{ nodeId, text } | { nodeId, assetId }] }
+  baseRevisionId  String? // instances only: the revision this one was made from. NO ACTION: a design with instances cannot be deleted
+  baseRevision    DesignRevision? @relation("InstanceBase", fields: [baseRevisionId], references: [id], onDelete: NoAction)
   version         Int       @default(1)
-  createdByUserId String? // no FK: deleting a user must not delete workspace designs
+  createdByUserId String? // no FK: deleting a user must not delete workspace designs. An instance belongs to this user alone
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
-  revisions       DesignRevision[]
+  revisions       DesignRevision[] @relation("DesignRevisions")
   template        Template?
 
   @@index([workspaceId, kind, updatedAt])
+  // "My designs": createdAt (never updatedAt, which every autosave changes) then id, the exact order of the keyset
+  // pagination, so the list is one index scan with no sort.
+  @@index([workspaceId, kind, createdByUserId, createdAt, id])
+  @@index([baseRevisionId])
 }
 
 // A published, immutable revision of a Canvas design (phase 4). Rows are only ever inserted: triggers refuse an UPDATE and a
@@ -485,7 +497,8 @@ model Design {
 model DesignRevision {
   id              String   @id @default(cuid())
   designId        String
-  design          Design   @relation(fields: [designId], references: [id], onDelete: Cascade)
+  design          Design   @relation("DesignRevisions", fields: [designId], references: [id], onDelete: Cascade)
+  instances       Design[] @relation("InstanceBase") // the Marketing designs made from this exact revision (phase 5)
   number          Int // 1, 2, 3 ... per design
   designVersion   Int // the Design.version it was published from: one revision per working version
   document        Json

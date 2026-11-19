@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CanvasDocument } from "posthive-canvas";
-import { AssetLoadError, getDesign, loadAsset, loadEditorFonts, type Design } from "@/lib/canvas";
+import { AssetLoadError, getDesign, getInstance, loadAsset, loadEditorFonts, type Design, type InstanceDetail } from "@/lib/canvas";
 import { useBootReport } from "./CanvasBoot";
 
 export type CanvasEngine = typeof import("posthive-canvas");
@@ -18,15 +18,8 @@ function loadEngine(): Promise<CanvasEngine> {
   return engineLoad;
 }
 
-/** A saved design, opened: its document and the decoded images it draws. */
-export interface LoadedDesign {
-  id: string;
-  version: number;
-  name: string;
-  document: CanvasDocument;
-  /** The template this design is made for, and its latest published revision (null: not attached, or none yet). */
-  template: Design["template"];
-  latestRevision: Design["latestRevision"];
+/** The decoded images of an opened design. */
+export interface LoadedImages {
   images: ReadonlyMap<string, HTMLImageElement>;
   /** Images that could not be loaded for good (gone, or the API address is not set): their layers show a grey box. */
   missing: string[];
@@ -34,16 +27,41 @@ export interface LoadedDesign {
   badApiBase: boolean;
 }
 
+/** A saved design, opened: its document and the decoded images it draws. */
+export interface LoadedDesign extends LoadedImages {
+  id: string;
+  version: number;
+  name: string;
+  document: CanvasDocument;
+  /** The template this design is made for, and its latest published revision (null: not attached, or none yet). */
+  template: Design["template"];
+  latestRevision: Design["latestRevision"];
+}
+
 /** Why a design cannot be opened at all. */
 export type DesignProblem = "not-found" | "forbidden" | "invalid";
 
-export interface Bootstrap {
+export interface Bootstrap<L = LoadedDesign> {
   /** Set once the engine, the fonts and (for a saved design) the design and its images are all ready. */
   engine: CanvasEngine | null;
-  design: LoadedDesign | null;
+  design: L | null;
   problem: DesignProblem | null;
   /** Something that may work on a second try. Also reported to the loader, which is gone after the first open. */
   failure: { message: string; retry: () => void } | null;
+}
+
+/** What the hook needs of anything it opens: an id, the version the autosave starts from, a name and the document it draws. */
+export interface Openable {
+  id: string;
+  version: number;
+  name: string;
+  document: CanvasDocument;
+}
+
+/** How to open one kind of design: how to fetch it, and which images it draws (loaded before the editor opens). */
+export interface DesignSource<R extends Openable> {
+  load(id: string): Promise<R>;
+  imageIds(record: R): string[];
 }
 
 interface Images {
@@ -78,6 +96,15 @@ async function loadImages(ids: string[]): Promise<Images> {
 
 type Stage = "engine" | "document" | "assets";
 
+/** The designer's own design: fetched by id, and it draws the images its document names. */
+const designerSource: DesignSource<Design> = { load: async (id) => (await getDesign(id)).design, imageIds: (d) => assetIdsOf(d.document) };
+
+/** A Marketing design: its revision's document, and the images that revision draws plus the ones Marketing replaced them with. */
+export const instanceSource: DesignSource<InstanceDetail> = {
+  load: async (id) => (await getInstance(id)).instance,
+  imageIds: (i) => [...new Set([...assetIdsOf(i.document), ...i.overrides.flatMap((o) => ("assetId" in o ? [o.assetId] : []))])],
+};
+
 /**
  * Loads what the editor needs and tells the Canvas loader how each part is going: the Konva engine, the editor
  * fonts and, for a saved design (`designId`), the design itself and its images. Pass a designId that does not
@@ -85,9 +112,20 @@ type Stage = "engine" | "document" | "assets";
  * a browser, so the engine is imported here and never during server rendering.
  */
 export function useCanvasBootstrap(designId?: string): Bootstrap {
+  return useOpenedDesign<Design>(designId, designerSource);
+}
+
+/**
+ * The same, for any kind of saved design: `source` says how to fetch it and which images it draws (a Marketing design draws
+ * its revision's images and the ones it replaced them with). Pass a `source` that does not change (a module-level
+ * constant): it is read when a load runs, never in an effect's dependencies, so a new object per render does not refetch.
+ */
+export function useOpenedDesign<R extends Openable>(designId: string | undefined, source: DesignSource<R>): Bootstrap<R & LoadedImages> {
   const report = useBootReport();
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
   const [engine, setEngine] = useState<CanvasEngine | null>(null);
-  const [design, setDesign] = useState<Design | null>(null);
+  const [design, setDesign] = useState<R | null>(null);
   const [problem, setProblem] = useState<DesignProblem | null>(null);
   const [loaded, setLoaded] = useState<Images | null>(null);
   const [failures, setFailures] = useState<Partial<Record<Stage, { message: string; retry: () => void }>>>({});
@@ -132,8 +170,8 @@ export function useCanvasBootstrap(designId?: string): Bootstrap {
     if (!designId) return;
     let live = true;
     report("document", { state: "active" });
-    getDesign(designId).then(
-      ({ design: d }) => {
+    sourceRef.current.load(designId).then(
+      (d) => {
         if (!live) return;
         if (!isDocument(d.document)) {
           setProblem("invalid");
@@ -166,7 +204,7 @@ export function useCanvasBootstrap(designId?: string): Bootstrap {
     if (designId && !design) return;
     let live = true;
     report("assets", { state: "active" });
-    Promise.all([loadEditorFonts().then(() => true, () => false), loadImages(design ? assetIdsOf(design.document) : [])]).then(([fontsOk, images]) => {
+    Promise.all([loadEditorFonts().then(() => true, () => false), loadImages(design ? sourceRef.current.imageIds(design) : [])]).then(([fontsOk, images]) => {
       if (!live) return;
       if (!fontsOk) return fail("assets", "The editor fonts could not be loaded.", () => setAssetsTry((n) => n + 1));
       if (images.failed) return fail("assets", "Some images could not be loaded. Check your connection.", () => setAssetsTry((n) => n + 1));
@@ -178,11 +216,8 @@ export function useCanvasBootstrap(designId?: string): Bootstrap {
   }, [designId, design, assetsTry, report]);
 
   const ready = engine !== null && loaded !== null && (!designId || design !== null);
-  const loadedDesign = useMemo<LoadedDesign | null>(
-    () =>
-      design && loaded
-        ? { id: design.id, version: design.version, name: design.name, document: design.document, template: design.template, latestRevision: design.latestRevision, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase }
-        : null,
+  const loadedDesign = useMemo<(R & LoadedImages) | null>(
+    () => (design && loaded ? { ...design, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase } : null),
     [design, loaded],
   );
 

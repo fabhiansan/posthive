@@ -5,7 +5,7 @@ import type { CanvasDocument, CanvasNode, CanvasStageHandle, ExportOptions, Hist
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import type { Saved } from "@/lib/autosave";
-import { editorFonts, loadAsset, uploadCanvasAsset } from "@/lib/canvas";
+import { editorFonts, getDesign, loadAsset, saveDesign, uploadCanvasAsset } from "@/lib/canvas";
 import type { CanvasEngine, LoadedDesign } from "./useCanvasBootstrap";
 import { CanvasShell } from "./CanvasShell";
 import { ExportMenu } from "./ExportMenu";
@@ -20,11 +20,11 @@ const TITLE = "Untitled design";
 const ZOOM_STEP = 1.25;
 
 /** Keys that must keep working inside a text field, a menu or a dialog instead of editing the design. */
-const isTyping = (t: EventTarget | null) =>
+export const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement &&
   (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || !!t.closest('[role="menu"],[role="dialog"],[role="alertdialog"],[role="listbox"],[role="tablist"]'));
 
-function download(blob: Blob, filename: string) {
+export function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -34,7 +34,7 @@ function download(blob: Blob, filename: string) {
 }
 
 /** A file name from a design name: letters and digits, words joined by dashes. */
-const slugOf = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "design";
+export const slugOf = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "design";
 
 /**
  * The Canvas editor. With a saved `design` (a designer's, opened at /canvas/<id>) it autosaves; without one it is
@@ -74,7 +74,19 @@ export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?
     },
     [createHistory],
   );
-  const autosave = useAutosave({ design, doc, name, onReload });
+  // Stable: the autosave makes its controller when this changes, so it is memoized on the loaded design (never rebuilt per render).
+  const savedItem = useMemo(() => (design ? { id: design.id, version: design.version, name: design.name, value: design.document } : undefined), [design]);
+  const autosave = useAutosave<CanvasDocument>({
+    item: savedItem,
+    value: doc,
+    name,
+    save: (id, version, snapshot) => saveDesign(id, { version, document: snapshot.doc, name: snapshot.name }),
+    fetchLatest: async (id) => {
+      const { design: latest } = await getDesign(id);
+      return { version: latest.version, doc: latest.document, name: latest.name };
+    },
+    onReload,
+  });
   // The latest published revision, which a Publish in this editor replaces. Reload latest does not change it: revisions only grow.
   const [revision, setRevision] = useState(design?.latestRevision ?? null);
 

@@ -178,6 +178,65 @@ describe("Template page: Marketing", () => {
     await screen.findByRole("heading", { level: 1, name: "Case Study" });
     expect(screen.queryByRole("button", { name: "Use template" })).toBeNull();
   });
+
+  // Phase 5: a template made in Canvas can be customized into the person's own design.
+  it.each(["member", "admin", "owner"])("%s: a template with a Canvas revision has Customize in Canvas, next to Use template, which is unchanged", async (role) => {
+    h.role = role;
+    list = [{ ...CASE, published: true, canvasRevision: 2 }];
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(screen.getByRole("button", { name: /Customize in Canvas/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use template" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open in Figma" })).toBeTruthy(); // a Figma link and a revision: both are offered
+  });
+
+  it("a template with no Canvas revision (Figma only) has no Customize button", async () => {
+    render(<TemplateDetailPage />); // CASE has no canvasRevision
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(screen.queryByRole("button", { name: /Customize/ })).toBeNull();
+    list = [{ ...CASE, published: true, canvasRevision: null }];
+    cleanup();
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(screen.queryByRole("button", { name: /Customize/ })).toBeNull();
+  });
+
+  it("a role that may not make content has no Customize button, even for a Canvas template", async () => {
+    h.role = "guest";
+    list = [{ ...CASE, published: true, canvasRevision: 1 }];
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(screen.queryByRole("button", { name: /Customize/ })).toBeNull();
+  });
+
+  it("Customize asks the server to make the design from this template (naming only the template) and opens it", async () => {
+    list = [{ ...CASE, published: true, canvasRevision: 2 }];
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
+      if (path === "/templates" && !init) return { templates: list };
+      if (path === "/canvas/instances") return { instance: { id: "inst-9", name: "Case Study", version: 1, createdAt: "2026-11-18T00:00:00Z", baseRevision: { number: 2, createdAt: "2026-11-18T00:00:00Z" } } };
+      return { ok: true };
+    });
+    render(<TemplateDetailPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Customize in Canvas/ }));
+    await waitFor(() => expect(h.push).toHaveBeenCalledWith("/canvas/inst-9"));
+    const call = h.apiFetch.mock.calls.find(([p]) => p === "/canvas/instances")!;
+    expect(call[1].method).toBe("POST");
+    expect(JSON.parse(call[1].body)).toEqual({ templateId: "case" }); // never a revision, a kind or an owner
+  });
+
+  it("when the server refuses (the template was unpublished a moment ago), its message is shown and nothing opens", async () => {
+    list = [{ ...CASE, published: true, canvasRevision: 2 }];
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
+      if (path === "/templates" && !init) return { templates: list };
+      if (path === "/canvas/instances") throw Object.assign(new Error("Template not found"), { status: 404 });
+      return { ok: true };
+    });
+    render(<TemplateDetailPage />);
+    await userEvent.click(await screen.findByRole("button", { name: /Customize in Canvas/ }));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Template not found"));
+    expect(h.push).not.toHaveBeenCalled();
+    expect((screen.getByRole("button", { name: /Customize in Canvas/ }) as HTMLButtonElement).disabled).toBe(false); // try again is possible
+  });
 });
 
 // ── Canvas designs (phase 4) ───────────────────────────────────────────────────────────────────────────────────

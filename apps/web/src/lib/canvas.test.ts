@@ -299,3 +299,102 @@ describe("revisions and the template link (phase 4)", () => {
     },
   );
 });
+
+describe("Marketing's designs: instances (phase 5)", () => {
+  const last = () => fetchMock.mock.calls.at(-1) as [string, RequestInit];
+  const body = () => JSON.parse(last()[1].body as string) as Record<string, unknown>;
+
+  it("customize names only the template, as JSON, to the instances address", async () => {
+    fetchMock.mockImplementation(async () => json({ instance: { id: "i1", name: "Case Study", version: 1, createdAt: "2026-11-18T00:00:00Z", baseRevision: { number: 2, createdAt: "2026-11-18T00:00:00Z" } } }, 201));
+    const { createInstance } = await import("./canvas");
+    const res = await createInstance("tpl-1");
+    expect(res.instance.id).toBe("i1");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances");
+    expect(last()[1]).toMatchObject({ method: "POST", credentials: "include" });
+    expect(last()[1].headers).toMatchObject({ "Content-Type": "application/json" }); // the API refuses anything but JSON
+    expect(body()).toEqual({ templateId: "tpl-1" }); // never a revision, a kind, a workspace or an author
+  });
+
+  it("get and delete address the design by an encoded id", async () => {
+    fetchMock.mockImplementation(async () => json({ ok: true }));
+    const { getInstance, deleteInstance } = await import("./canvas");
+    await getInstance("a/b?c");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/a%2Fb%3Fc");
+    expect(last()[1]).toMatchObject({ credentials: "include" });
+    await deleteInstance("i1");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/i1");
+    expect(last()[1].method).toBe("DELETE");
+  });
+
+  it("save sends the whole set of changes, the version, and a name only when one is given", async () => {
+    fetchMock.mockImplementation(async () => json({ version: 2 }));
+    const { saveInstance } = await import("./canvas");
+    await saveInstance("i1", { version: 1, overrides: [{ nodeId: "head", text: "Hello" }, { nodeId: "photo", assetId: "asset-2" }] });
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/i1");
+    expect(last()[1]).toMatchObject({ method: "PUT", credentials: "include" });
+    expect(last()[1].headers).toMatchObject({ "Content-Type": "application/json" });
+    expect(body()).toEqual({ version: 1, overrides: [{ nodeId: "head", text: "Hello" }, { nodeId: "photo", assetId: "asset-2" }] });
+    await saveInstance("i1", { version: 2, overrides: [], name: "Spring launch" });
+    expect(body()).toEqual({ version: 2, overrides: [], name: "Spring launch" }); // [] is sent, not left out: a missing list is never "no change"
+  });
+
+  it("the first page asks for no cursor and no limit; the next pages carry the cursor the server gave", async () => {
+    fetchMock.mockImplementation(async () => json({ instances: [], nextCursor: null }));
+    const { listInstances } = await import("./canvas");
+    await listInstances();
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances");
+    await listInstances(null);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances");
+    await listInstances("abc_DEF-123");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances?cursor=abc_DEF-123");
+    await listInstances("abc", 20);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances?limit=20&cursor=abc");
+  });
+
+  it("a cursor is passed on exactly as the server wrote it, and cannot add a parameter or change the path", async () => {
+    fetchMock.mockImplementation(async () => json({ instances: [], nextCursor: null }));
+    const { listInstances } = await import("./canvas");
+    await listInstances("a&limit=1000#x/../y");
+    const url = new URL(last()[0]);
+    expect(url.pathname).toBe("/canvas/instances");
+    expect([...url.searchParams.keys()]).toEqual(["cursor"]);
+    expect(url.searchParams.get("cursor")).toBe("a&limit=1000#x/../y"); // encoded, so it stays one value
+  });
+
+  it.each(["NO_CANVAS_REVISION", "INVALID_OVERRIDES", "DUPLICATE_NODE", "UNKNOWN_NODE", "LOCKED_NODE", "TEXT_TOO_LONG", "UNKNOWN_ASSET", "INVALID_NAME", "VERSION_CONFLICT", "INVALID_LIMIT", "INVALID_CURSOR"])(
+    "a refusal with the code %s reaches the page with its status, message and code",
+    async (code) => {
+      fetchMock.mockImplementation(async () => json({ error: `refused: ${code}`, code }, code === "VERSION_CONFLICT" || code === "NO_CANVAS_REVISION" ? 409 : 400));
+      const { createInstance, saveInstance, listInstances } = await import("./canvas");
+      for (const call of [() => createInstance("t"), () => saveInstance("i", { version: 1, overrides: [] }), () => listInstances()]) {
+        const err = await call().catch((e: unknown) => e);
+        expect(err).toMatchObject({ message: `refused: ${code}`, data: { code } });
+      }
+    },
+  );
+
+  it("a 404 (another person's design, or one that is gone) carries its status, which the editor shows as 'doesn't exist'", async () => {
+    fetchMock.mockImplementation(async () => json({ error: "Design not found" }, 404));
+    const { getInstance } = await import("./canvas");
+    expect(await getInstance("i1").catch((e: unknown) => e)).toMatchObject({ status: 404 });
+  });
+});
+
+describe("which images a Marketing design draws (instanceSource.imageIds)", () => {
+  const image = (id: string, assetId: string) => ({ id, type: "image", assetId });
+  const record = (nodes: unknown[], overrides: unknown[]) => ({ document: { nodes }, overrides }) as never;
+
+  // The first import of the hook file loads React and the UI kit; on a cold start that can pass vitest's 5 s default.
+  it("is the images its revision draws plus the ones Marketing replaced them with, each once", { timeout: 30_000 }, async () => {
+    const { instanceSource } = await import("../components/canvas/useCanvasBootstrap");
+    const doc = [image("photo", "asset-1"), { id: "head", type: "text" }, image("logo", "asset-logo"), image("again", "asset-1")];
+    expect(instanceSource.imageIds(record(doc, []))).toEqual(["asset-1", "asset-logo"]); // the base only, a repeat counted once
+    expect(instanceSource.imageIds(record(doc, [{ nodeId: "photo", assetId: "asset-2" }]))).toEqual(["asset-1", "asset-logo", "asset-2"]);
+    expect(instanceSource.imageIds(record(doc, [{ nodeId: "photo", assetId: "asset-1" }, { nodeId: "head", text: "Hi" }]))).toEqual(["asset-1", "asset-logo"]); // a replacement that is already drawn, and a text, add nothing
+  });
+
+  it("a design with no image asks for none", async () => {
+    const { instanceSource } = await import("../components/canvas/useCanvasBootstrap");
+    expect(instanceSource.imageIds(record([{ id: "head", type: "text" }], [{ nodeId: "head", text: "x" }]))).toEqual([]);
+  });
+});

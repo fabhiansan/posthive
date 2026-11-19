@@ -1,23 +1,30 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CanvasDocument } from "posthive-canvas";
 import { useToast } from "@/components/Toast";
 import { createAutosave, type Autosave, type AutosaveInfo, type Saved } from "@/lib/autosave";
-import { getDesign, saveDesign } from "@/lib/canvas";
 import { useUnsavedChanges } from "@/lib/session";
 
-interface SavedDesign {
+/** What a saved thing is to the autosave: its id, the version the server confirmed, what is being edited, and its name. */
+interface SavedItem<D> {
   id: string;
   version: number;
   name: string;
-  document: CanvasDocument;
+  /** The value being edited and compared: a designer's document, or a Marketing design's list of changes. */
+  value: D;
 }
 
 /**
- * Connects a saved design to the autosave controller (lib/autosave.ts, where the rules and their tests are).
- * Without `design` (the local editor) it does nothing. The editor must be mounted once per design (key it by id),
- * and its history must start from `design.document` itself, the same object, so "nothing changed" is exact.
+ * Connects a saved design to the autosave controller (lib/autosave.ts, where the rules and their tests are). It is generic
+ * over what is saved (D): a designer's whole document, or the list of changes of a Marketing design. The two calls that
+ * differ are passed in; everything else (when to save, retries, conflicts, leaving the page) is the same for both.
+ * Without `item` (the local editor) it does nothing. The editor must be mounted once per design (key it by id), and its
+ * history must start from `item.value` itself, the same object, so "nothing changed" is exact.
+ *
+ * `item` must be STABLE (memoize it on the loaded design, as both editors do): the controller is created when it changes,
+ * so a new object on every render would throw the controller, and anything it still owes, away each time.
+ * `save` and `fetchLatest` are read when a save runs, not when the controller is made, so a caller may pass new functions
+ * each render.
  *
  * Leaving the page, in layers:
  *  1. the tab goes to the background: a normal save is sent while the page is alive (visibilitychange);
@@ -27,23 +34,39 @@ interface SavedDesign {
  *     reports through a toast if the last ones could not be saved;
  *  5. the session expires: the unsaved-changes registry makes the app offer to save instead of redirecting.
  */
-export function useAutosave({ design, doc, name, onReload }: { design: SavedDesign | undefined; doc: CanvasDocument; name: string; onReload(next: Saved<CanvasDocument>): void }) {
+export function useAutosave<D>({
+  item,
+  value,
+  name,
+  save,
+  fetchLatest,
+  onReload,
+}: {
+  item: SavedItem<D> | undefined;
+  value: D;
+  name: string;
+  /** Sends one save on top of `version`; resolves with the new version. */
+  save(id: string, version: number, snapshot: { doc: D; name: string }): Promise<{ version: number }>;
+  /** The design as the server has it now (asked after a 409). */
+  fetchLatest(id: string): Promise<Saved<D>>;
+  onReload(next: Saved<D>): void;
+}) {
   const toast = useToast();
-  const controller = useRef<Autosave<CanvasDocument> | null>(null);
+  const controller = useRef<Autosave<D> | null>(null);
   const [info, setInfo] = useState<AutosaveInfo>({ state: "saved", dirty: false });
   // The version the server last confirmed, for the page to compare with the latest published revision.
-  const [version, setVersion] = useState(design?.version ?? 0);
+  const [version, setVersion] = useState(item?.version ?? 0);
+  // The latest functions, so the controller (made once per design) never calls a stale one.
+  const calls = useRef({ save, fetchLatest });
+  calls.current = { save, fetchLatest };
 
   useEffect(() => {
-    if (!design) return;
-    const c: Autosave<CanvasDocument> = createAutosave<CanvasDocument>(
-      { version: design.version, doc: design.document, name: design.name },
+    if (!item) return;
+    const c: Autosave<D> = createAutosave<D>(
+      { version: item.version, doc: item.value, name: item.name },
       {
-        save: (version, snapshot) => saveDesign(design.id, { version, document: snapshot.doc, name: snapshot.name }),
-        fetchLatest: async () => {
-          const { design: latest } = await getDesign(design.id);
-          return { version: latest.version, doc: latest.document, name: latest.name };
-        },
+        save: (version, snapshot) => calls.current.save(item.id, version, snapshot),
+        fetchLatest: () => calls.current.fetchLatest(item.id),
         onState: (next) => {
           setInfo(next);
           setVersion(c.version);
@@ -57,17 +80,17 @@ export function useAutosave({ design, doc, name, onReload }: { design: SavedDesi
       controller.current = null;
       c.dispose(); // finishes any save still owed; it does not cancel it
     };
-  }, [design, toast]);
+  }, [item, toast]);
 
   // After the effect above on purpose: a new controller is created before it hears about the document.
   useEffect(() => {
-    controller.current?.update(doc, name);
-  }, [doc, name, design]);
+    controller.current?.update(value, name);
+  }, [value, name, item]);
 
-  useUnsavedChanges("canvas-design", design !== undefined && info.dirty);
+  useUnsavedChanges("canvas-design", item !== undefined && info.dirty);
 
   useEffect(() => {
-    if (!design) return;
+    if (!item) return;
     const warn = (e: BeforeUnloadEvent) => {
       if (!controller.current?.info.dirty) return;
       e.preventDefault();
@@ -82,7 +105,7 @@ export function useAutosave({ design, doc, name, onReload }: { design: SavedDesi
       window.removeEventListener("beforeunload", warn);
       document.removeEventListener("visibilitychange", hide);
     };
-  }, [design]);
+  }, [item]);
 
   const retry = useCallback(() => controller.current?.retry(), []);
   const flush = useCallback(() => controller.current?.flush() ?? Promise.resolve(true), []);

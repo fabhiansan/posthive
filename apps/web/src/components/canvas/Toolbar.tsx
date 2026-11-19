@@ -6,11 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/Spinner";
 
 interface ToolbarProps {
-  onAdd(type: "rect" | "ellipse" | "text"): void;
+  /** The designer's tools. A Marketing design has none of them: leave all four out and only undo/redo and zoom remain. */
+  onAdd?(type: "rect" | "ellipse" | "text"): void;
   /** A PNG or SVG the person picked. */
-  onImage(file: File): void;
-  uploading: boolean;
-  onDeselect(): void;
+  onImage?(file: File): void;
+  uploading?: boolean;
+  onDeselect?(): void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo(): void;
@@ -30,51 +31,55 @@ const ADD = [
 
 const Divider = () => <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />;
 
-export function Toolbar({ onAdd, onImage, uploading, onDeselect, canUndo, canRedo, onUndo, onRedo, zoom, onZoomIn, onZoomOut, onFit }: ToolbarProps) {
+export function Toolbar({ onAdd, onImage, uploading = false, onDeselect, canUndo, canRedo, onUndo, onRedo, zoom, onZoomIn, onZoomOut, onFit }: ToolbarProps) {
   const file = useRef<HTMLInputElement>(null);
   return (
     <>
-      {/* Select is the standing mode: the other tools add a layer at once, so there is nothing to switch back from. */}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label="Select"
-        aria-pressed
-        title="Select (Esc clears the selection)"
-        onClick={onDeselect}
-        className="bg-brand-100 text-brand-800 hover:bg-brand-100 hover:text-brand-800"
-      >
-        <MousePointer2Icon />
-      </Button>
-      {ADD.map(({ type, label, icon: Icon }) => (
-        <Button key={type} variant="ghost" size="icon-sm" aria-label={`Add ${label.toLowerCase()}`} title={`Add ${label.toLowerCase()}`} onClick={() => onAdd(type)}>
-          <Icon />
-        </Button>
-      ))}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label="Add image"
-        title="Add image (PNG or SVG)"
-        disabled={uploading}
-        aria-busy={uploading}
-        onClick={() => file.current?.click()}
-      >
-        {uploading ? <Spinner size="sm" label="Uploading image" /> : <ImagePlusIcon />}
-      </Button>
-      <input
-        ref={file}
-        type="file"
-        accept="image/png,image/svg+xml,.png,.svg"
-        hidden
-        onChange={(e) => {
-          const picked = e.target.files?.[0];
-          e.target.value = ""; // so picking the same file again still fires
-          if (picked) onImage(picked);
-        }}
-      />
+      {onAdd && onImage && onDeselect && (
+        <>
+          {/* Select is the standing mode: the other tools add a layer at once, so there is nothing to switch back from. */}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Select"
+            aria-pressed
+            title="Select (Esc clears the selection)"
+            onClick={onDeselect}
+            className="bg-brand-100 text-brand-800 hover:bg-brand-100 hover:text-brand-800"
+          >
+            <MousePointer2Icon />
+          </Button>
+          {ADD.map(({ type, label, icon: Icon }) => (
+            <Button key={type} variant="ghost" size="icon-sm" aria-label={`Add ${label.toLowerCase()}`} title={`Add ${label.toLowerCase()}`} onClick={() => onAdd(type)}>
+              <Icon />
+            </Button>
+          ))}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Add image"
+            title="Add image (PNG or SVG)"
+            disabled={uploading}
+            aria-busy={uploading}
+            onClick={() => file.current?.click()}
+          >
+            {uploading ? <Spinner size="sm" label="Uploading image" /> : <ImagePlusIcon />}
+          </Button>
+          <input
+            ref={file}
+            type="file"
+            accept="image/png,image/svg+xml,.png,.svg"
+            hidden
+            onChange={(e) => {
+              const picked = e.target.files?.[0];
+              e.target.value = ""; // so picking the same file again still fires
+              if (picked) onImage(picked);
+            }}
+          />
 
-      <Divider />
+          <Divider />
+        </>
+      )}
       <Button variant="ghost" size="icon-sm" aria-label="Undo" title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={onUndo}>
         <Undo2Icon />
       </Button>

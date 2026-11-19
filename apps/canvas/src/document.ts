@@ -194,6 +194,89 @@ export function editableLayers(doc: CanvasDocument): { fields: EditableField[]; 
   return { fields, hidden };
 }
 
+// ── Marketing's overrides (phase 5) ─────────────────────────────────────────
+// A Marketing design is a published revision plus a list of overrides: the new text of a text layer, or the asset that
+// replaces an image layer's image. The revision's manifest says which layers may be changed; everything else (position,
+// size, rotation, style, typography, `fit`, structure) is out of reach, because an override can carry nothing but those two
+// values. The effective document is composed here, in memory, each time it is drawn or exported, and never stored.
+
+/** One changed field. */
+export type OverrideEntry = { nodeId: string; text: string } | { nodeId: string; assetId: string };
+
+/** The layers Marketing may change in one published revision (apps/api/src/lib/canvas.ts derives and stores it). */
+export interface FieldManifest {
+  schemaVersion: 1;
+  fields: EditableField[];
+}
+
+const sameEntry = (a: OverrideEntry, b: OverrideEntry): boolean => a.nodeId === b.nodeId && ("text" in a ? "text" in b && a.text === b.text : "assetId" in b && a.assetId === b.assetId);
+
+/** Two override lists hold the same entries in the same order. */
+export const sameOverrides = (a: readonly OverrideEntry[], b: readonly OverrideEntry[]): boolean => a.length === b.length && a.every((x, i) => sameEntry(x, b[i]));
+
+/**
+ * The revision's document with the overrides applied: only `text` on a text layer and `assetId` on an image layer, and only
+ * when the manifest lists that layer with that kind. An entry for anything else (a missing layer, a shape, a protected
+ * layer, the wrong kind) is ignored, so even a damaged stored list cannot move or restyle a locked layer. Never changes
+ * `base`; returns it itself when nothing applies. A layer's height is left alone: a text layer grows to its text when drawn.
+ */
+export function applyOverrides(base: CanvasDocument, manifest: FieldManifest, overrides: readonly OverrideEntry[]): CanvasDocument {
+  if (overrides.length === 0) return base;
+  const kinds = new Map(manifest.fields.map((f) => [f.nodeId, f.kind])); // Maps, not objects: "__proto__" must find nothing
+  const entries = new Map(overrides.map((o) => [o.nodeId, o]));
+  let changed = false;
+  const nodes = base.nodes.map((n) => {
+    const o = entries.get(n.id);
+    const kind = kinds.get(n.id);
+    if (!o) return n;
+    if (n.type === "text" && kind === "text" && "text" in o && o.text !== n.text) {
+      changed = true;
+      return { ...n, text: o.text };
+    }
+    if (n.type === "image" && kind === "image" && "assetId" in o && o.assetId !== n.assetId) {
+      changed = true;
+      return { ...n, assetId: o.assetId };
+    }
+    return n;
+  });
+  return changed ? { ...base, nodes } : base;
+}
+
+/**
+ * The normal form of an override list, the one the server stores: only valid entries (the layer is in the manifest, of that
+ * kind and really of that type), one per layer (the last wins), none equal to the base value, in the manifest's order.
+ * The editor only ever makes valid entries, so for those this agrees with the server's validateOverrides (a test checks).
+ */
+export function normalizeOverrides(base: CanvasDocument, manifest: FieldManifest, overrides: readonly OverrideEntry[]): OverrideEntry[] {
+  const nodes = new Map(base.nodes.map((n) => [n.id, n]));
+  const latest = new Map(overrides.map((o) => [o.nodeId, o]));
+  const out: OverrideEntry[] = [];
+  for (const field of manifest.fields) {
+    const o = latest.get(field.nodeId);
+    const n = nodes.get(field.nodeId);
+    if (!o || !n) continue;
+    if (field.kind === "text" && n.type === "text" && "text" in o && o.text !== n.text) out.push({ nodeId: n.id, text: o.text });
+    else if (field.kind === "image" && n.type === "image" && "assetId" in o && o.assetId !== n.assetId) out.push({ nodeId: n.id, assetId: o.assetId });
+  }
+  return out;
+}
+
+/**
+ * Sets one field and returns the new list, or the SAME list when nothing changes (so a no-op is never an undo step).
+ * Text is kept exactly as typed, like a designer's, and cut to what the design's text budget leaves (textRoom), so the
+ * server never refuses what the editor made. Setting a field back to its base value removes its override.
+ */
+export function setOverride(base: CanvasDocument, manifest: FieldManifest, overrides: readonly OverrideEntry[], entry: OverrideEntry): readonly OverrideEntry[] {
+  const room = "text" in entry ? textRoom(applyOverrides(base, manifest, overrides), entry.nodeId) : 0;
+  const next = "text" in entry ? { nodeId: entry.nodeId, text: cleanText(entry.text, room) } : entry;
+  const list = normalizeOverrides(base, manifest, [...overrides.filter((o) => o.nodeId !== entry.nodeId), next]);
+  return sameOverrides(list, overrides) ? overrides : list;
+}
+
+/** Puts one field back to the revision's value: the same list when it was not overridden. */
+export const clearOverride = (overrides: readonly OverrideEntry[], nodeId: string): readonly OverrideEntry[] =>
+  overrides.some((o) => o.nodeId === nodeId) ? overrides.filter((o) => o.nodeId !== nodeId) : overrides;
+
 export function createDocument(): CanvasDocument {
   // A square social post.
   return { schemaVersion: SCHEMA_VERSION, width: 1080, height: 1080, background: { color: "#FFFFFF" }, nodes: [] };
@@ -445,6 +528,19 @@ export function foldScale(node: CanvasNode, scaleX: number, scaleY: number): Nod
 /** The part of an image to draw so it fills a box of the given size without distortion, centered. */
 export function coverCrop(imageWidth: number, imageHeight: number, boxWidth: number, boxHeight: number) {
   const scale = Math.max(boxWidth / imageWidth, boxHeight / imageHeight);
+  const width = boxWidth / scale;
+  const height = boxHeight / scale;
+  return { x: (imageWidth - width) / 2, y: (imageHeight - height) / 2, width, height };
+}
+
+/**
+ * The same, for `fit: "contain"`: the whole image, centered in the box, with empty bars on the sides it does not fill.
+ * It is a crop rectangle that reaches BEYOND the image on those sides (a negative x or y, a width or height past the
+ * image's): the canvas draws only the part that overlaps the image and shrinks the destination to match, so the layer's
+ * own box (its hit area and selection) stays exactly the box.
+ */
+export function containCrop(imageWidth: number, imageHeight: number, boxWidth: number, boxHeight: number) {
+  const scale = Math.min(boxWidth / imageWidth, boxHeight / imageHeight);
   const width = boxWidth / scale;
   const height = boxHeight / scale;
   return { x: (imageWidth - width) / 2, y: (imageHeight - height) / 2, width, height };

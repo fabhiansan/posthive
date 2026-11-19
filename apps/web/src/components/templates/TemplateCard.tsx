@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { platformLabel } from "@/lib/platforms";
 import { createdLine, platformsText, sourceLabel, subLine } from "@/lib/template-library";
 import type { DesignTemplate } from "@/lib/templates";
+import { CustomizeButton } from "./CustomizeButton";
 import { TemplateCover } from "./TemplateCover";
 import { TemplateStatus } from "./TemplateStatus";
 
@@ -61,6 +62,7 @@ export function TemplateCard({ template: t, canManage, canUse, onDelete, onUse }
             Use template
           </Button>
         )}
+        {canUse && t.canvasRevision != null && <CustomizeButton template={t} />}
       </div>
     </li>
   );

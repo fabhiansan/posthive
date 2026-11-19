@@ -1,6 +1,6 @@
 // Canvas client helpers: editor fonts, image assets (upload and private download), and saved designs.
 
-import type { CanvasDocument } from "posthive-canvas"; // types only: Konva must stay out of server rendering
+import type { CanvasDocument, OverrideEntry as EngineOverrideEntry } from "posthive-canvas"; // types only: Konva must stay out of server rendering
 import { API_BASE, apiFetch } from "./api";
 
 const FONT_TIMEOUT_MS = 10_000;
@@ -208,3 +208,66 @@ export const createDesignForTemplate = (templateId: string) =>
 export const attachDesign = (templateId: string, designId: string) =>
   apiFetch<{ designId: string }>(templateDesignPath(templateId), { method: "PUT", body: JSON.stringify({ designId }) });
 export const detachDesign = (templateId: string) => apiFetch<{ ok: true }>(templateDesignPath(templateId), { method: "DELETE" });
+
+// ── Marketing's designs: instances (phase 5) ────────────────────────────────
+// A Marketing design stores no document: it pins one published revision and keeps only what the person changed. Every call
+// is for the signed-in content editor and their own designs (a designer, or anyone else's design, is refused or a 404).
+// Error codes the pages read from `error.data.code`: NO_CANVAS_REVISION, INVALID_OVERRIDES, DUPLICATE_NODE, UNKNOWN_NODE,
+// LOCKED_NODE, TEXT_TOO_LONG, UNKNOWN_ASSET, INVALID_NAME, VERSION_CONFLICT, INVALID_LIMIT, INVALID_CURSOR.
+
+/** One changed field: new text for a text layer, or the asset that replaces an image layer's image. The engine's own type (types only, like CanvasDocument), so the two can never drift. */
+export type OverrideEntry = EngineOverrideEntry;
+
+export interface InstanceSummary {
+  id: string;
+  name: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  /** The published revision this design was made from, which never changes. */
+  baseRevision: { number: number };
+}
+
+/** One page of "my designs", newest created first. `nextCursor` is null on the last page. */
+export interface InstancePage {
+  instances: InstanceSummary[];
+  nextCursor: string | null;
+}
+
+/** A design ready to draw: the pinned revision's document and manifest, and what the person changed on top of it. */
+export interface InstanceDetail {
+  id: string;
+  name: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  overrides: OverrideEntry[];
+  baseRevision: { number: number; createdAt: string };
+  document: CanvasDocument;
+  manifest: { schemaVersion: 1; fields: Array<{ nodeId: string; kind: "text" | "image" }> };
+}
+
+const instancePath = (id: string) => `/canvas/instances/${encodeURIComponent(id)}`;
+
+/** Starts a design from a published template. The server picks the revision (the latest) and names the design after the template. */
+export const createInstance = (templateId: string) =>
+  apiFetch<{ instance: { id: string; name: string; version: number; createdAt: string; baseRevision: { number: number; createdAt: string } } }>("/canvas/instances", {
+    method: "POST",
+    body: JSON.stringify({ templateId }),
+  });
+/** One page of my designs. Pass the previous page's `nextCursor` for the next one. */
+export const listInstances = (cursor?: string | null, limit?: number) => {
+  const query = new URLSearchParams();
+  if (limit !== undefined) query.set("limit", String(limit));
+  if (cursor) query.set("cursor", cursor);
+  const qs = query.toString();
+  return apiFetch<InstancePage>(`/canvas/instances${qs ? `?${qs}` : ""}`);
+};
+export const getInstance = (id: string) => apiFetch<{ instance: InstanceDetail }>(instancePath(id));
+/**
+ * Saves the COMPLETE set of changes (not a patch): a field left out goes back to the revision's value, and [] resets
+ * everything. Answers with the new version, or 409 when `version` is no longer the stored one.
+ */
+export const saveInstance = (id: string, body: { version: number; overrides: OverrideEntry[]; name?: string }) =>
+  apiFetch<{ version: number }>(instancePath(id), { method: "PUT", body: JSON.stringify(body) });
+export const deleteInstance = (id: string) => apiFetch<{ ok: true }>(instancePath(id), { method: "DELETE" });

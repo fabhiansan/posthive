@@ -109,6 +109,8 @@ export function CanvasDesignBlock({ template, onChanged }: { template: DesignTem
             {template.canvasRevision != null ? `Revision ${template.canvasRevision}${linked?.latestRevision ? ` · ${day(linked.latestRevision.createdAt)}` : ""}` : "No revision yet"}
           </p>
           {template.canvasRevision == null && <p className="type-body-r-xs text-muted">Publish a revision in the Canvas editor. Marketing needs one before this template can be published without a Figma link.</p>}
+          {/* Not revocation: a design Marketing made pins the revision it started from, so nothing done here reaches it. */}
+          <p className="type-body-r-xs text-muted">Unpublishing stops new Marketing designs from this template. Designs Marketing already made from it keep working.</p>
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="secondary" size="sm">
               <Link href={`/canvas/${template.designId}`}>
