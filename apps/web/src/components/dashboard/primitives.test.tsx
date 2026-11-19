@@ -266,4 +266,17 @@ describe("QuickStartStep", () => {
     const link = screen.getByRole("link", { name: "Add content" });
     expect(link.getAttribute("href")).toBe("/compose");
   });
+
+  it("a step that is done keeps its title and help, shows Done instead of its number and link, and no longer links anywhere", () => {
+    render(
+      <ul>
+        <QuickStartStep step={{ step: 4, title: "Invite your team", description: "Add teammates.", cta: "Invite team", href: "/team", done: true }} />
+      </ul>
+    );
+    expect(screen.getByRole("heading", { level: 3, name: "Invite your team" })).toBeTruthy();
+    expect(screen.getByText("Add teammates.")).toBeTruthy();
+    expect(screen.getByText("Done")).toBeTruthy();
+    expect(screen.queryByText("4")).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 });

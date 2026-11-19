@@ -115,6 +115,15 @@ describe("QuickStartBanner", () => {
     expect(screen.getByRole("link", { name: /Invite team/ }).getAttribute("href")).toBe("/team");
   });
 
+  it("with one step done and the rest not, all four stay: the done one says Done and the others still link", () => {
+    const steps = empty.quickStart.map((s) => (s.step === 4 ? { ...s, done: true } : s));
+    render(<QuickStartBanner steps={steps} title="Finish setting up Postly" />);
+    expect(within(screen.getByRole("list")).getAllByRole("listitem")).toHaveLength(4);
+    expect(screen.getByText("Done")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Invite team/ })).toBeNull();
+    expect(screen.getByRole("link", { name: /Connect channel/ })).toBeTruthy();
+  });
+
   it("is hidden once the account is set up, or when there are no steps", () => {
     const { container, rerender } = render(<QuickStartBanner steps={empty.quickStart} done />);
     expect(container.firstChild).toBeNull();

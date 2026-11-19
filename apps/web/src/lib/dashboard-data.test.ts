@@ -135,18 +135,27 @@ describe("quick start", () => {
     expect(JSON.stringify(steps)).not.toMatch(/\{quarter\}|\{brand\}/);
   });
 
-  it("a step goes away once it is done: a plan imported, a post made, an account connected, a teammate invited", () => {
-    expect(quickStart({ ...setup, imported: true }, "Q4", "P").steps.map((s) => s.step)).toEqual([2, 3, 4]);
-    expect(quickStart({ ...setup, created: true }, "Q4", "P").steps.map((s) => s.step)).toEqual([1, 3, 4]);
-    expect(quickStart({ ...setup, accounts: 1 }, "Q4", "P").steps.map((s) => s.step)).toEqual([1, 2, 4]);
-    expect(quickStart({ ...setup, members: 2 }, "Q4", "P").steps.map((s) => s.step)).toEqual([1, 2, 3]);
-    expect(quickStart({ ...setup, invites: 1 }, "Q4", "P").steps.map((s) => s.step)).toEqual([1, 2, 3]);
+  // A finished step stays, ticked, so nobody wonders what the card was; only the banner as a whole goes when all are done.
+  const doneSteps = (setup2: Parameters<typeof quickStart>[0]) => quickStart(setup2, "Q4", "P").steps.filter((s) => s.done).map((s) => s.step);
+
+  it("a step that is done stays and is marked done: a plan imported, a post made, an account connected, a teammate invited", () => {
+    expect(doneSteps({ ...setup, imported: true })).toEqual([1]);
+    expect(doneSteps({ ...setup, created: true })).toEqual([2]);
+    expect(doneSteps({ ...setup, accounts: 1 })).toEqual([3]);
+    expect(doneSteps({ ...setup, members: 2 })).toEqual([4]);
+    expect(doneSteps({ ...setup, invites: 1 })).toEqual([4]);
+    expect(quickStart({ ...setup, members: 2 }, "Q4", "P").steps.map((s) => s.step)).toEqual([1, 2, 3, 4]); // all four are still listed
   });
 
-  it("the banner is done when every step is", () => {
-    const done = quickStart({ imported: true, created: true, accounts: 2, members: 3, invites: 0 }, "Q4", "P");
-    expect(done.steps).toEqual([]);
-    expect(done.done).toBe(true);
+  it("nothing is done in a new workspace", () => {
+    expect(doneSteps(setup)).toEqual([]);
+  });
+
+  it("the banner is done when every step is, and not before: with one step left it stays", () => {
+    const all = quickStart({ imported: true, created: true, accounts: 2, members: 3, invites: 0 }, "Q4", "P");
+    expect(all.done).toBe(true);
+    expect(all.steps.every((s) => s.done)).toBe(true);
+    expect(quickStart({ imported: true, created: true, accounts: 2, members: 1, invites: 0 }, "Q4", "P").done).toBe(false);
   });
 
   it("the design's heading is for a workspace where nothing is done; after that it is about finishing", () => {
@@ -165,6 +174,12 @@ describe("quick start", () => {
     expect(quickStart(setup, "Q4", "P", designer)).toMatchObject({ steps: [], done: true });
     const member = (href: string) => !["/accounts", "/team"].includes(href);
     expect(quickStart(setup, "Q4", "P", member).steps.map((s) => s.step)).toEqual([1, 2]);
+  });
+
+  it("the banner is done when the steps a person can see are all done, even if one they cannot open is not", () => {
+    const member = (href: string) => !["/accounts", "/team"].includes(href);
+    expect(quickStart({ ...setup, imported: true, created: true }, "Q4", "P", member).done).toBe(true);
+    expect(quickStart({ ...setup, imported: true }, "Q4", "P", member).done).toBe(false);
   });
 });
 

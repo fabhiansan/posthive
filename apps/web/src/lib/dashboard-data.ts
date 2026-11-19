@@ -158,9 +158,11 @@ export const QUICK_START: QuickStart[] = [
 ];
 
 /**
- * The steps still to do, with their words filled in. A person only sees steps they may do: the
- * links go to pages their role opens (a designer cannot create content, only an owner or admin
- * connects channels or invites people), so a step they could not take is not theirs to finish.
+ * The steps, with their words filled in and `done` set on the ones already finished: a finished step stays on
+ * the banner (ticked) so a person can see what it was. A person only sees steps they may do: the links go to
+ * pages their role opens (a designer cannot create content, only an owner or admin connects channels or invites
+ * people), so a step they could not take is not theirs, done or not. The banner is `done` (hidden) when every
+ * step they see is finished.
  */
 export function quickStart(
   setup: ApiDashboard["setup"],
@@ -169,13 +171,14 @@ export function quickStart(
   canAccess: (href: string) => boolean = () => true,
 ): { steps: QuickStart[]; done: boolean; title?: string } {
   const doneBy = [setup.imported, setup.created, setup.accounts > 0, setup.members > 1 || setup.invites > 0];
-  const steps = QUICK_START.filter((step, i) => !doneBy[i] && canAccess(step.href)).map((s) => ({
+  const steps = QUICK_START.map((s, i) => ({
     ...s,
     description: s.description.replace("{quarter}", quarter).replace("{brand}", brand),
-  }));
+    done: doneBy[i],
+  })).filter((s) => canAccess(s.href));
   // "Let's get your first campaign live" is for a workspace where nothing is done; once something is, it is about finishing
   const started = doneBy.some(Boolean);
-  return { steps, done: steps.length === 0, ...(started ? { title: `Finish setting up ${brand}` } : {}) };
+  return { steps, done: steps.every((s) => s.done), ...(started ? { title: `Finish setting up ${brand}` } : {}) };
 }
 
 // ── Channels ────────────────────────────────────────────────────────────────
