@@ -40,11 +40,13 @@ import {
   sampleOn,
 } from "@/lib/profile-mock";
 import { lastSignInLine, type ApiDevice } from "@/lib/profile-security";
-import { useActivity, useDevices } from "@/lib/useProfileSecurity";
+import { photoFileProblem, photoSizeProblem, readPhotoSize } from "@/lib/profile-photo";
+import { TWO_STEP_OFF, TWO_STEP_UNAVAILABLE, twoStepDetail } from "@/lib/two-step";
+import { TwoStepDialog } from "@/components/profile/TwoStepDialog";
+import { useActivity, useDevices, useTwoStep } from "@/lib/useProfileSecurity";
 import { roleProfileOf } from "@/lib/role-profile";
 import type { AppRole } from "@/lib/permissions";
 
-const NOT_YET = "Not available yet";
 
 /** What the form holds that the server does not keep yet: it starts as the mock and goes back to it on Cancel. */
 interface Draft {
@@ -80,8 +82,13 @@ export default function ProfilePage() {
 
   const devices = useDevices();
   const activity = useActivity();
+  const twoStep = useTwoStep();
+  const [twoStepOpen, setTwoStepOpen] = useState(false);
   const [signingOut, setSigningOut] = useState<string | null>(null);
   const [othersOpen, setOthersOpen] = useState(false);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [removeOpen, setRemoveOpen] = useState(false);
 
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
   useEffect(() => {
@@ -203,6 +210,45 @@ export default function ProfilePage() {
     }
   }
 
+  /** The photo is the person's own: checked here for a quick answer, checked again by the API, then every avatar on the page is refreshed. */
+  async function changePhoto(file: File) {
+    setPhotoError(null);
+    const problem = photoFileProblem(file);
+    if (problem) return setPhotoError(problem);
+    const size = await readPhotoSize(file);
+    if (!size) return setPhotoError("We couldn't read that picture. Try a different file.");
+    const tooSmall = photoSizeProblem(size.width, size.height);
+    if (tooSmall) return setPhotoError(tooSmall);
+
+    setPhotoBusy(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      await apiFetch("/user/avatar", { method: "POST", body });
+      await refresh();
+      success("Photo updated");
+    } catch (e) {
+      setPhotoError(e instanceof Error ? e.message : "We couldn't save your photo. Try again.");
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  async function removePhoto() {
+    setPhotoError(null);
+    setPhotoBusy(true);
+    try {
+      await apiFetch("/user/avatar", { method: "DELETE" });
+      await refresh();
+      success("Photo removed");
+    } catch (e) {
+      error(e instanceof Error ? e.message : "We couldn't remove your photo. Try again.");
+      throw e; // the dialog stays open, so it can be tried again
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
   async function logOut() {
     await logout();
     router.replace("/login");
@@ -288,11 +334,19 @@ export default function ProfilePage() {
               changed={demo ? SIGN_IN.passwordChanged : undefined}
               email={email}
               linkNote={SIGN_IN.linkExpires}
-              twoStep={demo ? SIGN_IN.twoStep : undefined}
+              twoStep={
+                twoStep.data
+                  ? {
+                      on: twoStep.data.enabled,
+                      available: twoStep.data.available,
+                      detail: !twoStep.data.available ? TWO_STEP_UNAVAILABLE : twoStep.data.enabled ? twoStepDetail(twoStep.data, memberSince) : TWO_STEP_OFF,
+                    }
+                  : undefined
+              }
               sendingLink={sendingLink}
               onChangePassword={changePassword}
               onSendLink={() => void sendResetLink()}
-              onManage={() => toast(NOT_YET)}
+              onManage={() => setTwoStepOpen(true)}
             />
             <DevicesCard
               data={devices.data}
@@ -322,8 +376,10 @@ export default function ProfilePage() {
               subtitle={[demo ? sample.jobTitle : profile.label, workspaceName].filter(Boolean).join(" · ")}
               role={profile.label}
               duty={profile.duty}
-              onChangePhoto={() => toast(NOT_YET)}
-              onRemovePhoto={() => toast(NOT_YET)}
+              onChoosePhoto={(file) => void changePhoto(file)}
+              onRemovePhoto={() => setRemoveOpen(true)}
+              busy={photoBusy}
+              photoError={photoError}
             />
             <RolePermissionsCard
               profile={profile}
@@ -344,7 +400,27 @@ export default function ProfilePage() {
         </ImportActionBar>
       </div>
 
+      <TwoStepDialog
+        open={twoStepOpen}
+        onOpenChange={setTwoStepOpen}
+        enabled={Boolean(twoStep.data?.enabled)}
+        recoveryLeft={twoStep.data?.recoveryLeft}
+        email={email}
+        onChanged={() => {
+          twoStep.reload();
+          devices.reload(); // turning it on signs the other devices out
+        }}
+      />
       <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} onChanged={devices.reload} />
+      <ConfirmDialog
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        title="Remove your photo?"
+        description="Your initials show instead. You can add a photo again at any time."
+        confirmLabel="Remove"
+        pendingLabel="Removing…"
+        onConfirm={removePhoto}
+      />
       <ConfirmDialog
         open={othersOpen}
         onOpenChange={setOthersOpen}

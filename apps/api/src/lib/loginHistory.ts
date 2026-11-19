@@ -5,6 +5,8 @@ import { cleanUserAgent } from "./deviceLabel.js";
 export const LOGIN_HISTORY_DAYS = 30;
 
 export const WRONG_PASSWORD = "Wrong password";
+/** The password was right and the code from the authenticator app (or a recovery code) was not. */
+export const WRONG_CODE = "Wrong two-step code";
 
 /**
  * Writes one line of the account's sign-in history. A history that cannot be written must never stop a person from

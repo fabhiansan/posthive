@@ -3,7 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
-  user: null as null | { id: string; email: string; name: string; avatarUrl: null; timezone: string; passwordHash: string | null },
+  user: null as null | { id: string; email: string; name: string; avatarUrl: null; timezone: string; passwordHash: string | null; totpEnabledAt?: Date | null },
   valid: true,
   events: [] as any[],
   sessions: [] as any[],
@@ -40,6 +40,37 @@ beforeEach(() => {
   h.sessions = [];
   h.eventsFail = false;
   vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+describe("login with two-step verification on", () => {
+  beforeEach(() => {
+    h.user = { ...USER, totpEnabledAt: new Date("2026-11-18T03:00:00Z") };
+  });
+
+  it("the right password alone opens NO session: the answer says a code is needed, and names the person for the challenge", async () => {
+    const result = await localAuthProvider.login("a@b.co", "pw", CHROME);
+    expect(result).toEqual({ twoStepRequired: true, userId: "u1" });
+    expect(result).not.toHaveProperty("accessToken");
+    expect(result).not.toHaveProperty("refreshToken");
+    expect(h.sessions).toHaveLength(0);
+  });
+
+  it("nothing is written to the sign-in history yet: a sign-in is recorded when a session opens, after the code", async () => {
+    await localAuthProvider.login("a@b.co", "pw", CHROME);
+    expect(h.events).toHaveLength(0);
+  });
+
+  it("a wrong password is still a wrong password: the same message, the same line, and no hint that two-step is on", async () => {
+    h.valid = false;
+    await expect(localAuthProvider.login("a@b.co", "bad", CHROME)).rejects.toThrow("Invalid email or password");
+    expect(h.events).toEqual([{ userId: "u1", userAgent: CHROME, success: false, failure: "Wrong password" }]);
+  });
+
+  it("an account whose two-step was turned off signs in with the password alone, as before", async () => {
+    h.user = { ...USER, totpEnabledAt: null };
+    expect(await localAuthProvider.login("a@b.co", "pw", CHROME)).toHaveProperty("accessToken");
+    expect(h.sessions).toHaveLength(1);
+  });
 });
 
 describe("login", () => {

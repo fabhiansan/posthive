@@ -14,6 +14,8 @@ type Props = {
   invalid?: boolean;
   describedBy?: string;
   autoFocus?: boolean;
+  /** For a light surface (a dialog): dark digits on the field colour. The default is for the dark auth panel. */
+  light?: boolean;
 };
 
 const digitsOf = (s: string) => s.replace(/\D/g, "");
@@ -22,7 +24,7 @@ const digitsOf = (s: string) => s.replace(/\D/g, "");
  * One box per digit. Typing moves forward, Backspace moves back, paste (or OS autofill) fills every box.
  * `value` never has gaps: focus always lands on the first empty box.
  */
-export function CodeInput({ value, onChange, onComplete, length = 6, busy, invalid, describedBy, autoFocus }: Props) {
+export function CodeInput({ value, onChange, onComplete, length = 6, busy, invalid, describedBy, autoFocus, light }: Props) {
   const refs = useRef<(HTMLInputElement | null)[]>([]);
   const group = useRef<HTMLDivElement>(null);
   // Always the newest value. `commit` moves focus BEFORE React re-renders, and the focus
@@ -97,9 +99,11 @@ export function CodeInput({ value, onChange, onComplete, length = 6, busy, inval
             else e.target.select();
           }}
           className={cn(
-            "h-14 w-11 min-w-0 rounded-xl border bg-white/10 text-center type-head-r-4 text-white outline-none transition-colors",
-            "focus:border-brand-500 sm:h-20 sm:w-17 short:sm:h-16",
-            invalid ? "border-red-400" : "border-neutral-500",
+            "min-w-0 rounded-xl border text-center outline-none transition-colors",
+            light
+              ? "h-12 w-10 bg-bg type-head-r-4 text-fg focus:border-primary sm:w-11"
+              : "h-14 w-11 bg-white/10 type-head-r-4 text-white focus:border-brand-500 sm:h-20 sm:w-17 short:sm:h-16",
+            invalid ? "border-red-400" : light ? "border-border" : "border-neutral-500",
           )}
         />
       ))}

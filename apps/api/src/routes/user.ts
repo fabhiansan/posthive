@@ -11,6 +11,8 @@ import { passwordProblem, RESET_LINK_TTL_MIN } from "../lib/auth/passwordPolicy.
 import { generateCode, hashCode, isCodeFormat } from "../lib/auth/emailCode.js";
 import { markEmailVerified, verifyEmailCode } from "../lib/auth/emailVerification.js";
 import { claimResetAndSetPassword } from "../lib/auth/passwordReset.js";
+import { createChallenge } from "../lib/auth/twoStep.js";
+import { guessLimit } from "../lib/ipRateLimit.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../lib/mailer.js";
 
 const registerBody = z.object({
@@ -57,7 +59,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
   // Register
   app.post("/auth/register", {
-    config: { rateLimit: { max: 10, timeWindow: "15 minutes" } },
+    config: guessLimit(10),
   }, async (req, reply) => {
     const parsed = registerBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: firstIssue(parsed.error) });
@@ -95,17 +97,20 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
   // Login
   app.post("/auth/login", {
-    config: { rateLimit: { max: 10, timeWindow: "15 minutes" } },
+    config: guessLimit(10),
   }, async (req, reply) => {
     const parsed = loginBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: firstIssue(parsed.error) });
 
     try {
-      const { user, accessToken, refreshToken } = await authProvider.login(
-        parsed.data.email, parsed.data.password, req.headers["user-agent"]
-      );
-      setAuthCookies(reply, accessToken, refreshToken, { persistent: parsed.data.remember });
-      return reply.send({ user });
+      const result = await authProvider.login(parsed.data.email, parsed.data.password, req.headers["user-agent"]);
+      // Right password, but the account wants a code first: no cookie yet, only a challenge for POST /auth/login/two-step
+      if ("twoStepRequired" in result) {
+        const challenge = await createChallenge(result.userId, req.headers["user-agent"], parsed.data.remember);
+        return reply.status(202).send({ twoStepRequired: true, challenge });
+      }
+      setAuthCookies(reply, result.accessToken, result.refreshToken, { persistent: parsed.data.remember });
+      return reply.send({ user: result.user });
     } catch (err) {
       return reply.status(401).send({ error: String(err instanceof Error ? err.message : err) });
     }
@@ -249,7 +254,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
   // Request reset — always returns 200 to avoid email enumeration
   app.post("/auth/forgot-password", {
-    config: { rateLimit: { max: 5, timeWindow: "15 minutes" } },
+    config: guessLimit(5),
   }, async (req, reply) => {
     const { email } = req.body as { email?: string };
     if (!email) return reply.status(400).send({ error: "Email required" });
@@ -291,7 +296,7 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
 
   // Consume reset token + set new password
   app.post("/auth/reset-password", {
-    config: { rateLimit: { max: 10, timeWindow: "15 minutes" } },
+    config: guessLimit(10),
   }, async (req, reply) => {
     const { token, password } = req.body as { token?: string; password?: string };
     if (!token || !password) return reply.status(400).send({ error: "Token and password required" });
@@ -328,8 +333,15 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     if (!(await claimResetAndSetPassword(reset.id, reset.userId, passwordHash))) {
       return reply.status(400).send({ error: "This reset link is invalid or has expired." });
     }
-    // Everything signed in with the old password is out; this request gets a fresh session.
+    // Everything signed in with the old password is out.
     await authProvider.revokeOtherSessions?.(reset.userId);
+
+    // The link proves the person can read the mailbox, which is the one thing two-step verification does not trust: with it
+    // on, the reset sets the password and stops there. The new password then logs in the usual way, and asks for a code.
+    const protectedAccount = await prisma.user.findUnique({ where: { id: reset.userId }, select: { totpEnabledAt: true } });
+    if (protectedAccount?.totpEnabledAt) return reply.send({ ok: true, loggedIn: false });
+
+    // This request gets a fresh session.
     const { accessToken, refreshToken } = await createLocalTokens(reset.userId, req.headers["user-agent"]);
     setAuthCookies(reply, accessToken, refreshToken);
 

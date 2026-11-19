@@ -28,7 +28,10 @@ export function authErrorMessage(status: number, error: unknown, fallback: strin
   return typeof error === "string" && error ? error : fallback;
 }
 
-async function postAuth(path: string, body: unknown, fallback: string): Promise<AuthUser> {
+/** What a sign-in answers: a person who is in, or (right password, two-step on) a challenge that waits for a code. */
+export type LoginResult = { user: AuthUser } | { challenge: string };
+
+async function postAuthRaw(path: string, body: unknown, fallback: string): Promise<{ user?: AuthUser; challenge?: string; twoStepRequired?: boolean }> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -36,15 +39,21 @@ async function postAuth(path: string, body: unknown, fallback: string): Promise<
     body: JSON.stringify(body),
   });
   // A rate-limit or proxy error may not be JSON.
-  const data = await res.json().catch(() => ({})) as { user?: AuthUser; error?: unknown };
+  const data = await res.json().catch(() => ({})) as { user?: AuthUser; challenge?: string; twoStepRequired?: boolean; error?: unknown };
   if (!res.ok) throw new Error(authErrorMessage(res.status, data.error, fallback));
-  return data.user!;
+  return data;
+}
+
+async function postAuth(path: string, body: unknown, fallback: string): Promise<AuthUser> {
+  return (await postAuthRaw(path, body, fallback)).user!;
 }
 
 /** `remember: false` = "Keep me logged in" unchecked: cookies end when the browser closes. */
-export async function login(email: string, password: string, remember = true): Promise<AuthUser> {
+export async function login(email: string, password: string, remember = true): Promise<LoginResult> {
   try {
-    return await postAuth("/auth/login", { email, password, remember }, "Login failed");
+    const data = await postAuthRaw("/auth/login", { email, password, remember }, "Login failed");
+    if (data.twoStepRequired && data.challenge) return { challenge: data.challenge };
+    return { user: data.user! };
   } catch (err) {
     // The API says "Invalid email or password"; the design wants this wording.
     if (err instanceof Error && err.message === "Invalid email or password") {
@@ -53,6 +62,14 @@ export async function login(email: string, password: string, remember = true): P
     throw err;
   }
 }
+
+/** The second step of a sign-in: the code from the authenticator app, or a recovery code. */
+export async function loginWithCode(challenge: string, code: string): Promise<AuthUser> {
+  return postAuth("/auth/login/two-step", { challenge, code }, "That code didn't work. Try again.");
+}
+
+/** The API's `code` for a challenge that ran out: the person has to start again from the password. */
+export const CHALLENGE_EXPIRED = "That sign-in took too long. Enter your email and password again.";
 
 /** The API's message when the email is taken. The sign-up form shows it inline with a login link. */
 export const EMAIL_TAKEN = "Email already in use";

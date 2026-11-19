@@ -9,6 +9,7 @@ import { PasswordInput } from "../../components/PasswordInput";
 import { AuthShell, AuthHeading } from "../../components/auth/AuthShell";
 import { AuthAlert } from "../../components/auth/AuthAlert";
 import { OAuthButtons, OrDivider } from "../../components/auth/OAuthButtons";
+import { TwoStepLogin } from "../../components/auth/TwoStepLogin";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -20,6 +21,7 @@ const OAUTH_ERRORS: Record<string, string> = {
   google_email_unverified: "Google says this email isn't verified. Verify it with Google, or log in another way.",
   linkedin_oauth_failed: "LinkedIn sign-in didn't work. Please try again.",
   linkedin_not_configured: "LinkedIn sign-in isn't available yet.",
+  two_step_required: "This account uses two-step verification. Log in with your email and password, then enter your code.",
   linkedin_email_unverified: "LinkedIn says this email isn't verified. Verify it on LinkedIn, or log in another way.",
 };
 
@@ -38,14 +40,24 @@ function LoginContent() {
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Right password, two-step verification on: the page asks for the code until the challenge is answered or given up
+  const [challenge, setChallenge] = useState<string | null>(null);
+
+  async function enter() {
+    await refresh();
+    router.replace(returnTo ?? "/dashboard");
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true); setError(null);
     try {
-      await login(email, password, remember);
-      await refresh();
-      router.replace(returnTo ?? "/dashboard");
+      const result = await login(email, password, remember);
+      if ("challenge" in result) {
+        setChallenge(result.challenge);
+        return;
+      }
+      await enter();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
@@ -54,6 +66,23 @@ function LoginContent() {
   }
 
   const shownError = error ?? oauthError;
+
+  if (challenge) {
+    return (
+      <AuthShell cta="signup" returnTo={returnTo}>
+        <TwoStepLogin
+          challenge={challenge}
+          onDone={enter}
+          onBack={(notice) => {
+            setChallenge(null);
+            setPassword("");
+            setError(notice ?? null);
+          }}
+        />
+      </AuthShell>
+    );
+  }
+
   const info = expired
     ? "Your session has ended. Please log in again."
     : passwordReset

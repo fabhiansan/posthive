@@ -5,6 +5,7 @@ const db = vi.hoisted(() => ({
   update: vi.fn(),
   create: vi.fn(),
   workspaceCreate: vi.fn(),
+  recoveryDelete: vi.fn(),
 }));
 const revokeOtherSessions = vi.hoisted(() => vi.fn());
 
@@ -12,6 +13,7 @@ vi.mock("../prisma.js", () => ({
   prisma: {
     user: { findUnique: db.findUnique, update: db.update, create: db.create },
     workspace: { create: db.workspaceCreate },
+    recoveryCode: { deleteMany: db.recoveryDelete },
   },
 }));
 vi.mock("../mailer.js", () => ({ sendWelcomeEmail: vi.fn().mockResolvedValue(undefined) }));
@@ -35,10 +37,24 @@ describe("findOrCreateOAuthUser", () => {
     expect(isNew).toBe(false);
     expect(db.update).toHaveBeenCalledWith({
       where: { id: "u1" },
-      data: { emailVerified: true, passwordHash: null },
+      data: { emailVerified: true, passwordHash: null, totpSecret: null, totpEnabledAt: null, totpLastStep: null },
     });
     expect(user.emailVerified).toBe(true);
     expect(revokeOtherSessions).toHaveBeenCalledWith("u1");
+  });
+
+  it("unverified sign-up: a second step the squatter enrolled goes too, with its recovery codes", async () => {
+    db.findUnique.mockResolvedValue({ ...base, emailVerified: false, passwordHash: "attacker-hash", totpEnabledAt: new Date(), totpSecret: "enc:secret" });
+    await findOrCreateOAuthUser({ email: "a@b.c" });
+    expect(db.update.mock.calls[0][0].data).toMatchObject({ totpSecret: null, totpEnabledAt: null, totpLastStep: null });
+    expect(db.recoveryDelete).toHaveBeenCalledWith({ where: { userId: "u1" } });
+  });
+
+  it("verified account: its two-step enrolment is left alone", async () => {
+    db.findUnique.mockResolvedValue({ ...base, emailVerified: true, passwordHash: "real-hash", totpEnabledAt: new Date(), totpSecret: "enc:secret" });
+    await findOrCreateOAuthUser({ email: "a@b.c", avatarUrl: "x.png" });
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.recoveryDelete).not.toHaveBeenCalled();
   });
 
   it("verified account: keeps the password and sessions", async () => {

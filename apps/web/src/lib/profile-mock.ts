@@ -89,5 +89,4 @@ export const NOTIFICATIONS: NotificationChoice[] = [
 export const SIGN_IN = {
   passwordChanged: "Last changed 2 months ago",
   linkExpires: "Link expires after 30 minutes · request a new one anytime",
-  twoStep: { on: true, detail: "Authenticator app · added 13 Nov 2026" },
 };

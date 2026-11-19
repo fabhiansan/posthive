@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 const h = vi.hoisted(() => ({
   login: vi.fn(),
+  loginWithCode: vi.fn(),
   refresh: vi.fn(async () => {}),
   replace: vi.fn(),
   search: new URLSearchParams(),
@@ -15,13 +16,15 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => h.search,
 }));
 vi.mock("../../context/AuthContext", () => ({ useAuth: () => ({ refresh: h.refresh }) }));
-vi.mock("../../lib/auth", async (orig) => ({ ...(await orig<typeof import("../../lib/auth")>()), login: h.login }));
+vi.mock("../../lib/auth", async (orig) => ({ ...(await orig<typeof import("../../lib/auth")>()), login: h.login, loginWithCode: h.loginWithCode }));
 
 import LoginPage from "./page";
 
 beforeEach(() => {
   h.login.mockReset();
-  h.login.mockResolvedValue({});
+  h.login.mockResolvedValue({ user: {} }); // what login() answers when the person is in
+  h.loginWithCode.mockReset();
+  h.loginWithCode.mockResolvedValue({});
   h.replace.mockReset();
   h.search = new URLSearchParams();
 });
@@ -111,7 +114,7 @@ describe("login page", () => {
 
   it("while it logs in, the button says so and cannot be pressed again", async () => {
     let finish!: () => void;
-    h.login.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    h.login.mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ user: {} }); }));
     render(<LoginPage />);
     await fill();
     await userEvent.click(screen.getByRole("button", { name: "Log in" }));
@@ -132,5 +135,83 @@ describe("login page", () => {
     h.search = new URLSearchParams({ error: "google_email_unverified" });
     render(<LoginPage />);
     expect(screen.getByRole("alert").textContent).toContain("Google says this email isn't verified");
+  });
+});
+
+describe("login page: two-step verification", () => {
+  const CHALLENGE = "c".repeat(64);
+  const digits = () => screen.getByLabelText("Digit 1 of 6");
+
+  /** Types the password and gets to the code step, as a person with two-step on does. */
+  async function reachCodeStep() {
+    h.login.mockResolvedValue({ challenge: CHALLENGE });
+    render(<LoginPage />);
+    await fill();
+    await userEvent.click(screen.getByRole("button", { name: "Log in" }));
+    await screen.findByText("Enter your code");
+  }
+
+  it("a right password that needs a code does not log in: the page asks for the code and opens nothing yet", async () => {
+    await reachCodeStep();
+    expect(h.replace).not.toHaveBeenCalled();
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Password")).toBeNull(); // the password form is gone while the code is asked for
+  });
+
+  it("the six digits go to the API with the challenge, then the person is in and goes where they were going", async () => {
+    h.search = new URLSearchParams({ returnTo: "/jobs" });
+    await reachCodeStep();
+    await userEvent.type(digits(), "123456");
+    await waitFor(() => expect(h.loginWithCode).toHaveBeenCalledWith(CHALLENGE, "123456"));
+    await waitFor(() => expect(h.replace).toHaveBeenCalledWith("/jobs"));
+    expect(h.refresh).toHaveBeenCalled();
+  });
+
+  it("a wrong code is said in words, the boxes are cleared, and the same step stays for another try", async () => {
+    h.loginWithCode.mockRejectedValue(new Error("That code isn't right. Check your app and try again."));
+    await reachCodeStep();
+    await userEvent.type(digits(), "000000");
+    expect((await screen.findByRole("alert")).textContent).toContain("That code isn't right. Check your app and try again.");
+    expect((digits() as HTMLInputElement).value).toBe("");
+    expect(h.replace).not.toHaveBeenCalled();
+    expect(screen.getByText("Enter your code")).toBeTruthy();
+  });
+
+  it("a recovery code can be typed instead, and goes to the API as typed", async () => {
+    await reachCodeStep();
+    await userEvent.click(screen.getByRole("button", { name: "Use a recovery code" }));
+    expect(screen.getByText("Use a recovery code", { selector: "h1, h2" })).toBeTruthy();
+    const field = screen.getByLabelText("Recovery code");
+    const submit = screen.getByRole("button", { name: "Log in" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    await userEvent.type(field, "abcde-fghjk");
+    expect(submit.disabled).toBe(false);
+    await userEvent.click(submit);
+    await waitFor(() => expect(h.loginWithCode).toHaveBeenCalledWith(CHALLENGE, "abcde-fghjk"));
+    await waitFor(() => expect(h.replace).toHaveBeenCalledWith("/dashboard"));
+  });
+
+  it("something that cannot be a recovery code does not enable the button", async () => {
+    await reachCodeStep();
+    await userEvent.click(screen.getByRole("button", { name: "Use a recovery code" }));
+    await userEvent.type(screen.getByLabelText("Recovery code"), "short");
+    expect((screen.getByRole("button", { name: "Log in" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("when the sign-in ran out (5 wrong codes, or 5 minutes) the page goes back to the password with the reason", async () => {
+    h.loginWithCode.mockRejectedValue(new Error("That sign-in took too long. Enter your email and password again."));
+    await reachCodeStep();
+    await userEvent.type(digits(), "123456");
+    expect((await screen.findByRole("alert")).textContent).toContain("That sign-in took too long. Enter your email and password again.");
+    expect(screen.getByLabelText("Email")).toBeTruthy(); // the email and password form is back
+    expect((document.getElementById("password") as HTMLInputElement).value).toBe(""); // and the password is not kept
+    expect(h.replace).not.toHaveBeenCalled();
+  });
+
+  it("Back to log in returns to the form without an error", async () => {
+    await reachCodeStep();
+    await userEvent.click(screen.getByRole("button", { name: "Back to log in" }));
+    expect(screen.getByLabelText("Email")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

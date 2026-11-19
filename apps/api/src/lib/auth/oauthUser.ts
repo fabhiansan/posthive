@@ -18,15 +18,20 @@ export async function findOrCreateOAuthUser(p: {
   const existing = await prisma.user.findUnique({ where: { email: p.email } });
 
   if (existing) {
-    const data: { avatarUrl?: string; emailVerified?: boolean; passwordHash?: null } = {};
+    const data: { avatarUrl?: string; emailVerified?: boolean; passwordHash?: null; totpSecret?: null; totpEnabledAt?: null; totpLastStep?: null } = {};
     // Backfill avatar for users who signed up before the provider picture was saved
     if (p.avatarUrl && !existing.avatarUrl) data.avatarUrl = p.avatarUrl;
     const takeOver = !existing.emailVerified;
-    if (takeOver) { data.emailVerified = true; data.passwordHash = null; }
+    // The sign-up never proved the address, so whatever it set up is not the owner's: the password, and also a second step it
+    // enrolled (otherwise the real owner would be asked for a code from the squatter's phone).
+    if (takeOver) { data.emailVerified = true; data.passwordHash = null; data.totpSecret = null; data.totpEnabledAt = null; data.totpLastStep = null; }
 
     if (Object.keys(data).length === 0) return { user: existing, isNew: false };
     const user = await prisma.user.update({ where: { id: existing.id }, data });
-    if (takeOver) await authProvider.revokeOtherSessions?.(existing.id);
+    if (takeOver) {
+      await authProvider.revokeOtherSessions?.(existing.id);
+      await prisma.recoveryCode.deleteMany({ where: { userId: existing.id } });
+    }
     return { user, isNew: false };
   }
 

@@ -23,6 +23,11 @@ model User {
   timezone     String  @default("UTC")
 
   emailVerified Boolean @default(false)
+  // Two-step verification (an authenticator app). totpSecret is encrypted; it counts only once totpEnabledAt is set.
+  // totpLastStep is the newest 30-second step already accepted, so a code cannot be used twice. lib/totp.ts
+  totpSecret    String?
+  totpEnabledAt DateTime?
+  totpLastStep  Int?
   // "Send me tips & product updates" on the sign-up form. Unchecked or social sign-up = false.
   marketingOptIn Boolean @default(false)
 
@@ -41,6 +46,8 @@ model User {
   reviewedJobs       PostJob[]           @relation("PostJobReviewedBy")
   submittedJobs      PostJob[]           @relation("PostJobSubmittedBy")
   loginEvents        LoginEvent[]
+  recoveryCodes      RecoveryCode[]
+  totpChallenges     TotpChallenge[]
   authSessions       AuthSession[]
   apiKeys            ApiKey[]
   emailVerifications EmailVerification[]
@@ -147,6 +154,34 @@ model AuthSession {
   userAgent     String?
 
   @@index([userId])
+}
+
+// One-time codes for a person who has lost their phone. Only a hash is kept; a code is shown once, when it is made.
+model RecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// A login that has the right password and is waiting for its code: 5 minutes, 5 wrong codes. Only the token's hash is kept.
+model TotpChallenge {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  userAgent String?
+  remember  Boolean  @default(true)
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 // A sign-in, or a wrong password on a real account: "Recent sign-ins" on the profile page. Kept 30 days. No IP address.

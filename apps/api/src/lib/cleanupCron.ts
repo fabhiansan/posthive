@@ -33,6 +33,9 @@ async function runCleanup(): Promise<void> {
     where: { OR: [{ expiresAt: { lt: new Date(now) } }, { lastActiveAt: { lt: cut1d } }] },
   });
 
+  // A login that waited for its code and never got it
+  await prisma.totpChallenge.deleteMany({ where: { expiresAt: { lt: new Date(now) } } });
+
   // Sign-in history: the profile page shows 30 days (LOGIN_HISTORY_DAYS), so a line older than that is of no use
   await prisma.loginEvent.deleteMany({ where: { at: { lt: cut30d } } });
 
@@ -154,19 +157,19 @@ async function runCleanup(): Promise<void> {
     }
   }
 
-  // Clean up orphaned profile-pics from storage
+  // Clean up orphaned profile-pics and avatars (a person's own photo) from storage
   const adapter = storageAdapter;
   if (adapter) {
     try {
       const [storedFiles, accounts, users] = await Promise.all([
-        adapter.listFolder("profile-pics"),
+        Promise.all([adapter.listFolder("profile-pics"), adapter.listFolder("avatars")]).then(([a, b]) => [...a, ...b]),
         prisma.account.findMany({ select: { avatarUrl: true } }),
         prisma.user.findMany({ select: { avatarUrl: true } }),
       ]);
 
       // Normalize to just the filename so local paths (/uploads/profile-pics/x.jpg)
       // and full URLs (http://localhost:3001/uploads/profile-pics/x.jpg) match correctly.
-      const toFilename = (url: string) => url.split("/profile-pics/")[1] ?? url;
+      const toFilename = (url: string) => url.split(/\/(?:profile-pics|avatars)\//)[1] ?? url;
 
       const referencedFilenames = new Set<string>([
         ...accounts.flatMap((a) => (a.avatarUrl ? [toFilename(a.avatarUrl)] : [])),

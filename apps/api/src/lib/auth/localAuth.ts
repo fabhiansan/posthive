@@ -71,6 +71,10 @@ export const localAuthProvider: AuthProvider = {
       throw new Error("Invalid email or password");
     }
 
+    // The right password is not the whole login when the account has two-step verification: no session until the code is
+    // right (routes/twoStep.ts). Nothing is written to the sign-in history yet: that happens when a session opens.
+    if (user.totpEnabledAt) return { twoStepRequired: true, userId: user.id };
+
     // Other devices keep their own sessions; expired ones are removed lazily on use.
     const { sessionId, refreshToken } = await startSession(user.id, userAgent);
     return { user: toAuthUser(user), accessToken: signAccess(user.id, sessionId), refreshToken };

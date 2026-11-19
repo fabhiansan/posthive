@@ -2109,6 +2109,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: profile.picture,
       });
 
+      // An account with two-step verification is asked for its code at the email-and-password login. Google vouches for the
+      // address, but a mailbox is the one thing the second step does not trust (see POST /auth/reset-password).
+      if (dbUser.totpEnabledAt) return reply.redirect(`${WEB_URL}/login?error=two_step_required`);
       const { accessToken, refreshToken } = await createLocalTokens(dbUser.id, req.headers["user-agent"]);
       setAuthCookies(reply, accessToken, refreshToken);
 
@@ -2284,6 +2287,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: profile.picture,
       });
 
+      // Same rule as Google above: two-step is asked for at the email-and-password login, not skipped by an email match
+      if (dbUser.totpEnabledAt) return fail("two_step_required");
       const { accessToken, refreshToken } = await createLocalTokens(dbUser.id, req.headers["user-agent"]);
       setAuthCookies(reply, accessToken, refreshToken);
 

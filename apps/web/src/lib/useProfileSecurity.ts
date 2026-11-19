@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "./api";
 import type { ApiActivity, ApiDevices } from "./profile-security";
+import type { ApiTwoStep } from "./two-step";
 
 export interface Loaded<T> {
   data: T | null;
@@ -48,6 +49,9 @@ function useLoaded<T>(path: string): Loaded<T> {
 
 /** The devices the account is open on and its recent sign-ins. */
 export const useDevices = () => useLoaded<ApiDevices>("/user/devices");
+
+/** Whether two-step verification is on, since when, and how many recovery codes are left. */
+export const useTwoStep = () => useLoaded<ApiTwoStep>("/user/two-step");
 
 /** What the person did this quarter. */
 export const useActivity = () => useLoaded<ApiActivity>("/user/activity");

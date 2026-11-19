@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
   others: [] as [string, string][],
   hasPassword: true,
   user: null as null | Record<string, unknown>,
+  /** What the browser reads as the size of the chosen picture (jsdom has no createImageBitmap); null = not a picture it can read */
+  photoSize: { width: 800, height: 600 } as null | { width: number; height: number },
   toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
@@ -26,6 +28,7 @@ vi.mock("@/context/WorkspaceContext", () => ({
   },
 }));
 vi.mock("@/components/Toast", () => ({ useToast: () => h.toast }));
+vi.mock("@/lib/profile-photo", async (orig) => ({ ...(await orig<typeof import("@/lib/profile-photo")>()), readPhotoSize: async () => h.photoSize }));
 vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: h.replace, push: vi.fn() }), usePathname: () => "/profile" }));
 vi.mock("next/link", () => ({
@@ -80,6 +83,7 @@ function base(path: string, accounts: unknown = ACCOUNTS): unknown {
   if (path === "/accounts") return accounts;
   if (path === "/user/devices") return DEVICES;
   if (path === "/user/activity") return ACTIVITY;
+  if (path === "/user/two-step") return { enabled: false, enabledAt: null, recoveryLeft: 0, available: true };
   return { ok: true };
 }
 
@@ -99,6 +103,7 @@ beforeEach(() => {
   h.others = [];
   h.hasPassword = true;
   h.user = { id: "u1", name: "Puteri A.", email: "puteri@braga.geo", avatarUrl: null, role: "member", hasPassword: true };
+  h.photoSize = { width: 800, height: 600 };
   h.refresh.mockResolvedValue(undefined);
   h.logout.mockResolvedValue(undefined);
   serve();
@@ -237,8 +242,8 @@ describe("My Profile: in production the sample is left out", () => {
     expect(await screen.findByText("Devices & login history")).toBeTruthy();
     expect(await screen.findByText("Chrome on macOS", { selector: "p" })).toBeTruthy();
     expect(await screen.findByText("Posts imported")).toBeTruthy();
-    expect(screen.queryByText("Two-step verification")).toBeNull();
-    expect(screen.queryByText(/Authenticator app/)).toBeNull();
+    // two-step verification is real now: its row is there in production too, and says what the API says
+    expect(await screen.findByText("Two-step verification")).toBeTruthy();
     expect(screen.queryByText(/Last changed/)).toBeNull();
     expect(screen.queryByText(/annual/)).toBeNull();
     expect(screen.queryByText(/Dewi W\./)).toBeNull();
@@ -367,15 +372,11 @@ describe("My Profile: Save and Cancel", () => {
 });
 
 describe("My Profile: the buttons", () => {
-  it("the ones with no backend yet say so and change nothing", async () => {
+  it("opening the page reads only what the page shows: accounts, activity, devices and the two-step state", async () => {
     render(<ProfilePage />);
-    for (const name of ["Change photo", "Remove", "Manage"]) {
-      await userEvent.click(screen.getByRole("button", { name }));
-    }
-    expect(h.toast.toast).toHaveBeenCalledTimes(3);
-    expect(h.toast.toast).toHaveBeenCalledWith("Not available yet");
-    // nothing but what the page reads when it opens
-    expect(h.apiFetch.mock.calls.map(([p]) => p).sort()).toEqual(["/accounts", "/user/activity", "/user/devices"]);
+    await screen.findByText("Two-step verification");
+    expect(h.apiFetch.mock.calls.map(([p]) => p).sort()).toEqual(["/accounts", "/user/activity", "/user/devices", "/user/two-step"]);
+    expect(h.toast.toast).not.toHaveBeenCalledWith("Not available yet"); // nothing on this page says "not yet" any more
   });
 
   it("Send reset link mails the account's own email", async () => {
@@ -740,5 +741,331 @@ describe("My Profile: your activity", () => {
     render(<ProfilePage />);
     expect(await screen.findByText("Posts imported")).toBeTruthy();
     vi.unstubAllEnvs();
+  });
+});
+
+describe("My Profile: the photo", () => {
+  const picker = () => screen.getByLabelText("Choose a photo") as HTMLInputElement;
+  // applyAccept off: a browser's file dialog can be switched to All files, so a wrong file still reaches the page
+  const pick = (file: File) => userEvent.setup({ applyAccept: false }).upload(picker(), file);
+  const png = (size = 1000, type = "image/png", name = "me.png") => new File([new Uint8Array(size)], name, { type });
+  const withPhoto = () => {
+    h.user = { ...h.user!, avatarUrl: "http://localhost:3001/uploads/avatars/me.webp" };
+  };
+
+  it("Change photo opens the file picker, which takes only JPG, PNG and WebP", async () => {
+    render(<ProfilePage />);
+    expect(picker().accept).toBe("image/jpeg,image/png,image/webp");
+    const click = vi.spyOn(picker(), "click");
+    await userEvent.click(screen.getByRole("button", { name: "Change photo" }));
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it("a good picture is sent as the file field, every avatar is refreshed, and the person is told", async () => {
+    render(<ProfilePage />);
+    const file = png();
+    await pick(file);
+    await waitFor(() => expect(calls("/user/avatar")).toHaveLength(1));
+    const [, init] = calls("/user/avatar")[0];
+    expect(init.method).toBe("POST");
+    expect((init.body as FormData).get("file")).toBe(file);
+    await waitFor(() => expect(h.refresh).toHaveBeenCalledTimes(1));
+    expect(h.toast.success).toHaveBeenCalledWith("Photo updated");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a file that is not a picture is not sent, and the reason is on the page", async () => {
+    render(<ProfilePage />);
+    await pick(png(1000, "application/pdf", "cv.pdf"));
+    expect((await screen.findByRole("alert")).textContent).toBe("That file isn't a JPG, PNG or WebP picture.");
+    expect(calls("/user/avatar")).toHaveLength(0);
+  });
+
+  it("a file over 5 MB is not sent", async () => {
+    render(<ProfilePage />);
+    await pick(png(5_000_001));
+    expect((await screen.findByRole("alert")).textContent).toBe("The picture is larger than 5 MB.");
+    expect(calls("/user/avatar")).toHaveLength(0);
+  });
+
+  it("a picture under 400 x 400 is not sent, and the size is in the words", async () => {
+    h.photoSize = { width: 300, height: 900 };
+    render(<ProfilePage />);
+    await pick(png());
+    expect((await screen.findByRole("alert")).textContent).toBe("The picture is smaller than 400 × 400 px. Use a bigger one.");
+    expect(calls("/user/avatar")).toHaveLength(0);
+  });
+
+  it("a file the browser cannot read as a picture is not sent", async () => {
+    h.photoSize = null;
+    render(<ProfilePage />);
+    await pick(png());
+    expect((await screen.findByRole("alert")).textContent).toBe("We couldn't read that picture. Try a different file.");
+    expect(calls("/user/avatar")).toHaveLength(0);
+  });
+
+  it("when the API refuses, its words are on the page, nothing is refreshed, and the next try clears them", async () => {
+    answers["/user/avatar"] = new Error("The picture is larger than 5 MB.");
+    render(<ProfilePage />);
+    await pick(png());
+    expect((await screen.findByRole("alert")).textContent).toBe("The picture is larger than 5 MB.");
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.toast.success).not.toHaveBeenCalled();
+    delete answers["/user/avatar"];
+    await pick(png());
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("Remove is off while there is no photo", async () => {
+    render(<ProfilePage />);
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("Remove asks first; confirming deletes the photo, refreshes, and says so; cancelling does nothing", async () => {
+    withPhoto();
+    render(<ProfilePage />);
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Remove your photo?")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(calls("/user/avatar")).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(calls("/user/avatar")).toHaveLength(1));
+    expect(calls("/user/avatar")[0][1]).toEqual({ method: "DELETE" });
+    await waitFor(() => expect(h.refresh).toHaveBeenCalledTimes(1));
+    expect(h.toast.success).toHaveBeenCalledWith("Photo removed");
+  });
+
+  it("when Remove fails the dialog stays so it can be tried again, and the failure is said", async () => {
+    withPhoto();
+    answers["/user/avatar"] = new Error("Something went wrong");
+    render(<ProfilePage />);
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Something went wrong"));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(h.refresh).not.toHaveBeenCalled();
+  });
+
+  it("the buttons wait while a photo is being saved", async () => {
+    let finish: (v: unknown) => void = () => {};
+    h.apiFetch.mockImplementation(async (path: string) => (path === "/user/avatar" ? new Promise((r) => (finish = r)) : base(path)));
+    withPhoto();
+    render(<ProfilePage />);
+    await pick(png());
+    const change = await screen.findByRole("button", { name: "Saving…" });
+    expect((change as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+    finish({ user: {} });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Change photo" })).toBeTruthy());
+  });
+});
+
+describe("My Profile: two-step verification", () => {
+  const ON = { enabled: true, enabledAt: "2026-11-18T03:00:00.000Z", recoveryLeft: 6, available: true };
+  const row = () => screen.getByText("Two-step verification").closest("li")!;
+
+  it("while it is off the row says what it does and offers Turn on; there is no 'On' pill", async () => {
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    expect(within(row()).getByRole("button", { name: "Turn on" })).toBeTruthy();
+    expect(within(row()).queryByText("On")).toBeNull();
+  });
+
+  it("when the API says it is on, the row says since when and how many recovery codes are left, with Manage", async () => {
+    answers["/user/two-step"] = ON;
+    render(<ProfilePage />);
+    expect(await screen.findByText("On since 18 Nov 2026 · 6 recovery codes left")).toBeTruthy();
+    expect(within(row()).getByText("On")).toBeTruthy();
+    expect(within(row()).getByRole("button", { name: "Manage" })).toBeTruthy();
+  });
+
+  it("an account that signs in with Google or LinkedIn is told why, and has no button", async () => {
+    answers["/user/two-step"] = { enabled: false, enabledAt: null, recoveryLeft: 0, available: false };
+    render(<ProfilePage />);
+    expect(await screen.findByText("Your account signs in with Google or LinkedIn, which has its own verification.")).toBeTruthy();
+    expect(within(row()).queryByRole("button")).toBeNull();
+  });
+
+  it("nothing is claimed before the API has answered: no 'On', no made-up date", async () => {
+    answers["/user/two-step"] = new Error("down");
+    render(<ProfilePage />);
+    await screen.findByText("Password recovery");
+    expect(screen.queryByText("Two-step verification")).toBeNull();
+    expect(screen.queryByText(/Authenticator app/)).toBeNull();
+  });
+
+  it("Turn on opens the dialog and asks the API for a fresh secret", async () => {
+    answers["/user/two-step/start"] = { setupKey: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/Postly:a%40b.co?secret=JBSWY3DPEHPK3PXP&issuer=Postly" };
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    await userEvent.click(within(row()).getByRole("button", { name: "Turn on" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Turn on two-step verification")).toBeTruthy();
+    await waitFor(() => expect(calls("/user/two-step/start")).toHaveLength(1));
+    expect(within(dialog).getByText("JBSW Y3DP EHPK 3PXP")).toBeTruthy(); // the key to type, in groups
+    expect(within(dialog).getByRole("img", { name: /QR code/ })).toBeTruthy();
+  });
+
+  it("the right first code turns it on, shows the recovery codes once, and the page reads the state and the devices again", async () => {
+    answers["/user/two-step/start"] = { setupKey: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/Postly:a%40b.co?secret=JBSWY3DPEHPK3PXP&issuer=Postly" };
+    answers["/user/two-step/enable"] = { ok: true, recoveryCodes: ["AAAAA-BBBBB", "CCCCC-DDDDD"] };
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    await userEvent.click(within(row()).getByRole("button", { name: "Turn on" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("JBSW Y3DP EHPK 3PXP");
+    const before = { state: calls("/user/two-step").length, devices: calls("/user/devices").length };
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "Password123");
+    await userEvent.type(within(dialog).getByLabelText("Digit 1 of 6"), "123456");
+    await waitFor(() => expect(calls("/user/two-step/enable")).toHaveLength(1));
+    expect(calls("/user/two-step/enable")[0][1]).toEqual({ method: "POST", body: JSON.stringify({ password: "Password123", code: "123456" }) });
+    expect(await within(dialog).findByText("Save your recovery codes")).toBeTruthy();
+    expect(within(dialog).getByText("AAAAA-BBBBB")).toBeTruthy();
+    await waitFor(() => expect(calls("/user/two-step").length).toBe(before.state + 1)); // the row will say On
+    expect(calls("/user/devices").length).toBe(before.devices + 1); // the other devices were signed out
+  });
+
+  // The page reads the state again as soon as it is on, so `enabled` turns true while the codes are on screen. The dialog must
+  // keep showing them: swapping them for "Manage" would lose the only copy the person will ever see.
+  it("the recovery codes stay on screen when the page learns that it is on", async () => {
+    answers["/user/two-step/start"] = { setupKey: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP" };
+    answers["/user/two-step/enable"] = { ok: true, recoveryCodes: ["AAAAA-BBBBB", "CCCCC-DDDDD"] };
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    await userEvent.click(within(row()).getByRole("button", { name: "Turn on" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("JBSW Y3DP EHPK 3PXP");
+    // from now on the API says it is on, which is what the page reads after enabling
+    answers["/user/two-step"] = { enabled: true, enabledAt: "2026-11-18T03:00:00.000Z", recoveryLeft: 2, available: true };
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "Password123");
+    await userEvent.type(within(dialog).getByLabelText("Digit 1 of 6"), "123456");
+    await within(dialog).findByText("Save your recovery codes");
+    await screen.findByText("On since 18 Nov 2026 · 2 recovery codes left"); // the page has learned it is on...
+    expect(within(dialog).getByText("AAAAA-BBBBB")).toBeTruthy(); // ...and the codes are still there
+    expect(within(dialog).queryByText("Two-step verification")).toBeNull(); // not replaced by Manage
+    expect(within(dialog).queryByRole("button", { name: "Turn off" })).toBeNull();
+  });
+
+  it("the recovery codes cannot be closed away before they are saved: Done waits for the tick, and so does the close button", async () => {
+    answers["/user/two-step/start"] = { setupKey: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP" };
+    answers["/user/two-step/enable"] = { ok: true, recoveryCodes: ["AAAAA-BBBBB"] };
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    await userEvent.click(within(row()).getByRole("button", { name: "Turn on" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("JBSW Y3DP EHPK 3PXP");
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "Password123");
+    await userEvent.type(within(dialog).getByLabelText("Digit 1 of 6"), "123456");
+    await within(dialog).findByText("Save your recovery codes");
+    expect((within(dialog).getByRole("button", { name: "Done" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toMatch(/Save your recovery codes first/);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: "I saved these codes" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("the six digits typed before the password are not sent: the dialog says to type the password first", async () => {
+    answers["/user/two-step/start"] = { setupKey: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP" };
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    await userEvent.click(within(row()).getByRole("button", { name: "Turn on" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("JBSW Y3DP EHPK 3PXP");
+    await userEvent.type(within(dialog).getByLabelText("Digit 1 of 6"), "123456");
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Type your password first.");
+    expect(calls("/user/two-step/enable")).toHaveLength(0);
+  });
+
+  it("a wrong first code is said in words, clears the boxes, and the dialog stays so it can be tried again", async () => {
+    answers["/user/two-step/start"] = { setupKey: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/x?secret=JBSWY3DPEHPK3PXP" };
+    answers["/user/two-step/enable"] = new Error("That code isn't right. Check your app and try again.");
+    render(<ProfilePage />);
+    await screen.findByText("Ask for a code from an authenticator app each time you sign in.");
+    await userEvent.click(within(row()).getByRole("button", { name: "Turn on" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("JBSW Y3DP EHPK 3PXP");
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "Password123");
+    await userEvent.type(within(dialog).getByLabelText("Digit 1 of 6"), "000000");
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("That code isn't right. Check your app and try again.");
+    expect((within(dialog).getByLabelText("Digit 1 of 6") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("Manage turns it off only with the password AND a code, and the button waits until both are typed", async () => {
+    answers["/user/two-step"] = ON;
+    answers["/user/two-step/disable"] = { ok: true };
+    render(<ProfilePage />);
+    await screen.findByText("On since 18 Nov 2026 · 6 recovery codes left");
+    await userEvent.click(within(row()).getByRole("button", { name: "Manage" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("6 recovery codes left.")).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
+    const confirm = within(dialog).getByRole("button", { name: "Turn off" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "Password123");
+    expect(confirm.disabled).toBe(true); // a password alone is not enough
+    await userEvent.type(within(dialog).getByLabelText("Code from your app, or a recovery code"), "123456");
+    expect(confirm.disabled).toBe(false);
+    await userEvent.click(confirm);
+    await waitFor(() => expect(calls("/user/two-step/disable")).toHaveLength(1));
+    expect(calls("/user/two-step/disable")[0][1]).toEqual({ method: "POST", body: JSON.stringify({ password: "Password123", code: "123456" }) });
+    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Two-step verification is off"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("a refused Turn off keeps the dialog open with the reason, and a recovery code is accepted as the code", async () => {
+    answers["/user/two-step"] = ON;
+    answers["/user/two-step/disable"] = new Error("Your password isn't right.");
+    render(<ProfilePage />);
+    await screen.findByText("On since 18 Nov 2026 · 6 recovery codes left");
+    await userEvent.click(within(row()).getByRole("button", { name: "Manage" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "wrong");
+    await userEvent.type(within(dialog).getByLabelText("Code from your app, or a recovery code"), "ABCDE-FGHJK");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Your password isn't right.");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(calls("/user/two-step/disable")[0][1]).toEqual({ method: "POST", body: JSON.stringify({ password: "wrong", code: "ABCDE-FGHJK" }) });
+  });
+
+  it("new recovery codes need the password and a code too, and then show the new codes once", async () => {
+    answers["/user/two-step"] = ON;
+    answers["/user/two-step/recovery-codes"] = { ok: true, recoveryCodes: ["NEWAA-BBBBB"] };
+    render(<ProfilePage />);
+    await screen.findByText("On since 18 Nov 2026 · 6 recovery codes left");
+    await userEvent.click(within(row()).getByRole("button", { name: "Manage" }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "New recovery codes" }));
+    expect(within(dialog).getByText("The codes you have now stop working.")).toBeTruthy();
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "Password123");
+    await userEvent.type(within(dialog).getByLabelText("Code from your app, or a recovery code"), "123456");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Make new codes" }));
+    expect(await within(dialog).findByText("NEWAA-BBBBB")).toBeTruthy();
+    expect(calls("/user/two-step/recovery-codes")[0][1]).toEqual({ method: "POST", body: JSON.stringify({ password: "Password123", code: "123456" }) });
+  });
+
+  it("what was typed is gone when the dialog is opened again", async () => {
+    answers["/user/two-step"] = ON;
+    render(<ProfilePage />);
+    await screen.findByText("On since 18 Nov 2026 · 6 recovery codes left");
+    await userEvent.click(within(row()).getByRole("button", { name: "Manage" }));
+    let dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
+    await userEvent.type(within(dialog).getByLabelText("Your password"), "secret-typed");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Back" }));
+    expect((await within(dialog).findAllByRole("button", { name: "Turn off" })).length).toBeGreaterThan(0);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(within(row()).getByRole("button", { name: "Manage" }));
+    dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Turn off" }));
+    expect((within(dialog).getByLabelText("Your password") as HTMLInputElement).value).toBe("");
   });
 });

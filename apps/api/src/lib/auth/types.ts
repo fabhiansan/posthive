@@ -11,6 +11,9 @@ export interface TokenPair {
   refreshToken: string;
 }
 
+/** A login is done, or the password was right and the account wants a code before it opens a session (routes/twoStep.ts). */
+export type LoginResult = ({ user: AuthUser } & TokenPair) | { twoStepRequired: true; userId: string };
+
 export interface RefreshResult {
   accessToken: string;
   /** null = keep the refresh cookie the client already has (rotation grace window). */
@@ -20,7 +23,7 @@ export interface RefreshResult {
 export interface AuthProvider {
   /** `userAgent` is the browser's header: the session list says which device each session is. */
   register(email: string, password: string, name: string, userAgent?: string): Promise<{ user: AuthUser } & TokenPair>;
-  login(email: string, password: string, userAgent?: string): Promise<{ user: AuthUser } & TokenPair>;
+  login(email: string, password: string, userAgent?: string): Promise<LoginResult>;
   /** `sessionId` is set by providers with server-side sessions (local). */
   validateAccessToken(token: string): Promise<(AuthUser & { sessionId?: string }) | null>;
   refreshTokens(refreshToken: string): Promise<RefreshResult | null>;

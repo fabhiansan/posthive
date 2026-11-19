@@ -11,8 +11,8 @@ type Props = {
   email: string;
   /** "Link expires after 30 minutes · request a new one anytime" */
   linkNote: string;
-  /** The second step of signing in; left out when the app has none. */
-  twoStep?: { on: boolean; detail: string };
+  /** The second step of signing in, as the API says it is. Not drawn until it has answered. */
+  twoStep?: { on: boolean; detail: string; available: boolean };
   sendingLink: boolean;
   onChangePassword: () => void;
   onSendLink: () => void;
@@ -61,11 +61,11 @@ export function PasswordCard({ lastSignIn, changed, email, linkNote, twoStep, se
         </Row>
 
         {twoStep && (
-          <Row action={<QuietAction onClick={onManage}>Manage</QuietAction>}>
+          <Row action={twoStep.available ? <QuietAction onClick={onManage}>{twoStep.on ? "Manage" : "Turn on"}</QuietAction> : undefined}>
             <h3 className="flex flex-wrap items-center gap-2 type-body-m-s text-fg">
               Two-step verification
               {twoStep.on && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1.25 type-body-r-xxs text-green-600">
+                <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-1.25 type-body-r-xxs text-green-700">
                   <span aria-hidden="true" className="size-1.5 rounded-full bg-green-600" />
                   On
                 </span>
