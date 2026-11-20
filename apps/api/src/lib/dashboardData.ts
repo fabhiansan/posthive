@@ -133,9 +133,22 @@ export function listWhere(base: Where, kind: ListKind, now: Date): Where {
   return { AND: [base, extra] };
 }
 
-/** Posts of one person still being worked on or waiting to go out, scheduled for one WIB day: "my tasks today". */
-export function tasksWhere(base: Where, userId: string, key: string): Where {
-  return { AND: [dayWhere(base, key), { userId, status: { in: ["draft", ...STATUS_GROUPS.pending] } }] };
+/**
+ * "Today's tasks": every draft dated for one WIB day, at any stage (brief, in review, sent back for changes). Whose drafts
+ * the person sees is `base`'s business (the role's draft visibility), not this filter's. A draft leaves the list when it is
+ * approved, because approving schedules it.
+ */
+export function tasksWhere(base: Where, key: string): Where {
+  return { AND: [dayWhere(base, key), draft] };
+}
+
+/**
+ * "Today Publish": what is out of draft for one WIB day: approved and scheduled, published, or failed. A post the reviewer
+ * approved is scheduled, and one scheduled straight away (owner, admin, a workspace without the approval gate) never had a
+ * reviewer: both go out today, so both are here, and no draft is.
+ */
+export function publishWhere(base: Where, key: string): Where {
+  return { AND: [dayWhere(base, key), { status: { not: "draft" } }] };
 }
 
 /** Posts scheduled for one WIB day, whatever state they are in. */

@@ -23,7 +23,10 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 /** Posts a panel lists before "and N more": the panel is a glance, the Posts page has the rest. */
 const SIDE_ROWS = 3;
 
-/** Today's publishing, today's tasks, the quarter's milestones and the channels: the right-hand column. */
+/**
+ * Today's publishing (posts a reviewer approved, or that were scheduled directly: out of draft), today's tasks (the drafts
+ * dated today, still to be made, reviewed or fixed), the quarter's milestones and the channels: the right-hand column.
+ */
 export function SideColumn({ data, today, canImport = true }: Props) {
   const { plan, today: publishToday, milestones, channels, tasksToday, taskRows } = data;
   const anyDisconnected = channels.some((c) => !c.connected);
@@ -61,7 +64,7 @@ export function SideColumn({ data, today, canImport = true }: Props) {
             size="inline"
             icon={<CalendarDaysIcon />}
             title="Nothing publishing today"
-            description="Posts scheduled for today will appear here with their approval status."
+            description="Posts approved and scheduled for today, and any that went out, show up here."
             action={
               <Button asChild variant="outline-brand" className="w-full">
                 <Link href="/compose">
@@ -97,7 +100,7 @@ export function SideColumn({ data, today, canImport = true }: Props) {
             size="inline"
             icon={<CheckIcon />}
             title="No tasks today"
-            description="Your own posts scheduled for today, and not out yet, show up here."
+            description="Drafts dated for today show up here until they are approved and scheduled."
           />
         )}
       </SectionPanel>

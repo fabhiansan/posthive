@@ -30,7 +30,7 @@ const NOTHING: ApiDashboard = {
   needAttention: 0,
   needAttentionBy: [],
   todayPosts: { count: 0, posts: [] },
-  myTasks: { count: 0, posts: [] },
+  tasks: { count: 0, posts: [] },
   lists: { upcoming: { count: 0, posts: [] }, attention: { count: 0, posts: [] }, risk: { count: 0, posts: [] }, activity: { count: 0, posts: [] } },
   channels: [],
   setup: { imported: false, created: false, accounts: 0, members: 1, invites: 0 },
@@ -154,9 +154,9 @@ describe("StatGrid", () => {
   it("shows the pipeline with six stages at 0, and the four stat cards", () => {
     render(<StatGrid data={empty} />);
     expect(screen.getByText("Production pipeline")).toBeTruthy();
-    expect(screen.getAllByText("posts in progress")).toHaveLength(2); // the pipeline and "My tasks today"
+    expect(screen.getAllByText("posts in progress")).toHaveLength(2); // the pipeline and "Tasks today"
     expect(within(screen.getByRole("list", { name: "Production stages" })).getAllByRole("listitem")).toHaveLength(6);
-    for (const t of ["Drafts to schedule", "Published", "Need attention", "My tasks today"]) expect(screen.getByText(t)).toBeTruthy();
+    for (const t of ["Drafts to schedule", "Published", "Need attention", "Tasks today"]) expect(screen.getByText(t)).toBeTruthy();
     expect(screen.getByText("Nothing at risk right now")).toBeTruthy();
   });
 
@@ -180,7 +180,7 @@ describe("StatGrid", () => {
   it("the two arrow buttons are named links", () => {
     render(<StatGrid data={empty} />);
     expect(screen.getByRole("link", { name: "See posts that need attention" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "See my tasks" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "See today's tasks" })).toBeTruthy();
   });
 
   it("the totals use the quarter's quota", () => {
@@ -553,7 +553,7 @@ describe("SideColumn: today's posts and tasks", () => {
     expect(screen.getByText("Launch teaser")).toBeTruthy();
     expect(screen.getAllByText("Instagram · 09:00 WIB")).toHaveLength(2);
     expect(screen.getAllByText("Approved").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Scheduled today · ready to publish")).toHaveLength(2);
+    expect(screen.getAllByText("Approved · ready to publish")).toHaveLength(2);
     expect(screen.getByText("and 1 more")).toBeTruthy();
     expect(screen.queryByText("Nothing publishing today")).toBeNull();
   });
@@ -576,10 +576,36 @@ describe("SideColumn: today's posts and tasks", () => {
     expect(screen.getByRole("heading", { name: /Today Publish/ }).closest("[data-slot=card]")!.parentElement!.className).toContain("min-w-0");
   });
 
-  it("a failed post says so and what to do; a post waiting for review says it is waiting", () => {
-    render(<SideColumn data={{ ...empty, today: { count: 2, rows: [row("1", "Broke", { publication: "failed" }), row("2", "Waiting", { production: "review", publication: null })] } }} today={TODAY} />);
+  it("Today Publish says what became of a post: out, failed with what to do, or approved and waiting for its time", () => {
+    render(<SideColumn data={{ ...empty, today: { count: 3, rows: [row("1", "Broke", { publication: "failed" }), row("2", "Gone out", { publication: "published" }), row("3", "Waits")] } }} today={TODAY} />);
     expect(screen.getByText("Publishing failed · needs a retry")).toBeTruthy();
-    expect(screen.getByText("Waiting for approval")).toBeTruthy();
+    expect(screen.getByText("Published today")).toBeTruthy();
+    expect(screen.getByText("Approved · ready to publish")).toBeTruthy();
+  });
+
+  // The two panels used to be the other way round: Publish listed every post of the day, drafts included ("Waiting for approval"),
+  // and Tasks listed the approved, scheduled ones. A draft is work still to do, so it is a task; it is not publishing today.
+  it("a draft is a task and not a publish: the task says what it is waiting for, the publish list has no wording for a draft", () => {
+    const draft = (id: string, title: string, patch: Partial<ContentRow>): ContentRow => row(id, title, { publication: null, status: "draft", ...patch });
+    render(
+      <SideColumn
+        data={{
+          ...empty,
+          tasksToday: 3,
+          taskRows: [
+            draft("1", "No brief yet", { production: "brief" }),
+            draft("2", "In review", { production: "review", approvalStatus: "pending" }),
+            draft("3", "Sent back", { production: "changes", approvalStatus: "rejected" }),
+          ],
+        }}
+        today={TODAY}
+      />,
+    );
+    expect(screen.getByText("Not sent for review yet · Due 09:00 WIB · Instagram")).toBeTruthy();
+    expect(screen.getByText("Waiting for approval · Due 09:00 WIB · Instagram")).toBeTruthy();
+    expect(screen.getByText("Changes requested · Due 09:00 WIB · Instagram")).toBeTruthy();
+    // the same three in Today Publish would be a mistake: nothing there reads "Waiting for approval" any more
+    expect(screen.queryByText("Draft · not scheduled yet")).toBeNull();
   });
 
   it("shows the post's own picture when it has one", () => {
@@ -600,10 +626,10 @@ describe("SideColumn: today's posts and tasks", () => {
   });
 
   it("the tasks panel is counted in its title and says when each is due", () => {
-    render(<SideColumn data={{ ...empty, tasksToday: 3, taskRows: [row("9", "My draft", { production: "brief", publication: null })] }} today={TODAY} />);
-    expect(screen.getByText("My draft")).toBeTruthy();
+    render(<SideColumn data={{ ...empty, tasksToday: 3, taskRows: [row("9", "A draft", { production: "brief", publication: null })] }} today={TODAY} />);
+    expect(screen.getByText("A draft")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Today's tasks · 3" })).toBeTruthy();
-    expect(screen.getByText("Due 09:00 WIB · Instagram")).toBeTruthy();
+    expect(screen.getByText("Not sent for review yet · Due 09:00 WIB · Instagram")).toBeTruthy();
     expect(screen.queryByText("No tasks today")).toBeNull();
   });
 
@@ -625,6 +651,7 @@ describe("SideColumn: today's posts and tasks", () => {
   it("with no tasks it explains what counts as one", () => {
     render(<SideColumn data={empty} today={TODAY} />);
     expect(screen.getByText("No tasks today")).toBeTruthy();
-    expect(screen.getByText(/Your own posts scheduled for today/)).toBeTruthy();
+    expect(screen.getByText(/Drafts dated for today show up here/)).toBeTruthy();
+    expect(screen.getByText(/Posts approved and scheduled for today/)).toBeTruthy();
   });
 });

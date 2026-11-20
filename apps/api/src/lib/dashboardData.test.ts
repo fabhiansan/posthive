@@ -12,6 +12,7 @@ import {
   quarterOf,
   rangeWhere,
   readyToSchedule,
+  publishWhere,
   tasksWhere,
   toPost,
   toQueuePost,
@@ -134,12 +135,38 @@ describe("what each list holds", () => {
     expect(json).toContain('"notIn":["pending","rejected"]');
   });
 
-  it("my tasks are the signed-in person's own posts of that day that are not done", () => {
-    const json = clauses(tasksWhere(base, "user-1", "2026-11-09"));
-    expect(json).toContain('"userId":"user-1"');
-    expect(json).toContain('"draft"');
-    expect(json).toContain('"running"');
-    expect(json).not.toContain("done");
+  it("today's tasks are the drafts of that day, of anybody the role may see: not narrowed to a person, and not a post that is out", () => {
+    const json = clauses(tasksWhere(base, "2026-11-09"));
+    expect(json).toContain('"gte":"2026-11-08T17:00:00.000Z","lt":"2026-11-09T17:00:00.000Z"');
+    expect(json).toContain('"status":"draft"');
+    expect(json).not.toContain("userId"); // it used to be the person's own
+    expect(json).not.toContain("pending"); // a scheduled post is a post that was approved: it is Today Publish
+    expect(json).not.toContain("running");
+  });
+
+  it("today publish is what has left draft on that day: scheduled (approved), published or failed, never a draft", () => {
+    const json = clauses(publishWhere(base, "2026-11-09"));
+    expect(json).toContain('"gte":"2026-11-08T17:00:00.000Z","lt":"2026-11-09T17:00:00.000Z"');
+    expect(json).toContain('"status":{"not":"draft"}');
+    expect(json).not.toContain("userId");
+  });
+
+  // An owner, an admin, or anyone in a workspace without the approval gate schedules straight away: the post is `pending` with
+  // approvalStatus null, and no reviewer ever touched it. It still goes out today, so it must be in Today Publish. Asking for
+  // approvalStatus "approved" would drop it from both panels (it is not a draft, so it is not a task either).
+  it("today publish does not ask for a reviewer's approval: a post scheduled directly goes out today too", () => {
+    const json = clauses(publishWhere(base, "2026-11-09"));
+    expect(json).not.toContain("approvalStatus");
+    expect(json).not.toContain("approved");
+  });
+
+  it("the two cover the day between them without overlapping: a post is a task or a publish, never both, never neither", () => {
+    // every status a post can hold falls on exactly one side of "draft"
+    const isTask = (status: string) => status === "draft";
+    const isPublish = (status: string) => status !== "draft";
+    for (const status of ["draft", "pending", "running", "done", "comment_done", "post_done", "failed", "post_failed", "comment_failed"]) {
+      expect(Number(isTask(status)) + Number(isPublish(status))).toBe(1);
+    }
   });
 });
 

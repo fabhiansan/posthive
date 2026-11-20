@@ -36,11 +36,11 @@ vi.mock("../lib/prisma.js", () => {
           // Each count has one clause nothing else has; the order matters (the more specific first)
           const json = JSON.stringify(args);
           if (json.includes('"updatedAt"')) return h.counts.activity ?? 0;
-          if (json.includes('"userId":"user-1","status"')) return h.counts.tasks ?? 0;
           if (json.includes('"targets"')) return h.counts.ready ?? 0;
           if (json.includes('"scheduledFor":{"gte":"2026-11-09T05:00:00.000Z"')) return h.counts.risk ?? 0;
           if (json.includes('"importKey":null')) return h.counts.attention ?? 0;
-          if (json.includes('"lt":"2026-11-09T17:00:00.000Z"')) return h.counts.today ?? 0;
+          // a day is [start, next start): the day's draft count is the tasks, the day's not-a-draft count is Today Publish
+          if (json.includes('"lt":"2026-11-09T17:00:00.000Z"')) return json.includes('"status":{"not":"draft"}') ? (h.counts.today ?? 0) : (h.counts.tasks ?? 0);
           return h.counts.upcoming ?? 0;
         }),
         findMany: record("postJob", "findMany", (args) => {
@@ -190,8 +190,52 @@ describe("GET /dashboard", () => {
     expect(json.needAttention).toBe(2);
     expect(json.readyToSchedule).toBe(5);
     expect(json.todayPosts.count).toBe(3);
-    expect(json.myTasks.count).toBe(2);
+    expect(json.tasks.count).toBe(2);
+    expect(json.myTasks).toBeUndefined(); // renamed: the tasks are no longer "mine"
     expect(json.lists.upcoming.posts[0]).toMatchObject({ id: "a", title: "Post a", channels: ["instagram"], owner: "Putri" });
+  });
+
+  // The two panels beside the calendar: Today's tasks are the drafts of the day, Today Publish is what is out of draft that day.
+  // The reverse (every post in Publish, only the person's own in Tasks) is what the page used to show.
+  describe("today's tasks and today's publish", () => {
+    const dayQueries = () =>
+      h.calls.filter((c) => c.model === "postJob" && c.fn === "findMany" && JSON.stringify(c.args).includes('"lt":"2026-11-09T17:00:00.000Z"'));
+    const isTasks = (c: { args: unknown }) => JSON.stringify(c.args).includes('"status":"draft"') && !JSON.stringify(c.args).includes('"status":{"not":"draft"}');
+    const isPublish = (c: { args: unknown }) => JSON.stringify(c.args).includes('"status":{"not":"draft"}');
+
+    it("asks for two different things: the day's drafts, and the day's posts that are not drafts", async () => {
+      await app.inject({ method: "GET", url: "/dashboard" });
+      const day = dayQueries();
+      expect(day.filter(isTasks)).toHaveLength(1);
+      expect(day.filter(isPublish)).toHaveLength(1);
+    });
+
+    it("the tasks are not narrowed to the person: another person's draft of the day is a task too", async () => {
+      h.role = "member";
+      await app.inject({ method: "GET", url: "/dashboard" });
+      const tasks = dayQueries().find(isTasks)!;
+      expect(JSON.stringify(tasks.args)).not.toContain('"userId":"user-1"');
+    });
+
+    it("what a role may not see stays hidden in both: an admin's tasks keep the draft visibility rule", async () => {
+      h.role = "admin";
+      await app.inject({ method: "GET", url: "/dashboard" });
+      for (const q of dayQueries()) expect(JSON.stringify(q.args)).toContain('"approvalStatus":"pending"');
+    });
+
+    it("Today Publish has no draft in it and no filter on the maker: scheduled, published and failed all count", async () => {
+      await app.inject({ method: "GET", url: "/dashboard" });
+      const publish = JSON.stringify(dayQueries().find(isPublish)!.args);
+      expect(publish).toContain('"status":{"not":"draft"}');
+      expect(publish).not.toContain('"userId":"user-1"');
+    });
+
+    it("counts both with their own query, so a number is the whole day and not the page", async () => {
+      h.counts = { today: 7, tasks: 4 };
+      const json = (await app.inject({ method: "GET", url: "/dashboard" })).json();
+      expect(json.todayPosts.count).toBe(7);
+      expect(json.tasks.count).toBe(4);
+    });
   });
 
   it("counts the attention posts by what they are, all of them, however many a page holds", async () => {
@@ -270,16 +314,10 @@ describe("GET /dashboard", () => {
     expect(orders.filter((o) => o.includes('"updatedAt":"desc"'))).toHaveLength(1);
   });
 
-  it("the signed-in person's tasks are filtered by their id", async () => {
-    h.userId = "user-1";
-    await app.inject({ method: "GET", url: "/dashboard" });
-    const tasks = h.calls.find((c) => c.model === "postJob" && c.fn === "findMany" && JSON.stringify(c.args).includes('"userId":"user-1","status"'));
-    expect(tasks).toBeTruthy();
-  });
-
   it("sends only the first 10 rows of each list: the rest are asked for a page at a time", async () => {
     await app.inject({ method: "GET", url: "/dashboard" });
-    const lists = h.calls.filter((c) => c.fn === "findMany" && c.model === "postJob" && JSON.stringify((c.args as { orderBy?: unknown }).orderBy ?? "").match(/nulls|updatedAt/) && !JSON.stringify(c.args).includes('"userId":"user-1","status"'));
+    // the four tab lists; the day's two panels (tasks, publish) are not among them
+    const lists = h.calls.filter((c) => c.fn === "findMany" && c.model === "postJob" && JSON.stringify((c.args as { orderBy?: unknown }).orderBy ?? "").match(/nulls|updatedAt/) && !JSON.stringify(c.args).includes('"lt":"2026-11-09T17:00:00.000Z"'));
     expect(lists).toHaveLength(4);
     for (const q of lists) expect((q.args as { take: number }).take).toBe(10);
   });

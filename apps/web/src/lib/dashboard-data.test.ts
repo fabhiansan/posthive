@@ -34,7 +34,7 @@ const api = (patch: Partial<ApiDashboard> = {}): ApiDashboard => ({
   needAttention: 1,
   needAttentionBy: [{ status: "failed", approvalStatus: null, count: 1 }],
   todayPosts: { count: 2, posts: [post({ id: "t1" })] },
-  myTasks: { count: 3, posts: [post({ id: "m1" })] },
+  tasks: { count: 3, posts: [post({ id: "m1" })] },
   lists: {
     upcoming: { count: 31, posts: [post({ id: "u1" })] },
     attention: { count: 1, posts: [post({ id: "a1", status: "failed" })] },

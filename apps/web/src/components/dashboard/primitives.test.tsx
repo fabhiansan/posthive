@@ -89,7 +89,7 @@ describe("StatCard", () => {
   });
 
   it("without a total there is no bar and no '/'", () => {
-    render(<StatCard title="My tasks today" subtitle="Assigned to you" value={2} unit="posts in progress" />);
+    render(<StatCard title="Tasks today" subtitle="Drafts dated for today" value={2} unit="posts in progress" />);
     expect(screen.queryByRole("progressbar")).toBeNull();
     expect(screen.getByText("posts in progress").textContent).toBe("posts in progress");
   });

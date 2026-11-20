@@ -61,11 +61,11 @@ export function StatGrid({ data }: Props) {
         action={<GoButton href="/jobs" label="See posts that need attention" className="bg-neutral-100/80 hover:bg-neutral-200" />}
       />
       <StatCard
-        title="My tasks today"
-        subtitle="Yours, scheduled for today"
+        title="Tasks today"
+        subtitle="Drafts dated for today"
         value={tasksToday}
         unit="posts in progress"
-        action={<GoButton href="/jobs" label="See my tasks" className="bg-neutral-100 hover:bg-neutral-200" />}
+        action={<GoButton href="/jobs" label="See today's tasks" className="bg-neutral-100 hover:bg-neutral-200" />}
       />
     </div>
   );

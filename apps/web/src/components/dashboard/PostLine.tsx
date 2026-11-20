@@ -11,20 +11,21 @@ import type { ContentRow } from "./types";
 
 type Props = {
   row: ContentRow;
-  /** "publish": today's posts, with the channel and time beside the status. "task": the person's own, with the due time under it. */
+  /** "publish": today's posts that are out of draft, with the channel and time beside the status. "task": today's drafts, with the due time under them. */
   kind: "publish" | "task";
 };
 
-/** The small print under a post: where it stands today, in words. */
+/** The small print under a post: where it stands today, in words. A draft is a task and never a publish, so it has no line in the publish list. */
 function noteOf(row: ContentRow, kind: Props["kind"]): string | null {
   const time = row.publishAt ? `${formatTime(new Date(row.publishAt))} WIB` : null;
-  if (kind === "task") return [time && `Due ${time}`, row.channels[0] && platformLabel(row.channels[0])].filter(Boolean).join(" · ") || null;
-  if (row.publication === "scheduled") return "Scheduled today · ready to publish";
+  if (kind === "task") {
+    // what the draft is waiting for: the stage is the pill, this is the next step
+    const next = row.production === "review" ? "Waiting for approval" : row.production === "changes" ? "Changes requested" : "Not sent for review yet";
+    return [next, time && `Due ${time}`, row.channels[0] && platformLabel(row.channels[0])].filter(Boolean).join(" · ");
+  }
   if (row.publication === "published") return "Published today";
   if (row.publication === "failed") return "Publishing failed · needs a retry";
-  if (row.production === "review") return "Waiting for approval";
-  if (row.production === "changes") return "Changes requested";
-  return "Draft · not scheduled yet";
+  return "Approved · ready to publish";
 }
 
 /**

@@ -43,7 +43,7 @@ const dashboard = (patch: Partial<ApiDashboard> = {}): ApiDashboard => ({
   needAttention: 1,
   needAttentionBy: [{ status: "failed", approvalStatus: null, count: 1 }],
   todayPosts: { count: 2, posts: [post({ id: "t1", title: "Today post" })] },
-  myTasks: { count: 1, posts: [post({ id: "m1", title: "My own draft" })] },
+  tasks: { count: 1, posts: [post({ id: "m1", title: "A draft of the day" })] },
   lists: {
     upcoming: { count: 31, posts: [post({ id: "u1", title: "Launch teaser" })] },
     attention: { count: 1, posts: [post({ id: "a1", title: "Failed post", status: "failed" })] },
@@ -119,7 +119,7 @@ describe("dashboard page: real data", () => {
     expect(screen.getByText("Dated drafts with a channel, not yet scheduled").closest("[data-slot=card]")!.textContent).toContain("2");
     expect(screen.getByText("Launch teaser")).toBeTruthy();
     expect(screen.getByText("Today post")).toBeTruthy();
-    expect(screen.getByText("My own draft")).toBeTruthy();
+    expect(screen.getByText("A draft of the day")).toBeTruthy();
     expect(screen.getByText("@postly.studio")).toBeTruthy();
     expect(screen.getByText("Showing 1 of 31 posts")).toBeTruthy();
     // the fixture's one post for today is scheduled for 09:00 WIB
@@ -133,7 +133,7 @@ describe("dashboard page: real data", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/^Good (morning|afternoon|evening), Putri$/);
     unmount();
 
-    serve(dashboard({ quarter: { label: "Q4 2026", planned: 0, published: 0, milestones: [], uncategorized: 0 }, setup: { imported: false, created: false, accounts: 0, members: 1, invites: 0 }, todayPosts: { count: 0, posts: [] }, myTasks: { count: 0, posts: [] } }));
+    serve(dashboard({ quarter: { label: "Q4 2026", planned: 0, published: 0, milestones: [], uncategorized: 0 }, setup: { imported: false, created: false, accounts: 0, members: 1, invites: 0 }, todayPosts: { count: 0, posts: [] }, tasks: { count: 0, posts: [] } }));
     render(<DashboardPage />);
     await screen.findByText("Plan Marketing");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Welcome to Postly, Putri");
@@ -318,7 +318,7 @@ describe("dashboard page: real data", () => {
       quarter: { label: "Q4 2026", planned: 0, published: 0, milestones: [], uncategorized: 0 },
       setup: { imported: false, created: false, accounts: 0, members: 1, invites: 0 },
       lists: { upcoming: { count: 0, posts: [] }, attention: { count: 0, posts: [] }, risk: { count: 0, posts: [] }, activity: { count: 0, posts: [] } },
-      todayPosts: { count: 0, posts: [] }, myTasks: { count: 0, posts: [] }, channels: [], inProduction: [], readyToSchedule: 0, needAttention: 0, needAttentionBy: [],
+      todayPosts: { count: 0, posts: [] }, tasks: { count: 0, posts: [] }, channels: [], inProduction: [], readyToSchedule: 0, needAttention: 0, needAttentionBy: [],
     }));
     render(<DashboardPage />);
     expect(await screen.findByText("Let's get your first campaign live")).toBeTruthy();

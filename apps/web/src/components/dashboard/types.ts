@@ -79,8 +79,9 @@ export interface DashboardData {
   needAttention: number;
   /** What the attention posts are, "1 publish failed · 1 changes requested"; left out when nothing needs attention. */
   needAttentionNote?: string;
+  /** Drafts dated today, at any stage: the work still to be done before something can go out. */
   tasksToday: number;
-  /** The first of the person's own posts for today (tasksToday may be larger). */
+  /** The first of them (tasksToday may be larger). */
   taskRows: ContentRow[];
   today: TodayPublish;
   milestones: MilestoneData;

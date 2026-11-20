@@ -41,8 +41,10 @@ export interface ApiDashboard {
   needAttention: number;
   /** The posts that need attention, counted by status and approval (all of them, not one page). */
   needAttentionBy: Array<{ status: string; approvalStatus: string | null; count: number }>;
+  /** Today Publish: what is out of draft for today (approved and scheduled, published, failed). */
   todayPosts: ApiList;
-  myTasks: ApiList;
+  /** Today's tasks: the drafts dated today, at any stage. */
+  tasks: ApiList;
   lists: Record<TabKey, ApiList>;
   channels: Array<{ platform: string; accounts: number; handle: string; posts: number }>;
   setup: { imported: boolean; created: boolean; accounts: number; members: number; invites: number };
@@ -218,8 +220,8 @@ export function toDashboardData({ api, userName, brand, canAccess }: Build): Das
     published: api.quarter.published,
     needAttention: api.needAttention,
     needAttentionNote: attentionNote(api.needAttentionBy),
-    tasksToday: api.myTasks.count,
-    taskRows: api.myTasks.posts.map(toContentRow),
+    tasksToday: api.tasks.count,
+    taskRows: api.tasks.posts.map(toContentRow),
     today: { count: api.todayPosts.count, rows: api.todayPosts.posts.map(toContentRow) },
     milestones: { rows: api.quarter.milestones, uncategorized: api.quarter.uncategorized },
     channels: channelStats(api.channels),
