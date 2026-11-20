@@ -166,11 +166,6 @@ export interface PostDetail extends ListItem {
 }
 
 /** What is recorded about a post, oldest first: when it came in, who answered its review, what failed. */
-/** A saved reason as a person reads it: a sentence the runner wrote stays as it is, a platform's raw answer is explained. */
-function readableReason(platform: string, saved: string): string {
-  return explainPublishError(platform, saved);
-}
-
 export function activityOf(job: DetailRecord, content: Record<string, unknown>): ActivityEntry[] {
   const out: ActivityEntry[] = [];
   const source = importSourceOf(content);
@@ -188,9 +183,9 @@ export function activityOf(job: DetailRecord, content: Record<string, unknown>):
   }
 
   for (const t of job.targets) {
-    // Rows saved before the runner wrote plain sentences hold the platform's JSON ("LinkedIn post failed: {...}"):
+    // A sentence the runner wrote stays as it is. Rows saved before that hold the platform's JSON ("LinkedIn post failed: {...}"):
     // explaining them here makes an old post's drawer read the same as a new one, with no backfill.
-    if (t.error && t.account) out.push({ kind: "failed", by: null, at: null, note: readableReason(t.account.platform, t.error).slice(0, 300), channel: t.account.platform });
+    if (t.error && t.account) out.push({ kind: "failed", by: null, at: null, note: explainPublishError(t.account.platform, t.error).slice(0, 300), channel: t.account.platform });
   }
   return out;
 }

@@ -31,6 +31,13 @@ describe("explainPublishError", () => {
     ["youtube", "YouTube token refresh failed — please reconnect your YouTube account. (invalid_grant)", "Your YouTube connection has expired. Reconnect YouTube on the Accounts page, then send the post again."],
     ["discord", "Discord post failed: connect ECONNREFUSED 127.0.0.1:443", "We could not reach Discord. Try again in a few minutes."],
     ["mastodon", "Mastodon API error: getaddrinfo ENOTFOUND mastodon.example", "We could not reach Mastodon. Try again in a few minutes."],
+    // a used-up quota is the account's limit, not the text's: it used to be explained as "the text is too long"
+    ["youtube", 'YouTube upload init failed: 403 {"error":{"code":403,"message":"The request cannot be completed because you have exceeded your quota.","errors":[{"reason":"quotaExceeded"}]}}', "YouTube is limiting how fast we can post. Wait a few minutes, then try again."],
+    // Facebook says "limit reached" as an OAuthException, which is also what an expired token is called
+    ["facebook", 'Facebook text post failed: {"error":{"message":"(#4) Application request limit reached","type":"OAuthException","code":4}}', "Facebook is limiting how fast we can post. Wait a few minutes, then try again."],
+    // a bare status after "failed:" (Tumblr and Threads send no JSON) was not read, and the raw line was shown
+    ["tumblr", "Tumblr post failed: 503 ", "Tumblr had a problem on its side. Try again in a few minutes."],
+    ["threads", "Threads container creation failed: 500 Internal Server Error", "Threads had a problem on its side. Try again in a few minutes."],
   ])("%s: %j is explained as a sentence", (platform, message, expected) => {
     expect(say(platform, message)).toBe(expected);
   });
@@ -52,6 +59,11 @@ describe("explainPublishError", () => {
     expect(say("twitter", 'X post failed: {"status":400,"detail":"You are not allowed to create a Tweet with duplicate content."}')).toBe("X refused the post because the same text was posted recently. Change the text and try again.");
     expect(say("facebook", 'Facebook photo post failed: {"status":400,"message":"Invalid image aspect ratio"}')).toBe("Facebook could not use the picture or video. Check the file type and size, then try again.");
     expect(say("pinterest", 'Pinterest pin creation failed (400): {"message":"Invalid parameters"}')).toBe("Pinterest rejected the post. Check the text and pictures, then try again.");
+  });
+
+  it("'exceeded' alone is not a length: a daily cap or a size cap is not 'the text is too long'", () => {
+    expect(say("pinterest", 'Pinterest pin creation failed (400): {"message":"You have exceeded your daily pin cap"}')).toBe("Pinterest rejected the post. Check the text and pictures, then try again.");
+    expect(say("lemmy", 'Lemmy post failed: {"error":"exceeded the allowed number of posts"}')).toBe("Posting to Lemmy failed. Try again, and contact support if it keeps happening.");
   });
 
   it("anything it does not know still says which platform and what to do, with no JSON in it", () => {
@@ -128,6 +140,17 @@ describe("textLimitProblem", () => {
   it("a post that fits, exactly at the limit too, has no problem", () => {
     expect(textLimitProblem("linkedin", "x".repeat(3000))).toBeNull();
     expect(textLimitProblem("bluesky", "short")).toBeNull();
+  });
+  // The compose page counts what a person sees as one character (countGraphemes). Counting UTF-16 units refused a post the page
+  // had accepted: 160 emoji are 160 on the page and 320 units, and "Bluesky allows up to 300" was said about a post of 160.
+  it("counts an emoji as one character, like the compose page does", () => {
+    expect(textLimitProblem("bluesky", "😀".repeat(160))).toBeNull();
+    expect(textLimitProblem("bluesky", "😀".repeat(300))).toBeNull();
+    expect(textLimitProblem("bluesky", "👨‍👩‍👧‍👦".repeat(60))).toBeNull(); // a family is 11 units and one character
+  });
+  it("still refuses a post that is long in characters, and says the number a person counts", () => {
+    expect(textLimitProblem("bluesky", "😀".repeat(301))).toBe("This post has 301 characters. Bluesky allows up to 300. Shorten it and try again.");
+    expect(textLimitProblem("bluesky", "a".repeat(250) + "😀".repeat(51))).toBe("This post has 301 characters. Bluesky allows up to 300. Shorten it and try again.");
   });
   it("a platform that cuts the text itself, or whose limit is not fixed, is never refused here", () => {
     for (const p of ["tiktok", "pinterest", "youtube", "lemmy", "mastodon", "twitter", "facebook", "telegram", "nostr", "tumblr"]) {

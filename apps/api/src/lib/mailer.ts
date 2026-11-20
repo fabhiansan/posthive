@@ -478,6 +478,13 @@ export async function sendWorkspaceInviteEmail(
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+/** One line per platform: "LinkedIn: <why>". The reason is text a platform or an adapter wrote, so it goes into the page escaped. */
+export function failureReasonsHtml(failures: { platform: string; reason: string }[]): string {
+  return failures
+    .map((f) => `<strong style="color:#ededed;">${escapeHtml(platformName(f.platform))}:</strong> ${escapeHtml(f.reason)}`)
+    .join("<br><br>");
+}
+
 /** `failures` says why each platform failed, in the plain sentence the drawer shows (lib/publishError.ts). */
 export async function sendPostFailedEmail(
   to: string,
@@ -487,9 +494,7 @@ export async function sendPostFailedEmail(
   failures: { platform: string; reason: string }[] = [],
 ): Promise<void> {
   const platformList = platforms.map(p => platformName(p)).join(", ");
-  const reasons = failures
-    .map((f) => `<strong style="color:#ededed;">${escapeHtml(platformName(f.platform))}:</strong> ${escapeHtml(f.reason)}`)
-    .join("<br><br>");
+  const reasons = failureReasonsHtml(failures);
   const scheduledStr = scheduledFor.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", hourCycle: "h23", timeZone: "Asia/Jakarta" }) + " WIB";
   const jobsUrl = `${APP_URL}/jobs`;
 
