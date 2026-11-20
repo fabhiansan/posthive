@@ -571,6 +571,12 @@ describe("a carousel's slide images: POST", () => {
     await app.inject({ method: "POST", url: "/templates", payload: body({ captionGuideline: "   " }) });
     expect(call("create")[0].args.data.captionGuideline).toBeNull();
   });
+
+  it("a body that sends neither field (an older editor) still creates the template, with no slides", async () => {
+    const res = await app.inject({ method: "POST", url: "/templates", payload: body({ format: "carousel", slides: 4 }) });
+    expect(res.statusCode).toBe(201);
+    expect(call("create")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: 4 });
+  });
 });
 
 describe("a carousel's slide images: PATCH", () => {
@@ -619,6 +625,56 @@ describe("a carousel's slide images: PATCH", () => {
     await edit(slides("/uploads/a.png", "/uploads/b.png", "/uploads/c.png"));
     expect(claimed()).toEqual([]);
     expect(h.storage.delete).not.toHaveBeenCalled();
+  });
+
+  // An editor from before slide images (a tab left open across a deploy) sends neither field. That is "keep", not "clear".
+  describe("an older editor sends no slideImages and no captionGuideline: the template keeps both", () => {
+    const old = (patch: Record<string, unknown> = {}) => app.inject({ method: "PATCH", url: "/templates/t1", payload: body({ format: "carousel", previewUrl: "/uploads/p.png", ...patch }) });
+
+    it("a carousel keeps its slides, their names, their count and its guideline, and no file is deleted", async () => {
+      h.rows = [stored({ captionGuideline: "Open with the problem.", slides: 3 })];
+      const res = await old({ slides: 7 });
+      expect(res.statusCode).toBe(200);
+      const data = call("update")[0].args.data;
+      expect(data).toMatchObject({ slideUrls: ["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"], slideLabels: ["Cover", "", ""], slides: 3 });
+      expect(data.captionGuideline).toBeUndefined(); // undefined = the column is not written
+      expect(h.storage.delete).not.toHaveBeenCalled();
+      expect(unclaimedDeleted()).toEqual([]);
+      expect(claimed()).toEqual([]);
+    });
+
+    it("the rest of the edit still applies (a changed Figma link)", async () => {
+      h.rows = [stored()];
+      await old({ linkUrl: "https://www.figma.com/design/XyZ/New" });
+      expect(call("update")[0].args.data).toMatchObject({ linkUrl: "https://www.figma.com/design/XyZ/New", slideUrls: ["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"] });
+    });
+
+    it("a carousel with no slide images keeps the typed slide count", async () => {
+      h.rows = [row({ format: "carousel", slides: 5, previewUrl: "/uploads/p.png" })];
+      await old({ slides: 8 });
+      expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: 8 });
+    });
+
+    it("moving to another format still drops the slides and their files (that is a decision, not a missing field)", async () => {
+      h.rows = [stored()];
+      await old({ format: "single" });
+      expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: null });
+      expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
+    });
+  });
+
+  it("an empty list that IS sent clears the slides and removes their files, and a blank guideline clears the guideline", async () => {
+    h.rows = [stored({ captionGuideline: "Open with the problem.", slides: 3 })];
+    await edit([], { slides: 4, captionGuideline: "" });
+    expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: 4, captionGuideline: null });
+    expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
+  });
+
+  it("a format other than carousel with a long list is not a slide error: the list is ignored", async () => {
+    h.rows = [stored()];
+    const res = await edit(Array.from({ length: 25 }, (_, i) => ({ url: `/uploads/s${i}.png` })), { format: "single" });
+    expect(res.statusCode).toBe(200);
+    expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slides: null });
   });
 });
 

@@ -4,10 +4,13 @@ import { prisma } from "../lib/prisma.js";
 import { withAuth, withAuthOrToken, getUser, getWorkspaceId, getWorkspaceRole, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
 import { pillarFor } from "../lib/contentTypes.js";
 import type { StorageAdapter } from "../lib/storage.js";
-import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, slideColumns, sourceOf, toLibraryTemplate, withoutTemplateMedia } from "../lib/templates.js";
+import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, slideColumns, slideImagesOf, sourceOf, toLibraryTemplate, withoutTemplateMedia, type SlideImage } from "../lib/templates.js";
 import { templateBody, type TemplateBody } from "../lib/templateBody.js";
 
-function templateData(t: TemplateBody) {
+/** A parsed body once the slide list is known: the parser leaves it out when the request did not send one. */
+type ResolvedBody = Omit<TemplateBody, "slideImages"> & { slideImages: SlideImage[] };
+
+function templateData(t: ResolvedBody) {
   return {
     name: t.category,
     category: t.category,
@@ -28,7 +31,7 @@ const statusBody = z.object({ published: z.boolean() });
 /** Every file a template holds: its preview and its slide images. */
 const filesOf = (t: { previewUrl: string | null; slideUrls?: string[] }) => [...(t.previewUrl ? [t.previewUrl] : []), ...(t.slideUrls ?? [])];
 /** The files a request body asks the template to hold. */
-const bodyFiles = (t: TemplateBody) => filesOf({ previewUrl: t.previewUrl, slideUrls: t.slideImages.map((s) => s.url) });
+const bodyFiles = (t: ResolvedBody) => filesOf({ previewUrl: t.previewUrl, slideUrls: t.slideImages.map((s) => s.url) });
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
@@ -104,7 +107,7 @@ export async function templateRoutes(
 
     const parsed = templateBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid template" });
-    const body = parsed.data;
+    const body = { ...parsed.data, slideImages: parsed.data.slideImages ?? [] };
 
     const existing = await prisma.template.findFirst({ where: { workspaceId, category: body.category }, select: { id: true } });
     if (existing) return reply.status(409).send(duplicate(body.category));
@@ -136,13 +139,18 @@ export async function templateRoutes(
 
     const parsed = templateBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? "Invalid template" });
-    const body = parsed.data;
 
     const current = await prisma.template.findFirst({
       where: { id, workspaceId },
-      select: { id: true, category: true, previewUrl: true, slideUrls: true },
+      select: { id: true, category: true, previewUrl: true, slideUrls: true, slideLabels: true },
     });
     if (!current) return reply.status(404).send({ error: "Not found" });
+
+    // An editor from before slide images (a tab left open across a deploy) sends no list: a carousel keeps its slides, so
+    // the edit neither clears them nor deletes their files. A list that is sent, even an empty one, is the new list.
+    // (The parser leaves the list undefined for a carousel only; every other format already has [].)
+    const slideImages = parsed.data.slideImages ?? slideImagesOf(current);
+    const body = { ...parsed.data, slideImages, slides: slideImages.length > 0 ? slideImages.length : parsed.data.slides };
 
     // Only a category change can create a duplicate (legacy duplicates are cleaned up separately)
     if (body.category !== current.category) {

@@ -95,20 +95,30 @@ describe("templateBody", () => {
     });
 
     it("with no images the typed slide count stays", () => {
-      expect(templateBody.parse({ ...carousel, slides: 5 })).toMatchObject({ slides: 5, slideImages: [] });
+      expect(templateBody.parse({ ...carousel, slides: 5, slideImages: [] })).toMatchObject({ slides: 5, slideImages: [] });
     });
 
-    it("any other format drops the images, and a missing list is an empty one", () => {
+    it("a list that is left out stays left out for a carousel (the route keeps the slides it has), and is empty for any other format", () => {
+      expect(templateBody.parse({ ...carousel, slides: 5 }).slideImages).toBeUndefined();
+      expect(templateBody.parse({ ...carousel, slides: 5 }).slides).toBe(5);
+      expect(templateBody.parse({ ...base, format: "single" }).slideImages).toEqual([]);
+      expect(templateBody.parse(base).slideImages).toEqual([]);
+    });
+
+    it("any other format drops the images it is sent, and does not judge them", () => {
       expect(templateBody.parse({ ...base, format: "single", slideImages: slides(3) }).slideImages).toEqual([]);
       expect(templateBody.parse({ ...base, slideImages: slides(3) }).slideImages).toEqual([]);
-      expect(templateBody.parse(carousel).slideImages).toEqual([]);
+      // a single image with 25 pictures is not "2 to 20 slides": there are no slides, the list is just ignored
+      expect(templateBody.parse({ ...base, format: "single", slideImages: slides(25) })).toMatchObject({ slideImages: [], slides: null });
+      expect(templateBody.parse({ ...base, format: "story", slideImages: [{ url: "/uploads/a.pdf" }, { url: "/uploads/a.pdf" }] }).slideImages).toEqual([]);
     });
 
     it("2 to 20 images: one is refused, 20 pass, 21 are refused", () => {
       expect(issue({ ...carousel, slideImages: slides(1) })).toMatch(/2 to 20/);
       expect(templateBody.safeParse({ ...carousel, slideImages: slides(2) }).success).toBe(true);
       expect(templateBody.safeParse({ ...carousel, slideImages: slides(20) }).success).toBe(true);
-      expect(issue({ ...carousel, slideImages: slides(21) })).toMatch(/2 to 20/);
+      expect(issue({ ...carousel, slideImages: slides(21) })).toBe("A carousel has 2 to 20 slides.");
+      expect(issue({ ...carousel, slideImages: slides(60) })).toBe("A carousel has 2 to 20 slides.");
     });
 
     it("every slide is an image, used once, with a name of at most 40 characters", () => {
@@ -120,7 +130,9 @@ describe("templateBody", () => {
 
     it("the caption guideline is trimmed, a blank one is none, and it is at most 2000 characters", () => {
       expect(templateBody.parse({ ...base, captionGuideline: "  Open with the problem.  " }).captionGuideline).toBe("Open with the problem.");
-      for (const v of [undefined, null, "", "   "]) expect(templateBody.parse({ ...base, captionGuideline: v }).captionGuideline).toBeNull();
+      for (const v of [null, "", "   "]) expect(templateBody.parse({ ...base, captionGuideline: v }).captionGuideline).toBeNull();
+      // left out = not sent = keep (an editor from before the guideline); the route writes nothing for it
+      expect(templateBody.parse(base).captionGuideline).toBeUndefined();
       expect(templateBody.safeParse({ ...base, captionGuideline: "x".repeat(2000) }).success).toBe(true);
       expect(issue({ ...base, captionGuideline: "x".repeat(2001) })).toMatch(/2000/);
     });

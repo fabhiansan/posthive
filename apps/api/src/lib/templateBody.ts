@@ -31,8 +31,9 @@ export const templateBody = z.object({
   format: z.enum(TEMPLATE_FORMATS).nullable().default(null),
   slides: z.number().int().min(2, "A carousel has 2 to 20 slides.").max(20, "A carousel has 2 to 20 slides.").nullable().default(null),
   platforms: z.array(z.enum(TEMPLATE_PLATFORMS)).default([]),
-  slideImages: z.array(slideImage).max(MAX_SLIDES, SLIDES_RANGE).default([]),
-  captionGuideline: z.string().trim().max(2000, "The caption guideline is at most 2000 characters.").nullish().transform((v) => v || null),
+  // Left out = "keep what the template has" (an editor from before slide images sends neither field); sent empty = clear.
+  slideImages: z.array(slideImage).optional(),
+  captionGuideline: z.string().trim().max(2000, "The caption guideline is at most 2000 characters.").nullish().transform((v) => (v === undefined ? undefined : v || null)),
 }).superRefine((t, ctx) => {
   if (t.pillar !== pillarFor(t.category)) {
     const expected = pillarFor(t.category) ?? "no pillar";
@@ -44,18 +45,20 @@ export const templateBody = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["previewUrl"], message: "The preview must be an image" });
   }
   // Slide images only make sense for a carousel and are checked only then (any other format drops them below)
-  if (t.format === "carousel" && t.slideImages.length > 0) {
-    if (t.slideImages.length < 2) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slideImages"], message: SLIDES_RANGE });
-    if (t.slideImages.some((s) => !IMAGE_URL.test(urlPath(s.url)))) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slideImages"], message: "Every slide must be an image" });
-    if (new Set(t.slideImages.map((s) => s.url)).size !== t.slideImages.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slideImages"], message: "A slide image can be used once" });
+  const images = t.slideImages ?? [];
+  if (t.format === "carousel" && images.length > 0) {
+    if (images.length < 2 || images.length > MAX_SLIDES) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slideImages"], message: SLIDES_RANGE });
+    if (images.some((s) => !IMAGE_URL.test(urlPath(s.url)))) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slideImages"], message: "Every slide must be an image" });
+    if (new Set(images.map((s) => s.url)).size !== images.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slideImages"], message: "A slide image can be used once" });
   }
 }).transform((t) => {
-  // only a carousel has slides, and with images the count is the number of images; a platform listed twice is one platform
+  // only a carousel has slides, and with images the count is the number of images; a platform listed twice is one platform.
+  // slideImages stays undefined only for a carousel that did not send the list: the route fills it from the template.
   const slideImages = t.format === "carousel" ? t.slideImages : [];
   return {
     ...t,
     slideImages,
-    slides: t.format !== "carousel" ? null : slideImages.length > 0 ? slideImages.length : t.slides,
+    slides: t.format !== "carousel" ? null : slideImages?.length ? slideImages.length : t.slides,
     platforms: [...new Set(t.platforms)],
   };
 });
