@@ -1,5 +1,5 @@
 import { PILLARS, type Pillar } from "./contentTypes";
-import { wibDateKey } from "./datetime";
+import { formatTime, wibDateKey } from "./datetime";
 import { shortName } from "./dashboard-format";
 import { formatPlanDate } from "./import-rows";
 import { platformLabel } from "./platforms";
@@ -100,6 +100,77 @@ export function createdLine(t: Pick<DesignTemplate, "createdAt" | "createdBy">):
   if (Number.isNaN(at.getTime())) return "";
   const who = shortName(t.createdBy);
   return `Created ${formatPlanDate(wibDateKey(at))}${who ? ` · ${who}` : ""}`;
+}
+
+/** "12 Nov 2026" in WIB; empty for a date that cannot be read. */
+export function dateLine(iso: string | undefined | null): string {
+  const at = iso ? new Date(iso) : null;
+  return at && !Number.isNaN(at.getTime()) ? formatPlanDate(wibDateKey(at)) : "";
+}
+
+/** "12 Nov 2026 · 14:20" in WIB, for the meta line and the details of a template; empty for a date that cannot be read. */
+export function dateTimeLine(iso: string | undefined | null): string {
+  const at = iso ? new Date(iso) : null;
+  return at && !Number.isNaN(at.getTime()) ? `${dateLine(iso)} · ${formatTime(at)}` : "";
+}
+
+/** The name of one slide under its picture: "1 · Cover", or "1 · Slide 1" when the designer gave it none. */
+export const slideCaption = (slide: { label: string | null }, index: number): string => `${index + 1} · ${slide.label ?? `Slide ${index + 1}`}`;
+
+/** A caption guideline in pieces, so the hashtags in it can be coloured: [{ text, tag }]. A tag is `#` and then letters, digits or `_`. */
+export function guidelineParts(text: string): { text: string; tag: boolean }[] {
+  return text
+    .split(/(#[\p{L}\p{N}_]+)/u)
+    .filter((part) => part !== "")
+    .map((part) => ({ text: part, tag: /^#[\p{L}\p{N}_]+$/u.test(part) }));
+}
+
+// ── The checklist of a template ─────────────────────────────────────────────
+
+export interface CheckItem {
+  key: "source" | "preview" | "format" | "slides" | "caption";
+  title: string;
+  /** What is there, or what is missing. */
+  detail: string;
+  done: boolean;
+}
+
+/**
+ * What a template has to be ready for Marketing, computed from the template itself (nothing is judged by eye): where the
+ * design lives, a picture of it, its format and platforms, a picture per slide for a carousel, and a caption guideline.
+ * Only the source is needed to publish (the API decides); the rest is what makes the template useful to Marketing.
+ */
+export function checklistOf(t: Pick<DesignTemplate, "linkUrl" | "canvasRevision" | "designId" | "previewUrl" | "format" | "slides" | "platforms" | "slideImages" | "captionGuideline">): CheckItem[] {
+  const items: CheckItem[] = [
+    { key: "source", title: "Design source", detail: hasUsableSource(t) ? sourceLabel(t) : t.linkUrl?.trim() ? "The link is not a Figma design" : "No Figma link or Canvas revision yet", done: hasUsableSource(t) },
+    {
+      key: "preview",
+      title: "Preview image",
+      detail: t.previewUrl || t.slideImages.length > 0 ? "Marketing recognises the layout" : "Upload a preview image or the slides",
+      done: Boolean(t.previewUrl) || t.slideImages.length > 0,
+    },
+    {
+      key: "format",
+      title: "Format and platform",
+      detail: t.format && t.platforms.length > 0 ? `${formatText(t)} · ${platformsText(t.platforms)}` : t.format ? "Choose where it is published" : "Choose a content format",
+      done: Boolean(t.format) && t.platforms.length > 0,
+    },
+  ];
+  if (t.format === "carousel") {
+    items.push({
+      key: "slides",
+      title: "Slide images",
+      detail: t.slideImages.length >= 2 ? `${t.slideImages.length} slides, one image each` : "Upload one image per slide",
+      done: t.slideImages.length >= 2,
+    });
+  }
+  items.push({
+    key: "caption",
+    title: "Caption guideline",
+    detail: t.captionGuideline ? "Marketing writes captions to it" : "Tell Marketing how to write the caption",
+    done: Boolean(t.captionGuideline),
+  });
+  return items;
 }
 
 // ── Filter, count, page ─────────────────────────────────────────────────────

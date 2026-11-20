@@ -14,6 +14,11 @@ import {
   marketingLine,
   pageOf,
   platformsText,
+  checklistOf,
+  dateLine,
+  dateTimeLine,
+  guidelineParts,
+  slideCaption,
   publishBlockedReason,
   sourceLabel,
   subLine,
@@ -32,6 +37,8 @@ const t = (patch: Partial<DesignTemplate> = {}): DesignTemplate => ({
   format: "carousel",
   slides: 5,
   platforms: ["linkedin", "instagram"],
+  slideImages: [],
+  captionGuideline: null,
   createdAt: "2026-11-12T03:00:00.000Z",
   createdBy: "Dewi Kusuma",
   ...patch,
@@ -294,5 +301,67 @@ describe("attachNotice: what linking changes for the public API and MCP", () => 
   it("says nothing for a draft, or for a template that keeps its Figma link", () => {
     expect(attachNotice(t({ published: false, linkUrl: null }))).toBeNull();
     expect(attachNotice(t({ published: true }))).toBeNull();
+  });
+});
+
+describe("the checklist of a template: computed from what it has", () => {
+  const full = t({ previewUrl: "/p.png", captionGuideline: "Open with the problem.", slideImages: [{ url: "/a.png", label: null }, { url: "/b.png", label: null }] });
+  const keys = (list: ReturnType<typeof checklistOf>) => list.map((i) => `${i.key}:${i.done ? "yes" : "no"}`);
+
+  it("a complete carousel passes every check", () => {
+    expect(keys(checklistOf(full))).toEqual(["source:yes", "preview:yes", "format:yes", "slides:yes", "caption:yes"]);
+  });
+
+  it("an empty template passes none, and says what to do", () => {
+    const list = checklistOf(t({ linkUrl: null, format: null, platforms: [], previewUrl: null, slideImages: [], captionGuideline: null }));
+    expect(keys(list)).toEqual(["source:no", "preview:no", "format:no", "caption:no"]);
+    expect(list.map((i) => i.detail)).toEqual(["No Figma link or Canvas revision yet", "Upload a preview image or the slides", "Choose a content format", "Tell Marketing how to write the caption"]);
+  });
+
+  it("only a carousel is asked for slide images", () => {
+    expect(checklistOf(t({ format: "single" })).some((i) => i.key === "slides")).toBe(false);
+    expect(checklistOf(t({ format: "carousel", slideImages: [{ url: "/a.png", label: null }] })).find((i) => i.key === "slides")).toMatchObject({ done: false });
+  });
+
+  it("the source is a real Figma link or a Canvas revision, and a link that is not a Figma design does not count", () => {
+    expect(checklistOf(t({ linkUrl: "https://example.com" }))[0]).toMatchObject({ done: false, detail: "The link is not a Figma design" });
+    expect(checklistOf(t({ linkUrl: null, canvasRevision: 2 }))[0]).toMatchObject({ done: true, detail: "Canvas design · Revision 2" });
+  });
+
+  it("the slides count as a picture of the template", () => {
+    expect(checklistOf(t({ previewUrl: null, slideImages: [{ url: "/a.png", label: null }, { url: "/b.png", label: null }] }))[1].done).toBe(true);
+  });
+
+  it("a format without a platform is half done, and says which half", () => {
+    expect(checklistOf(t({ platforms: [] }))[2]).toMatchObject({ done: false, detail: "Choose where it is published" });
+  });
+});
+
+describe("the small lines of the detail page", () => {
+  it("a slide is named by its number and its name, or 'Slide N'", () => {
+    expect(slideCaption({ label: "Cover" }, 0)).toBe("1 · Cover");
+    expect(slideCaption({ label: null }, 4)).toBe("5 · Slide 5");
+  });
+
+  it("dates are WIB: a day and a time, and nothing for a date that cannot be read", () => {
+    expect(dateLine("2026-11-12T03:24:00.000Z")).toBe("12 Nov 2026");
+    expect(dateTimeLine("2026-11-12T03:24:00.000Z")).toBe("12 Nov 2026 · 10:24");
+    expect(dateTimeLine("2026-11-12T20:00:00.000Z")).toBe("13 Nov 2026 · 03:00"); // past midnight in Jakarta
+    for (const bad of [undefined, null, "", "not a date"]) {
+      expect(dateLine(bad)).toBe("");
+      expect(dateTimeLine(bad)).toBe("");
+    }
+  });
+
+  it("a guideline is split so each hashtag can stand out, and the pieces join back to the text", () => {
+    const text = "Open with the problem. #GeospatialIndonesia #Braga_Geo, then close.";
+    const parts = guidelineParts(text);
+    expect(parts.filter((p) => p.tag).map((p) => p.text)).toEqual(["#GeospatialIndonesia", "#Braga_Geo"]);
+    expect(parts.map((p) => p.text).join("")).toBe(text);
+  });
+
+  it("a # that starts no word is plain text, and an empty guideline has no parts", () => {
+    expect(guidelineParts("Use # and C# freely").some((p) => p.tag)).toBe(false);
+    expect(guidelineParts("")).toEqual([]);
   });
 });

@@ -3,14 +3,15 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeftIcon, ExternalLinkIcon, EyeOffIcon, GlobeIcon, LayoutTemplateIcon, PencilIcon, Trash2Icon } from "lucide-react";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ExternalLinkIcon, EyeOffIcon, GlobeIcon, LayoutTemplateIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
 import { InlineAlert } from "@/components/InlineAlert";
 import { TemplateEditor } from "@/components/TemplateEditor";
 import { CanvasDesignBlock } from "@/components/templates/CanvasDesignBlock";
 import { CustomizeButton } from "@/components/templates/CustomizeButton";
-import { TemplateCover } from "@/components/templates/TemplateCover";
+import { DeleteTemplateDialog, UnpublishTemplateDialog } from "@/components/templates/TemplateDialogs";
+import { CaptionCard, ChecklistCard, DetailCard, DetailsCard, MetaStrip, SlidesCard } from "@/components/templates/TemplateDetailCards";
+import { TemplateFeedMockup } from "@/components/templates/TemplateFeedMockup";
 import { TemplateStatus } from "@/components/templates/TemplateStatus";
 import { TemplatesHeader } from "@/components/templates/TemplatesHeader";
 import { useToast } from "@/components/Toast";
@@ -18,57 +19,44 @@ import { TrialUrgentBanner } from "@/components/TrialUrgentBanner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useWorkspace } from "@/context/WorkspaceContext";
 import { apiFetch } from "@/lib/api";
-import { createdLine, formatText, platformsText, publishBlockedReason, sourceLabel } from "@/lib/template-library";
-import { hasFigmaSource, isFigmaLink, type DesignTemplate } from "@/lib/templates";
+import { publishBlockedReason } from "@/lib/template-library";
+import { isFigmaLink, type DesignTemplate } from "@/lib/templates";
 import { usePermissions } from "@/lib/usePermissions";
 import { useTemplates } from "@/lib/useTemplates";
-import { wibDateKey } from "@/lib/datetime";
-import { formatPlanDate } from "@/lib/import-rows";
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 border-b border-border/60 py-3 last:border-b-0">
-      <dt className="type-body-r-s text-neutral-500">{label}</dt>
-      <dd className="min-w-0 break-words type-body-m-s text-neutral-900">{children}</dd>
-    </div>
-  );
-}
 
 /**
- * One template on its own page. The design team edits it, publishes it to Marketing or takes it back to a draft, and
- * deletes it. Marketing, who is sent published templates only, opens the design and uses the template.
+ * One template on its own page (docs/design/designer-02b-template-detail.png). The design team edits it, publishes it to
+ * Marketing or takes it back to a draft, and deletes it; both of those ask first and say so in a toast under the header.
+ * Marketing, who is sent published templates only, opens the design and uses the template.
  */
 export default function TemplateDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { canManageTemplates: canManage, canEditContent: canUse } = usePermissions();
-  const { success, error: toastError } = useToast();
+  const { activeWorkspace } = useWorkspace();
+  // The toasts of the Template Library sit under the header's bell and avatar, not in the corner
+  const { success, error: toastError } = useToast("top-right");
   const { data, loading, error, reload } = useTemplates();
 
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [unpublishing, setUnpublishing] = useState(false);
   const [switching, setSwitching] = useState(false);
 
   const template: DesignTemplate | undefined = data?.templates.find((t) => t.id === id);
-  const back = (
-    <Button asChild variant="secondary" className="w-fit">
-      <Link href="/templates">
-        <ArrowLeftIcon />
-        Back to templates
-      </Link>
-    </Button>
-  );
 
   async function setPublished(published: boolean) {
     if (!template) return;
     setSwitching(true);
     try {
       await apiFetch(`/templates/${template.id}/status`, { method: "PATCH", body: JSON.stringify({ published }) });
-      success(published ? "Published. Marketing can see it now." : "Moved to draft. Marketing no longer sees it.");
+      success(published ? `${template.category} published. Marketing can see it now.` : `${template.category} unpublished. Marketing no longer sees it.`);
       reload();
     } catch (e) {
       toastError(e instanceof Error && e.message ? e.message : "Couldn't change the status. Try again.");
+      throw e;
     } finally {
       setSwitching(false);
     }
@@ -82,12 +70,19 @@ export default function TemplateDetailPage() {
       toastError(e instanceof Error && e.message ? e.message : "Couldn't delete the template.");
       throw e;
     }
-    success(`Template for ${template.category} deleted.`);
+    success(`${template.category} template deleted.`);
     router.push("/templates");
   }
 
   const crumbs = [{ label: canManage ? "Design workspace" : "Assets" }, { label: "Template Library", href: "/templates" }, { label: template?.category ?? "Template" }];
-  const updated = template?.updatedAt ? formatPlanDate(wibDateKey(new Date(template.updatedAt))) : null;
+  const blocked = template ? publishBlockedReason(template) : null;
+
+  let subtitle: string | undefined;
+  if (template) {
+    if (!canManage) subtitle = "A reference design from the design team. It is never attached to a post.";
+    else if (template.published) subtitle = `Published template · listed under ${template.pillar ?? "no pillar"} in Marketing's Pick from templates. Marketing opens the design from the Figma link or the preview below.`;
+    else subtitle = "Draft template · Marketing cannot see it yet. Publish it to list it in Marketing's Pick from templates.";
+  }
 
   return (
     <div className="theme-dashboard flex-1 overflow-y-auto bg-background">
@@ -97,7 +92,7 @@ export default function TemplateDetailPage() {
           crumbs={crumbs}
           title={template?.category ?? "Template"}
           badge={template && canManage ? <TemplateStatus published={template.published} /> : undefined}
-          subtitle={template ? (canManage ? "Publish it to share the design with Marketing, or keep it as a draft." : "A reference design from the design team. It is never attached to a post.") : undefined}
+          subtitle={subtitle}
         />
 
         {error && (
@@ -117,69 +112,85 @@ export default function TemplateDetailPage() {
               icon={<LayoutTemplateIcon />}
               title="Template not found"
               description="It was deleted, or it is a draft the design team has not published yet."
-              action={back}
+              action={
+                <Button asChild variant="secondary" className="w-fit">
+                  <Link href="/templates">Back to library</Link>
+                </Button>
+              }
             />
           </Card>
         )}
 
         {template && (
-          <Card className="gap-6 border-0 p-5 lg:flex-row lg:p-6">
-            <TemplateCover template={template} className="aspect-4/5 w-full max-w-sm self-start lg:w-2/5" />
+          <>
+            <MetaStrip template={template} canManage={canManage} />
 
-            <div className="flex min-w-0 flex-1 flex-col gap-5">
-              {canManage && !template.published && (
-                <InlineAlert tone="warning" role="status" icon={<EyeOffIcon />} title="This template is a draft" className="border-0">
-                  Marketing cannot see it. Publish it to list it in Compose and show it as the design reference for {template.category} posts.
-                </InlineAlert>
-              )}
+            {canManage && !template.published && (
+              <InlineAlert tone="warning" role="status" icon={<EyeOffIcon />} title="This template is a draft" className="border-0">
+                Marketing cannot see it. Publish it to list it in Compose and show it as the design reference for {template.category} posts.
+              </InlineAlert>
+            )}
 
-              <dl>
-                <Row label="Content pillar">{template.pillar ?? "No pillar"}</Row>
-                <Row label="Content category">{template.category}</Row>
-                <Row label="Content format">{formatText(template) ?? "No format yet"}</Row>
-                <Row label="Publishing platforms">{platformsText(template.platforms) ?? "No platform yet"}</Row>
-                <Row label="Figma link">
-                  {hasFigmaSource(template.linkUrl) && template.linkUrl ? (
-                    <a href={template.linkUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 text-brand-800 underline-offset-4 hover:underline">
-                      <span className="truncate">{sourceLabel(template)}</span>
-                      <ExternalLinkIcon aria-hidden="true" className="size-3.5 shrink-0" />
-                    </a>
-                  ) : (
-                    sourceLabel(template)
-                  )}
-                </Row>
-                <Row label="Created">{createdLine(template).replace(/^Created /, "")}</Row>
-                {updated && <Row label="Last updated">{updated}</Row>}
-              </dl>
+            <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_26rem]">
+              <div className="flex min-w-0 flex-col gap-4">
+                <DetailCard title="Template preview" headingId="preview-heading" hint="Master design · shown in a feed mockup">
+                  <TemplateFeedMockup template={template} account={activeWorkspace?.name ?? "Your workspace"} />
+                </DetailCard>
+                <SlidesCard template={template} />
+                <CaptionCard template={template} canManage={canManage} />
+              </div>
 
-              {canManage && <CanvasDesignBlock template={template} onChanged={reload} />}
+              <div className="flex min-w-0 flex-col gap-4">
+                <DetailsCard template={template} canManage={canManage} />
+                {canManage && (
+                  <Card className="border-0 p-5">
+                    <CanvasDesignBlock template={template} onChanged={reload} />
+                  </Card>
+                )}
+                {canManage && <ChecklistCard template={template} />}
+              </div>
+            </div>
 
-              {/* Visible, not only a tooltip: a disabled button takes no focus and a tooltip does not show on touch. */}
-              {canManage && !template.published && publishBlockedReason(template) && (
-                <p id="publish-reason" role="status" className="type-body-r-xs text-brand-800">{publishBlockedReason(template)}</p>
-              )}
-
-              <div className="mt-auto flex flex-wrap items-center gap-2">
-                {back}
+            {/* The bar sticks to the bottom on wide screens only: on a phone it would cover a fifth of the page. The reason is visible text, not only a tooltip: a disabled button takes no focus and a tooltip does not show on touch. */}
+            <Card className="z-10 flex-row flex-wrap items-center gap-x-4 gap-y-3 border-0 px-5 py-4 shadow-sm lg:sticky lg:bottom-0">
+              <div className="min-w-0 flex-1 basis-60 type-body-r-xs text-muted">
+                {canManage && !template.published && blocked ? (
+                  <p id="publish-reason" role="status" className="text-brand-800">{blocked}</p>
+                ) : canManage ? (
+                  <p>{template.published ? `Published · Marketing sees this template under ${template.category} in Choose Template.` : "Draft · only the design team sees this template."}</p>
+                ) : (
+                  <p>Published by the design team.</p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button asChild variant="ghost">
+                  <Link href="/templates">Back to library</Link>
+                </Button>
                 {canManage ? (
                   <>
-                    <Button variant="secondary" onClick={() => setEditing(true)}>
-                      <PencilIcon />
-                      Edit
-                    </Button>
-                    <Button
-                      variant={template.published ? "secondary" : "default"}
-                      disabled={switching || (!template.published && publishBlockedReason(template) !== null)}
-                      title={template.published ? undefined : (publishBlockedReason(template) ?? undefined)}
-                      aria-describedby={!template.published && publishBlockedReason(template) ? "publish-reason" : undefined}
-                      onClick={() => void setPublished(!template.published)}
-                    >
-                      {template.published ? <EyeOffIcon /> : <GlobeIcon />}
-                      {template.published ? "Unpublish" : "Publish"}
-                    </Button>
-                    <Button variant="destructive-outline" onClick={() => setDeleting(true)}>
+                    <Button variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-600" onClick={() => setDeleting(true)}>
                       <Trash2Icon />
                       Delete
+                    </Button>
+                    {template.published ? (
+                      <Button variant="destructive-outline" disabled={switching} onClick={() => setUnpublishing(true)}>
+                        <EyeOffIcon />
+                        Unpublish
+                      </Button>
+                    ) : (
+                      <Button
+                        disabled={switching || blocked !== null}
+                        title={blocked ?? undefined}
+                        aria-describedby={blocked ? "publish-reason" : undefined}
+                        onClick={() => void setPublished(true).catch(() => {})}
+                      >
+                        <GlobeIcon />
+                        Publish
+                      </Button>
+                    )}
+                    <Button variant={template.published ? "default" : "secondary"} onClick={() => setEditing(true)}>
+                      <PencilIcon />
+                      Edit template
                     </Button>
                   </>
                 ) : (
@@ -192,15 +203,13 @@ export default function TemplateDetailPage() {
                         </a>
                       </Button>
                     )}
-                    {canUse && (
-                      <Button onClick={() => router.push(`/compose?template=${template.id}`)}>Use template</Button>
-                    )}
+                    {canUse && <Button onClick={() => router.push(`/compose?template=${template.id}`)}>Use template</Button>}
                     {canUse && template.canvasRevision != null && <CustomizeButton template={template} size="default" label="Customize in Canvas" />}
                   </>
                 )}
               </div>
-            </div>
-          </Card>
+            </Card>
+          </>
         )}
       </div>
 
@@ -211,21 +220,14 @@ export default function TemplateDetailPage() {
           onClose={() => setEditing(false)}
           onSaved={(t) => {
             setEditing(false);
-            success(`Template for ${t.category} updated.`);
+            success(`${t.category} template updated.`);
             reload();
           }}
         />
       )}
 
-      <ConfirmDialog
-        open={deleting}
-        onOpenChange={setDeleting}
-        title="Delete this template?"
-        description={template && `The template for ${template.category} and its preview are removed, and Marketing no longer sees a design reference for this category. Existing posts are not changed.`}
-        confirmLabel="Delete template"
-        pendingLabel="Deleting…"
-        onConfirm={remove}
-      />
+      <UnpublishTemplateDialog template={unpublishing && template ? template : null} onOpenChange={setUnpublishing} onConfirm={() => setPublished(false)} />
+      <DeleteTemplateDialog template={deleting && template ? template : null} onOpenChange={setDeleting} onConfirm={remove} />
     </div>
   );
 }

@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
   role: "designer" as string,
   toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), warning: vi.fn() },
   csv: vi.fn(),
+  // what the page asked useToast for
+  toastPosition: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch, assetUrl: (u: string) => u }));
@@ -17,7 +19,7 @@ vi.mock("@/context/AuthContext", () => ({ useAuth: () => ({ user: { name: "Dewi 
 vi.mock("@/context/WorkspaceContext", () => ({
   useWorkspace: () => ({ activeWorkspace: { id: "ws-1", name: "Braga Tech", role: h.role, approvalRequired: true }, loading: false }),
 }));
-vi.mock("@/components/Toast", () => ({ useToast: () => h.toast }));
+vi.mock("@/components/Toast", () => ({ useToast: (position?: string) => { h.toastPosition(position); return h.toast; } }));
 vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }), usePathname: () => "/templates" }));
 vi.mock("next/link", () => ({
@@ -38,6 +40,8 @@ const make = (i: number, patch: Partial<DesignTemplate> = {}): DesignTemplate =>
   format: "carousel",
   slides: 5,
   platforms: ["linkedin", "instagram"],
+  slideImages: [],
+  captionGuideline: null,
   createdAt: `2026-11-${String(30 - i).padStart(2, "0")}T03:00:00.000Z`,
   createdBy: "Dewi Kusuma",
   ...patch,
@@ -156,6 +160,13 @@ describe("Template Library: the design team", () => {
     expect(screen.getByRole("button", { name: "Save as draft" })).toBeTruthy();
   });
 
+  it("asks for its toasts under the header (top right), not in the corner", async () => {
+    render(<TemplatesPage />);
+    await screen.findByText("Case Study", { selector: "h3" });
+    expect(h.toastPosition).toHaveBeenCalledWith("top-right");
+    expect(h.toastPosition).not.toHaveBeenCalledWith(undefined);
+  });
+
   it("View detail opens the template's own page", async () => {
     render(<TemplatesPage />);
     const link = await screen.findByRole("link", { name: "View detail of Blog Post" });
@@ -172,7 +183,7 @@ describe("Template Library: the design team", () => {
     await userEvent.click(screen.getByRole("button", { name: "Delete Blog Post" }));
     await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete template" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/templates/blog", { method: "DELETE" }));
-    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Template for Blog Post deleted."));
+    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Blog Post template deleted."));
     await waitFor(() => expect(h.apiFetch.mock.calls.filter(([p, i]) => p === "/templates" && !i)).toHaveLength(2));
   });
 

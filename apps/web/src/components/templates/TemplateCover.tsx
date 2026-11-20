@@ -2,15 +2,16 @@ import { LayoutTemplateIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { fileHref, type DesignTemplate } from "@/lib/templates";
 
-type Props = { template: Pick<DesignTemplate, "previewUrl" | "category">; className?: string };
+type Props = { template: Pick<DesignTemplate, "previewUrl" | "category"> & { slideImages?: DesignTemplate["slideImages"] }; className?: string };
 
-/** The preview image of a template, whole and centred in its box; without one, the category on a plain tile. */
+/** The preview image of a template (else its first slide), whole and centred in its box; without either, the category on a plain tile. */
 export function TemplateCover({ template, className }: Props) {
-  if (template.previewUrl) {
+  const image = template.previewUrl ?? template.slideImages?.[0]?.url ?? null;
+  if (image) {
     return (
       <div className={cn("flex items-center justify-center overflow-hidden rounded-xl bg-neutral-50", className)}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={fileHref(template.previewUrl)} alt="" loading="lazy" className="size-full object-contain p-3" />
+        <img src={fileHref(image)} alt="" loading="lazy" className="size-full object-contain p-3" />
       </div>
     );
   }

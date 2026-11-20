@@ -4,14 +4,14 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DesignTemplate } from "@/lib/templates";
 
-const h = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+const h = vi.hoisted(() => ({ apiFetch: vi.fn(), uploads: 0, deleted: [] as string[] }));
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch }));
 
 import { TemplateEditor } from "./TemplateEditor";
 
 const saved: DesignTemplate = {
   id: "t1", name: "Case Study", pillar: "Promotional", category: "Case Study", linkUrl: "https://www.figma.com/design/AbC/Case",
-  previewUrl: null, published: false, format: null, slides: null, platforms: [], createdAt: "2026-11-12T03:00:00.000Z", createdBy: "Dewi Kusuma",
+  previewUrl: null, published: false, format: null, slides: null, platforms: [], slideImages: [], captionGuideline: null, createdAt: "2026-11-12T03:00:00.000Z", createdBy: "Dewi Kusuma",
 };
 const onSaved = vi.fn();
 const onClose = vi.fn();
@@ -26,7 +26,11 @@ const pickCategory = () => userEvent.selectOptions(screen.getByLabelText("Conten
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.apiFetch.mockResolvedValue({ template: saved });
+  h.uploads = 0;
+  h.deleted = [];
+  h.apiFetch.mockImplementation(async (path: string) => (path === "/upload" ? { url: `/uploads/new-${++h.uploads}.png` } : { template: saved }));
+  // discardUpload() asks the API to delete a file it uploaded and nobody saved
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: { body?: string }) => { h.deleted.push(JSON.parse(init!.body!).url); return { ok: true }; }));
 });
 afterEach(cleanup);
 
@@ -178,5 +182,205 @@ describe("TemplateEditor: removing the Figma link of a published template that h
     open({ ...withCanvas, linkUrl: "https://example.com" });
     await userEvent.clear(screen.getByLabelText("Figma link"));
     expect(screen.queryByText(WARNING)).toBeNull();
+  });
+});
+
+// ── Slide images and the caption guideline ──────────────────────────────────────────────────────────────────────────
+
+const png = (name: string) => new File(["x"], name, { type: "image/png" });
+const slidesInput = () => document.querySelectorAll<HTMLInputElement>('input[type="file"]')[0];
+const apiCalls = (path: string) => h.apiFetch.mock.calls.filter(([p]) => p === path);
+const saveBody = () => JSON.parse(h.apiFetch.mock.calls.filter(([p]) => p !== "/upload").at(-1)![1].body);
+const carousel = async () => {
+  open();
+  await pickCategory();
+  await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "carousel");
+};
+const upload = async (...names: string[]) => {
+  await userEvent.upload(slidesInput(), names.map(png));
+  await waitFor(() => expect(screen.getAllByRole("listitem").length).toBeGreaterThanOrEqual(names.length));
+};
+const names = () => screen.getAllByLabelText(/^Name of slide/) as HTMLInputElement[];
+
+describe("TemplateEditor: slide images", () => {
+  it("only a carousel is asked for them", async () => {
+    open();
+    await pickCategory();
+    expect(screen.queryByText(/Upload slide images/)).toBeNull();
+    await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "single");
+    expect(screen.queryByText(/Upload slide images/)).toBeNull();
+    await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "carousel");
+    expect(screen.getByRole("button", { name: "Upload slide images" })).toBeTruthy();
+  });
+
+  it("uploads several pictures at once, in the order picked, and each gets a name box", async () => {
+    await carousel();
+    await upload("a.png", "b.png", "c.png");
+    expect(apiCalls("/upload")).toHaveLength(3);
+    expect(names().map((n) => n.placeholder)).toEqual(["Slide 1", "Slide 2", "Slide 3"]);
+    expect(screen.getByRole("button", { name: "Add slide images" })).toBeTruthy();
+  });
+
+  it("the number of slides is the number of pictures: the typed count goes away", async () => {
+    await carousel();
+    expect(screen.getByLabelText(/^Slides/)).toBeTruthy();
+    await upload("a.png", "b.png");
+    expect(screen.queryByLabelText(/^Slides/)).toBeNull();
+  });
+
+  it("saving sends the pictures in order with their names (a blank name is null) and the count of them", async () => {
+    await carousel();
+    await upload("a.png", "b.png", "c.png");
+    await userEvent.type(names()[0], "Cover");
+    await userEvent.type(names()[2], "  Call to action  ");
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    await waitFor(() => expect(apiCalls("/templates")).toHaveLength(1));
+    expect(saveBody()).toMatchObject({
+      format: "carousel",
+      slides: 3,
+      slideImages: [{ url: "/uploads/new-1.png", label: "Cover" }, { url: "/uploads/new-2.png", label: null }, { url: "/uploads/new-3.png", label: "Call to action" }],
+    });
+  });
+
+  it("a picture can be moved up and down, and the first cannot go up nor the last down", async () => {
+    await carousel();
+    await upload("a.png", "b.png", "c.png");
+    await userEvent.type(names()[2], "Last");
+    expect((screen.getByRole("button", { name: "Move slide 1 up" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Move slide 3 down" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Move slide 3 up" }));
+    await userEvent.click(screen.getByRole("button", { name: "Move slide 2 up" }));
+    expect(names().map((n) => n.value)).toEqual(["Last", "", ""]); // the name travels with its picture
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    await waitFor(() => expect(apiCalls("/templates")).toHaveLength(1));
+    expect(saveBody().slideImages.map((s: { url: string }) => s.url)).toEqual(["/uploads/new-3.png", "/uploads/new-1.png", "/uploads/new-2.png"]);
+  });
+
+  it("removing a picture just uploaded takes it out of storage too, and the rest keep their order", async () => {
+    await carousel();
+    await upload("a.png", "b.png", "c.png");
+    await userEvent.click(screen.getByRole("button", { name: "Remove slide 2" }));
+    expect(names()).toHaveLength(2);
+    expect(h.deleted).toEqual(["/uploads/new-2.png"]);
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    await waitFor(() => expect(apiCalls("/templates")).toHaveLength(1));
+    expect(saveBody().slideImages.map((s: { url: string }) => s.url)).toEqual(["/uploads/new-1.png", "/uploads/new-3.png"]);
+  });
+
+  it("removing a picture that was already saved keeps its file: the API removes it when the edit is saved", async () => {
+    open({ ...saved, format: "carousel", slides: 2, slideImages: [{ url: "/uploads/s1.png", label: "Cover" }, { url: "/uploads/s2.png", label: null }, { url: "/uploads/s3.png", label: null }] });
+    expect(names().map((n) => n.value)).toEqual(["Cover", "", ""]);
+    await userEvent.click(screen.getByRole("button", { name: "Remove slide 3" }));
+    expect(h.deleted).toEqual([]);
+    await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(apiCalls("/templates/t1")).toHaveLength(1));
+    expect(saveBody().slideImages).toEqual([{ url: "/uploads/s1.png", label: "Cover" }, { url: "/uploads/s2.png", label: null }]);
+  });
+
+  it("one picture is not a carousel: refused before anything is sent", async () => {
+    await carousel();
+    await upload("a.png");
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    // the message that tells what to do about ONE picture (the general 2 to 20 rule would also fire without it)
+    expect((await screen.findByRole("alert")).textContent).toBe("A carousel has 2 to 20 slides. Add another slide image, or remove this one.");
+    expect(apiCalls("/templates")).toHaveLength(0);
+  });
+
+  it("one picture is refused even when a count of 5 was typed before the picture was added", async () => {
+    await carousel();
+    await userEvent.type(screen.getByLabelText(/^Slides/), "5");
+    await upload("a.png");
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Add another slide image");
+    expect(apiCalls("/templates")).toHaveLength(0);
+  });
+
+  it("at most 20: the ones that fit are added, and it says so", async () => {
+    open({ ...saved, format: "carousel", slideImages: Array.from({ length: 19 }, (_, i) => ({ url: `/uploads/s${i}.png`, label: null })) });
+    await userEvent.upload(slidesInput(), [png("a.png"), png("b.png"), png("c.png")]);
+    await waitFor(() => expect(names()).toHaveLength(20));
+    expect(apiCalls("/upload")).toHaveLength(1);
+    expect(screen.getByRole("alert").textContent).toContain("at most 20 slides. The first 1 were added.");
+    expect((screen.getByRole("button", { name: "Add slide images" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a picture that fails to upload is named, and the others still arrive", async () => {
+    h.apiFetch.mockImplementation(async (path: string, init?: { body?: unknown }) => {
+      if (path !== "/upload") return { template: saved };
+      const name = ((init!.body as FormData).get("file") as File).name;
+      if (name === "bad.png") throw new Error("File too large");
+      return { url: `/uploads/${name}` };
+    });
+    await carousel();
+    await userEvent.upload(slidesInput(), [png("a.png"), png("bad.png"), png("c.png")]);
+    await waitFor(() => expect(names()).toHaveLength(2));
+    expect(screen.getByRole("alert").textContent).toBe("bad.png: File too large");
+  });
+
+  it("Cancel takes the pictures uploaded in this session out of storage, and keeps the saved ones", async () => {
+    open({ ...saved, format: "carousel", slideImages: [{ url: "/uploads/saved1.png", label: null }, { url: "/uploads/saved2.png", label: null }] });
+    await upload("a.png");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(h.deleted).toEqual(["/uploads/new-1.png"]);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("changing the format away from carousel sends no pictures, and takes the unsaved ones out of storage", async () => {
+    await carousel();
+    await upload("a.png", "b.png");
+    await userEvent.selectOptions(screen.getByLabelText(/^Content format/), "single");
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    await waitFor(() => expect(apiCalls("/templates")).toHaveLength(1));
+    expect(saveBody()).toMatchObject({ format: "single", slides: null, slideImages: [] });
+    expect(h.deleted.sort()).toEqual(["/uploads/new-1.png", "/uploads/new-2.png"]);
+  });
+
+  it("the name of a slide is at most 40 characters", async () => {
+    await carousel();
+    await upload("a.png", "b.png");
+    expect(names()[0].maxLength).toBe(40);
+  });
+});
+
+describe("TemplateEditor: the caption guideline", () => {
+  const box = () => screen.getByLabelText(/^Caption guideline/) as HTMLTextAreaElement;
+
+  it("starts empty for a new template and from what the template has when editing", () => {
+    open();
+    expect(box().value).toBe("");
+    cleanup();
+    open({ ...saved, captionGuideline: "Open with the problem." });
+    expect(box().value).toBe("Open with the problem.");
+  });
+
+  it("is sent trimmed; a blank one is sent as null", async () => {
+    open();
+    await pickCategory();
+    await userEvent.type(box(), "  Open with the problem.  ");
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    await waitFor(() => expect(apiCalls("/templates")).toHaveLength(1));
+    expect(saveBody().captionGuideline).toBe("Open with the problem.");
+
+    cleanup();
+    h.apiFetch.mockClear();
+    open();
+    await pickCategory();
+    await userEvent.type(box(), "   ");
+    await userEvent.click(screen.getByRole("button", { name: "Save as draft" }));
+    await waitFor(() => expect(apiCalls("/templates")).toHaveLength(1));
+    expect(saveBody().captionGuideline).toBeNull();
+  });
+
+  it("counts its characters out of 2000, and cannot go past it", async () => {
+    open();
+    expect(screen.getByText("0 / 2000")).toBeTruthy();
+    await userEvent.type(box(), "Hello");
+    expect(screen.getByText("5 / 2000")).toBeTruthy();
+    expect(box().maxLength).toBe(2000);
+  });
+
+  it("says it is a guide that is never copied into a post", () => {
+    open();
+    expect(screen.getByText(/never copied into a post/)).toBeTruthy();
   });
 });

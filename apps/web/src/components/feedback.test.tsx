@@ -107,6 +107,50 @@ describe("useToast (sonner adapter)", () => {
     custom.mockRestore();
   });
 
+  it("a page can ask for its toasts at the top right; every other call keeps the Toaster's own corner", async () => {
+    const custom = vi.spyOn(sonner, "custom");
+    let corner!: ReturnType<typeof useToast>;
+    let top!: ReturnType<typeof useToast>;
+    function Probe() { corner = useToast(); top = useToast("top-right"); return null; }
+    render(<Probe />);
+    corner.success("a");
+    top.success("b");
+    top.error("c");
+    top.warning("d");
+    top.toast("e", "info", 1234);
+    const options = custom.mock.calls.map((c) => c[1] as { duration: number; position?: string });
+    expect(options.map((o) => o.position)).toEqual([undefined, "top-right", "top-right", "top-right", "top-right"]);
+    expect(options.map((o) => o.duration)).toEqual([4000, 4000, 6000, 4000, 1234]); // the durations are the same as ever
+    custom.mockRestore();
+  });
+
+  it("each position's hook is one stable object, so it is safe in an effect's dependency list", () => {
+    const seen: unknown[] = [];
+    function Probe() { seen.push(useToast("top-right")); return null; }
+    const { rerender } = render(<Probe />);
+    rerender(<Probe />);
+    expect(new Set(seen).size).toBe(1);
+    let plain!: unknown;
+    function Plain() { plain = useToast(); return null; }
+    render(<Plain />);
+    expect(plain).not.toBe(seen[0]);
+  });
+
+  it("a toast at the top right is shown under the header: the Toaster puts it in its own top-right group, 84px down and 32px in", async () => {
+    render(<><Toaster /><Buttons /></>);
+    let top!: ReturnType<typeof useToast>;
+    function Probe() { top = useToast("top-right"); return null; }
+    render(<Probe />);
+    await act(async () => { top.success("Case Study unpublished. Marketing no longer sees it."); });
+    await screen.findByText("Case Study unpublished. Marketing no longer sees it.");
+    const list = document.querySelector("[data-sonner-toaster][data-y-position=top][data-x-position=right]") as HTMLElement;
+    expect(list).not.toBeNull();
+    expect(list.style.getPropertyValue("--offset-top")).toBe("84px");
+    expect(list.style.getPropertyValue("--offset-right")).toBe("32px");
+    // a toast in the corner keeps the corner's own margin
+    expect(list.style.getPropertyValue("--offset-bottom")).toBe("24px");
+  });
+
   it("stacks several toasts", async () => {
     render(<><Toaster /><Buttons /></>);
     await userEvent.click(screen.getByText("ok"));
@@ -276,6 +320,20 @@ describe("ConfirmDialog", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Delete post" }) as HTMLButtonElement).disabled).toBe(false));
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
     process.off("unhandledRejection", unhandled);
+  });
+
+  it("the stacked layout is a wider panel with the title big, and the warning tone has a yellow tile; the default is unchanged", async () => {
+    const { rerender } = render(<Host onConfirm={() => {}} />);
+    const inline = await screen.findByRole("alertdialog");
+    expect(inline.className).not.toContain("p-0");
+    expect(screen.getByText("Delete this post?").className).not.toContain("type-head-sb-5");
+    rerender(<Host onConfirm={() => {}} layout="stacked" tone="warning" icon={<svg data-testid="i" />} />);
+    const stacked = await screen.findByRole("alertdialog");
+    expect(stacked.className).toContain("p-0");
+    expect(screen.getByText("Delete this post?").className).toContain("type-head-sb-5");
+    expect(screen.getByTestId("i").closest("[data-slot=alert-dialog-media]")!.className).toContain("bg-brand-100");
+    // a warning is not a delete: the confirm button is the yellow one
+    expect(screen.getByRole("button", { name: "Delete post" }).className).toContain("bg-primary");
   });
 
   it("danger is red, default is the yellow button, and extra content shows", async () => {

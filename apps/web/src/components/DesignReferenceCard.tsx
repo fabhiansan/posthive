@@ -50,6 +50,13 @@ export function DesignReferenceCard({ template, category, showPreview = false }:
             )}
           </div>
         )}
+        {template.captionGuideline && (
+          // what a caption for this kind of post should do: read beside the post, never copied into it
+          <div className="mt-3">
+            <p className="type-body-sb-xs text-fg">Caption guideline</p>
+            <p className="type-body-r-xs mt-0.5 whitespace-pre-line text-muted">{template.captionGuideline}</p>
+          </div>
+        )}
       </div>
     </div>
   );

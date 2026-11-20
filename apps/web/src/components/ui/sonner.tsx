@@ -70,7 +70,14 @@ function ToastCard({
   )
 }
 
-// Mount once, in the root layout. Bottom right like before, up to 5 toasts, fanned out.
+// Mount once, in the root layout. Bottom right like before, up to 5 toasts, fanned out. A toast that asks for the top
+// right (useToast("top-right")) sits under the header's actions: measured in the browser, the avatar ends 32px from the
+// right (the shell's 8px margin and the page's 24px padding) and 72px from the top, and the toast starts 12px below it.
+// shortcut: fixed numbers, as the header of a page is. On a page wider than its 110rem column the avatar moves in from the
+// edge and a page with a trial banner above its header is pushed down: the toast then no longer lines up with the avatar.
+const OFFSET = { top: 84, right: 32, bottom: 24, left: 24 }
+const MOBILE_OFFSET = { top: 16, right: 16, bottom: 16, left: 16 }
+
 function Toaster(props: ToasterProps) {
   return (
     <Sonner
@@ -79,8 +86,8 @@ function Toaster(props: ToasterProps) {
       visibleToasts={5}
       expand
       gap={8}
-      offset={24}
-      mobileOffset={16}
+      offset={OFFSET}
+      mobileOffset={MOBILE_OFFSET}
       containerAriaLabel="Notifications"
       {...props}
     />

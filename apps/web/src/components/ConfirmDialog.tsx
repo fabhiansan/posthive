@@ -26,8 +26,13 @@ type Props = {
   /** Shown on the confirm button while onConfirm runs. */
   pendingLabel?: string;
   cancelLabel?: string;
-  /** "danger" = red icon tile and red button (delete, disconnect, cancel plan). */
-  tone?: "danger" | "default";
+  /** "danger" = red icon tile and red button (delete, disconnect, cancel plan); "warning" = yellow tile, the yellow button (unpublish). */
+  tone?: "danger" | "warning" | "default";
+  /**
+   * "inline" (default): the icon beside the title. "stacked": the icon above a larger title, a wider panel, a line above two
+   * equal buttons: for a dialog that shows what it acts on (the template dialogs).
+   */
+  layout?: "inline" | "stacked";
   /** Replace the tone's icon. */
   icon?: ReactNode;
   /** Keep the confirm button off until what the dialog asks for (a password, a typed name) is there. */
@@ -54,12 +59,14 @@ export function ConfirmDialog({
   pendingLabel,
   cancelLabel = "Cancel",
   tone = "danger",
+  layout = "inline",
   icon,
   confirmDisabled = false,
   onConfirm,
 }: Props) {
   const [pending, setPending] = useState(false);
   const danger = tone === "danger";
+  const stacked = layout === "stacked";
 
   async function handleConfirm(e: React.MouseEvent) {
     // Radix would close the dialog right away; we close it once onConfirm has finished.
@@ -78,18 +85,24 @@ export function ConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
-      <AlertDialogContent>
-        <div className="flex items-start gap-4">
-          <AlertDialogMedia className={cn(danger && "border-red-200 bg-red-50 text-red-600")}>
+      <AlertDialogContent className={cn(stacked && "gap-0 p-0 data-[size=default]:sm:max-w-120")}>
+        <div className={cn(stacked ? "flex flex-col gap-4 p-6" : "flex items-start gap-4")}>
+          <AlertDialogMedia
+            className={cn(
+              danger && "border-red-200 bg-red-50 text-red-600",
+              tone === "warning" && "border-brand-300 bg-brand-100 text-brand-800",
+              stacked && "size-14"
+            )}
+          >
             {icon ?? (danger ? <Trash2Icon /> : <TriangleAlertIcon />)}
           </AlertDialogMedia>
           <AlertDialogHeader className="min-w-0 flex-1">
-            <AlertDialogTitle>{title}</AlertDialogTitle>
+            <AlertDialogTitle className={cn(stacked && "type-head-sb-5")}>{title}</AlertDialogTitle>
             {description && <AlertDialogDescription>{description}</AlertDialogDescription>}
             {children}
           </AlertDialogHeader>
         </div>
-        <AlertDialogFooter>
+        <AlertDialogFooter className={cn(stacked && "border-t border-border p-6 sm:*:flex-1")}>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction variant={danger ? "destructive" : "default"} disabled={pending || confirmDisabled} onClick={handleConfirm}>
             {pending && pendingLabel ? pendingLabel : confirmLabel}

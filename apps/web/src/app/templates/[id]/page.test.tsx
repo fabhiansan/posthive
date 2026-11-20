@@ -10,6 +10,9 @@ const h = vi.hoisted(() => ({
   role: "designer" as string,
   id: "case",
   toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  // what the page asked useToast for: the Template Library puts its toasts under the header
+  toastPosition: vi.fn(),
+  usage: { created: 0, inReview: 0 } as { created: number; inReview: number },
 }));
 
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch, assetUrl: (u: string) => u }));
@@ -17,7 +20,7 @@ vi.mock("@/context/AuthContext", () => ({ useAuth: () => ({ user: { name: "Dewi 
 vi.mock("@/context/WorkspaceContext", () => ({
   useWorkspace: () => ({ activeWorkspace: { id: "ws-1", name: "Braga Tech", role: h.role, approvalRequired: true }, loading: false }),
 }));
-vi.mock("@/components/Toast", () => ({ useToast: () => h.toast }));
+vi.mock("@/components/Toast", () => ({ useToast: (position?: string) => { h.toastPosition(position); return h.toast; } }));
 vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }), useParams: () => ({ id: h.id }), usePathname: () => `/templates/${h.id}` }));
 vi.mock("next/link", () => ({
@@ -37,6 +40,8 @@ const CASE: DesignTemplate = {
   format: "carousel",
   slides: 5,
   platforms: ["linkedin", "instagram"],
+  slideImages: [],
+  captionGuideline: null,
   createdAt: "2026-11-12T03:00:00.000Z",
   updatedAt: "2026-11-13T03:00:00.000Z",
   createdBy: "Dewi Kusuma",
@@ -47,9 +52,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.role = "designer";
   h.id = "case";
+  h.usage = { created: 0, inReview: 0 };
   list = [{ ...CASE }];
   h.apiFetch.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
     if (path === "/templates" && !init) return { templates: list };
+    if (path === "/templates/case/usage") return h.usage;
     if (path === "/templates/case/status") {
       const { published } = JSON.parse(init!.body!);
       list = [{ ...list[0], published }];
@@ -71,36 +78,116 @@ describe("Template page: the design team", () => {
     expect(facts.getByText("Carousel · 5 slides")).toBeTruthy();
     expect(facts.getByText("LinkedIn · Instagram")).toBeTruthy();
     expect(facts.getByText("figma.com/design/AbC/Case-Study").closest("a")!.getAttribute("href")).toBe("https://www.figma.com/design/AbC/Case-Study");
-    expect(facts.getByText("12 Nov 2026 · Dewi K.")).toBeTruthy();
-    expect(facts.getByText("13 Nov 2026")).toBeTruthy();
+    expect(facts.getByText("Dewi Kusuma · Design team")).toBeTruthy();
+    expect(facts.getByText("12 Nov 2026 · 10:00")).toBeTruthy();
+    expect(facts.getByText("13 Nov 2026 · 10:00")).toBeTruthy();
   });
 
-  it("a draft says Marketing cannot see it, and offers Publish; Back to templates goes to the list", async () => {
+  it("a draft says Marketing cannot see it, and offers Publish; Back to library goes to the list", async () => {
     render(<TemplateDetailPage />);
     expect(await screen.findByText("This template is a draft")).toBeTruthy();
     expect(screen.getAllByText("Draft").length).toBeGreaterThan(0);
+    expect(screen.getByText("Hidden from Marketing", { selector: "span" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Unpublish" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Back to templates" }).getAttribute("href")).toBe("/templates");
+    expect(screen.getByRole("link", { name: "Back to library" }).getAttribute("href")).toBe("/templates");
   });
 
-  it("Publish sends published: true, says Marketing can see it, and then offers Unpublish", async () => {
+  it("asks for its toasts under the header (top right), not in the corner", async () => {
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(h.toastPosition).toHaveBeenCalledWith("top-right");
+    expect(h.toastPosition).not.toHaveBeenCalledWith(undefined);
+  });
+
+  it("Publish sends published: true at once (no dialog), says Marketing can see it, and then offers Unpublish", async () => {
     render(<TemplateDetailPage />);
     await userEvent.click(await screen.findByRole("button", { name: "Publish" }));
     await waitFor(() => expect(statusCalls()).toHaveLength(1));
     expect(statusCalls()[0][1]).toEqual({ method: "PATCH", body: JSON.stringify({ published: true }) });
-    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Published. Marketing can see it now."));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Case Study published. Marketing can see it now."));
     expect(await screen.findByRole("button", { name: "Unpublish" })).toBeTruthy();
     expect(screen.queryByText("This template is a draft")).toBeNull();
   });
 
-  it("Unpublish takes it back to a draft", async () => {
-    list = [{ ...CASE, published: true }];
-    render(<TemplateDetailPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
-    await waitFor(() => expect(statusCalls()[0][1]).toEqual({ method: "PATCH", body: JSON.stringify({ published: false }) }));
-    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Moved to draft. Marketing no longer sees it."));
-    expect(await screen.findByRole("button", { name: "Publish" })).toBeTruthy();
+  describe("Unpublish asks first", () => {
+    beforeEach(() => {
+      list = [{ ...CASE, published: true }];
+    });
+    const dialog = async () => screen.findByRole("alertdialog", { name: "Unpublish Case Study?" });
+
+    it("nothing is sent until it is confirmed; Cancel changes nothing", async () => {
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      const d = await dialog();
+      expect(within(d).getByText(/goes back to Draft and disappears from Marketing/)).toBeTruthy();
+      expect(within(d).getByText("Draft · hidden from Marketing")).toBeTruthy();
+      expect(statusCalls()).toHaveLength(0);
+      await userEvent.click(within(d).getByRole("button", { name: "Cancel" }));
+      expect(statusCalls()).toHaveLength(0);
+      expect(h.toast.success).not.toHaveBeenCalled();
+    });
+
+    it("Unpublish template sends published: false, says so in a toast, and the page shows a draft", async () => {
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      await userEvent.click(within(await dialog()).getByRole("button", { name: "Unpublish template" }));
+      await waitFor(() => expect(statusCalls()[0][1]).toEqual({ method: "PATCH", body: JSON.stringify({ published: false }) }));
+      await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Case Study unpublished. Marketing no longer sees it."));
+      expect(await screen.findByRole("button", { name: "Publish" })).toBeTruthy();
+    });
+
+    it("says how many posts in review are of the category, and only when there are some", async () => {
+      h.usage = { created: 12, inReview: 3 };
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      const note = await within(await dialog()).findByRole("note");
+      expect(note.textContent).toContain("3 posts in review use this template");
+      expect(note.textContent).toContain("They keep the current design");
+    });
+
+    it("one post reads in the singular", async () => {
+      h.usage = { created: 1, inReview: 1 };
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      expect((await within(await dialog()).findByRole("note")).textContent).toContain("1 post in review uses this template");
+    });
+
+    it("no post in review: no warning box", async () => {
+      h.usage = { created: 12, inReview: 0 };
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      const d = await dialog();
+      await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/templates/case/usage"));
+      expect(within(d).queryByRole("note")).toBeNull();
+    });
+
+    it("when the counts cannot be loaded the dialog still works and says nothing it does not know", async () => {
+      h.apiFetch.mockImplementation(async (path: string, init?: { method?: string; body?: string }) => {
+        if (path === "/templates") return { templates: list };
+        if (path === "/templates/case/usage") throw new Error("boom");
+        return { template: list[0], init };
+      });
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      const d = await dialog();
+      expect(within(d).queryByRole("note")).toBeNull();
+      expect(within(d).getByRole("button", { name: "Unpublish template" })).toBeTruthy();
+    });
+
+    it("a refusal is told in a toast and the dialog stays for another try", async () => {
+      h.apiFetch.mockImplementation(async (path: string) => {
+        if (path === "/templates") return { templates: list };
+        if (path === "/templates/case/usage") return h.usage;
+        throw new Error("Templates are managed by the design team only.");
+      });
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      await userEvent.click(within(await dialog()).getByRole("button", { name: "Unpublish template" }));
+      await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Templates are managed by the design team only."));
+      expect(await dialog()).toBeTruthy();
+    });
   });
 
   it("a status change that fails says why and changes nothing on the page", async () => {
@@ -114,17 +201,19 @@ describe("Template page: the design team", () => {
     expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
   });
 
-  it("Edit opens the editor with this template", async () => {
+  it("Edit template opens the editor with this template", async () => {
     render(<TemplateDetailPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit template" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit template" });
     expect((within(dialog).getByLabelText(/^Slides/) as HTMLInputElement).value).toBe("5");
   });
 
-  it("Delete asks first; confirming deletes it and goes back to the list", async () => {
+  it("Delete asks first; confirming deletes it, says so in a toast and goes back to the list", async () => {
     render(<TemplateDetailPage />);
     await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    const dialog = await screen.findByRole("alertdialog");
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete Case Study?" });
+    expect(within(dialog).getByText(/permanently removes the template, its preview and its Figma link from Postly/)).toBeTruthy();
+    expect(within(dialog).getByText("Dewi K. · 12 Nov 2026")).toBeTruthy();
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(h.apiFetch.mock.calls.filter(([, i]) => i?.method === "DELETE")).toHaveLength(0);
 
@@ -132,14 +221,53 @@ describe("Template page: the design team", () => {
     await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete template" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/templates/case", { method: "DELETE" }));
     await waitFor(() => expect(h.push).toHaveBeenCalledWith("/templates"));
-    expect(h.toast.success).toHaveBeenCalledWith("Template for Case Study deleted.");
+    expect(h.toast.success).toHaveBeenCalledWith("Case Study template deleted.");
+  });
+
+  it("the Delete dialog says how many posts are of the category, and offers Unpublish instead for a published template", async () => {
+    list = [{ ...CASE, published: true }];
+    h.usage = { created: 12, inReview: 3 };
+    render(<TemplateDetailPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    const note = await within(await screen.findByRole("alertdialog")).findByRole("note");
+    expect(note.textContent).toContain("12 posts are of this category");
+    expect(note.textContent).toContain("Unpublish instead if you might need it later.");
+  });
+
+  it("a draft's Delete dialog has no 'Unpublish instead', and no box without posts", async () => {
+    h.usage = { created: 2, inReview: 0 };
+    render(<TemplateDetailPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    const note = await within(await screen.findByRole("alertdialog")).findByRole("note");
+    expect(note.textContent).toContain("2 posts are of this category");
+    expect(note.textContent).not.toContain("Unpublish instead");
+
+    await userEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    h.usage = { created: 0, inReview: 0 };
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const again = await screen.findByRole("alertdialog");
+    await waitFor(() => expect(within(again).queryByRole("note")).toBeNull());
+  });
+
+  it("a delete that fails is told in a toast and the dialog stays", async () => {
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (init?.method === "DELETE") throw new Error("Not found");
+      if (path === "/templates/case/usage") return h.usage;
+      return { templates: list };
+    });
+    render(<TemplateDetailPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete template" }));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Not found"));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(h.push).not.toHaveBeenCalled();
   });
 
   it("a template that is not in the list is 'not found', with a way back", async () => {
     h.id = "gone";
     render(<TemplateDetailPage />);
     expect(await screen.findByText("Template not found")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Back to templates" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to library" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
   });
 
@@ -160,7 +288,7 @@ describe("Template page: Marketing", () => {
     render(<TemplateDetailPage />);
     expect(await screen.findByRole("heading", { level: 1, name: "Case Study" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open in Figma" }).getAttribute("href")).toBe("https://www.figma.com/design/AbC/Case-Study");
-    for (const name of ["Edit", "Publish", "Unpublish", "Delete"]) expect(screen.queryByRole("button", { name })).toBeNull();
+    for (const name of ["Edit template", "Publish", "Unpublish", "Delete"]) expect(screen.queryByRole("button", { name })).toBeNull();
     expect(screen.queryByText("Published")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Use template" }));
     expect(h.push).toHaveBeenCalledWith("/compose?template=case");
@@ -239,6 +367,120 @@ describe("Template page: Marketing", () => {
   });
 });
 
+describe("Template page: slides, caption guideline and checklist", () => {
+  const WITH = {
+    published: true,
+    format: "carousel" as const,
+    slides: 3,
+    slideImages: [{ url: "/uploads/a.png", label: "Cover" }, { url: "/uploads/b.png", label: null }, { url: "/uploads/c.png", label: "Call to action" }],
+    captionGuideline: "Open with the problem.\nKeep it under 300 characters.\n#GeospatialIndonesia #BragaGeo",
+    previewUrl: "/uploads/p.png",
+  };
+
+  it("shows each slide with its name under it, and 'Slide N' for one with none", async () => {
+    list = [{ ...CASE, ...WITH }];
+    render(<TemplateDetailPage />);
+    const slides = within(await screen.findByRole("region", { name: "Slides in this template" }));
+    expect(slides.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["1 · Cover", "2 · Slide 2", "3 · Call to action"]);
+    expect(slides.getAllByRole("img").map((i) => i.getAttribute("src"))).toEqual(["http://localhost:3001/uploads/a.png", "http://localhost:3001/uploads/b.png", "http://localhost:3001/uploads/c.png"]);
+  });
+
+  it("a template with no slides draws no Slides card, and no empty Caption card", async () => {
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(screen.queryByRole("region", { name: "Slides in this template" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Caption guideline" })).toBeNull();
+  });
+
+  it("shows the caption guideline with its line breaks, and the hashtags set apart", async () => {
+    list = [{ ...CASE, ...WITH }];
+    render(<TemplateDetailPage />);
+    const card = within(await screen.findByRole("region", { name: "Caption guideline" }));
+    expect(card.getByText(/Open with the problem\./).textContent).toContain("Keep it under 300 characters.");
+    expect(card.getByText("#GeospatialIndonesia").className).toContain("text-brand-800");
+    expect(card.getByText("#BragaGeo").className).toContain("text-brand-800");
+    expect(card.getByText(/Open with the problem\./).className).toContain("whitespace-pre-line");
+  });
+
+  it("the mockup pages through the slides, one at a time", async () => {
+    list = [{ ...CASE, ...WITH }];
+    render(<TemplateDetailPage />);
+    const mock = within(await screen.findByRole("figure", { name: /post preview/ }));
+    expect(mock.getByText("1 / 3")).toBeTruthy();
+    expect((mock.getByRole("button", { name: "Previous slide" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(mock.getByRole("button", { name: "Next slide" }));
+    expect(mock.getByText("2 / 3")).toBeTruthy();
+    expect(mock.getByRole("img", { name: /slide 2 of 3/ }).getAttribute("src")).toContain("/uploads/b.png");
+    await userEvent.click(mock.getByRole("button", { name: "Next slide" }));
+    expect((mock.getByRole("button", { name: "Next slide" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("the mockup is for the template's platforms: a tab each, the first one chosen", async () => {
+    list = [{ ...CASE, ...WITH, platforms: ["linkedin", "instagram"] }];
+    render(<TemplateDetailPage />);
+    const group = within(await screen.findByRole("group", { name: "Preview as" }));
+    expect(group.getByRole("button", { name: "LinkedIn" }).getAttribute("aria-pressed")).toBe("true");
+    await userEvent.click(group.getByRole("button", { name: "Instagram" }));
+    expect(screen.getByRole("figure", { name: "Instagram post preview" })).toBeTruthy();
+  });
+
+  it("a template with no picture says there is no preview yet, instead of showing an empty frame", async () => {
+    render(<TemplateDetailPage />);
+    expect(await screen.findByText("No preview image yet")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Next slide" })).toBeNull();
+  });
+
+  it("the checklist counts what the template has, from its data", async () => {
+    list = [{ ...CASE, ...WITH }];
+    render(<TemplateDetailPage />);
+    const card = within(await screen.findByRole("region", { name: "Template checklist" }));
+    expect(card.getByText("5 of 5 ready")).toBeTruthy();
+    expect(card.getByText("Edits to a published template reach Marketing immediately. Unpublish first if you need a larger rework.")).toBeTruthy();
+  });
+
+  it("and says what is missing", async () => {
+    list = [{ ...CASE, linkUrl: null, format: null, platforms: [] }];
+    render(<TemplateDetailPage />);
+    const card = within(await screen.findByRole("region", { name: "Template checklist" }));
+    expect(card.getByText("0 of 4 ready")).toBeTruthy();
+    expect(card.getByText("Upload a preview image or the slides")).toBeTruthy();
+    expect(card.getByText("Choose a content format")).toBeTruthy();
+    expect(card.getAllByText(/not ready/)).toHaveLength(4);
+  });
+});
+
+describe("Template page: what Marketing sees", () => {
+  beforeEach(() => {
+    h.role = "member";
+  });
+  const full = {
+    published: true,
+    format: "carousel" as const,
+    slideImages: [{ url: "/uploads/a.png", label: "Cover" }, { url: "/uploads/b.png", label: null }],
+    captionGuideline: "Be brief. #BragaGeo",
+  };
+
+  it("the same layout: the design, its slides and the caption guideline; no status, no checklist, no Canvas block", async () => {
+    list = [{ ...CASE, ...full }];
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(screen.getByRole("region", { name: "Slides in this template" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Caption guideline" })).toBeTruthy();
+    expect(screen.getByRole("figure", { name: /post preview/ })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Template checklist" })).toBeNull();
+    expect(screen.queryByText("Visible to Marketing")).toBeNull();
+    expect(screen.queryByText("Hidden from Marketing")).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to library" })).toBeTruthy();
+  });
+
+  it("never asks for the usage counts (the design team's dialogs are the only readers)", async () => {
+    list = [{ ...CASE, ...full }];
+    render(<TemplateDetailPage />);
+    await screen.findByRole("heading", { level: 1, name: "Case Study" });
+    expect(h.apiFetch.mock.calls.filter(([p]) => String(p).endsWith("/usage"))).toHaveLength(0);
+  });
+});
+
 // ── Canvas designs (phase 4) ───────────────────────────────────────────────────────────────────────────────────
 
 const DESIGN_ROW = { updatedAt: "2026-11-14T00:00:00Z", version: 1 };
@@ -260,7 +502,7 @@ describe("Template page: the Canvas design of a template (the design team)", () 
     expect(publishButton().disabled).toBe(true);
     expect(publishButton().getAttribute("title")).toBe("Add a Figma link or publish a Canvas revision first.");
     // Also as visible text, tied to the button: a disabled button takes no focus and a tooltip does not show on touch.
-    expect(screen.getByText("Add a Figma link or publish a Canvas revision first.").id).toBe("publish-reason");
+    expect(document.getElementById("publish-reason")!.textContent).toBe("Add a Figma link or publish a Canvas revision first.");
     expect(publishButton().getAttribute("aria-describedby")).toBe("publish-reason");
     expect(screen.getByText("No Figma link yet")).toBeTruthy();
   });

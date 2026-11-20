@@ -4,12 +4,12 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { DownloadIcon, InfoIcon, LayoutTemplateIcon, SearchXIcon, UploadIcon } from "lucide-react";
 import { DesignStat } from "@/components/dashboard/designer/DesignStat";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
 import { InlineAlert } from "@/components/InlineAlert";
 import { Pager } from "@/components/Pager";
 import { TemplateEditor } from "@/components/TemplateEditor";
 import { TemplateCard } from "@/components/templates/TemplateCard";
+import { DeleteTemplateDialog } from "@/components/templates/TemplateDialogs";
 import { TemplateFilters } from "@/components/templates/TemplateFilters";
 import { TemplatesHeader } from "@/components/templates/TemplatesHeader";
 import { useToast } from "@/components/Toast";
@@ -39,7 +39,8 @@ const TABS: { value: StatusFilter; label: string }[] = [
 export default function TemplatesPage() {
   const router = useRouter();
   const { canManageTemplates: canManage, canEditContent: canUse } = usePermissions();
-  const { success, error: toastError } = useToast();
+  // The toasts of the Template Library sit under the header's bell and avatar, not in the corner
+  const { success, error: toastError } = useToast("top-right");
   const { data, loading, error, reload } = useTemplates();
 
   const [filters, setFilters] = useState<LibraryFilters>(NO_FILTERS);
@@ -63,7 +64,7 @@ export default function TemplatesPage() {
     const { id, category } = deleting;
     try {
       await apiFetch(`/templates/${id}`, { method: "DELETE" });
-      success(`Template for ${category} deleted.`);
+      success(`${category} template deleted.`);
       reload();
     } catch (e) {
       toastError(e instanceof Error && e.message ? e.message : "Couldn't delete the template.");
@@ -218,21 +219,13 @@ export default function TemplatesPage() {
           onClose={() => setUploading(false)}
           onSaved={(t) => {
             setUploading(false);
-            success(`Template for ${t.category} saved as a draft. Open it to publish.`);
+            success(`${t.category} template saved as a draft. Open it to publish.`);
             reload();
           }}
         />
       )}
 
-      <ConfirmDialog
-        open={deleting !== null}
-        onOpenChange={(open) => { if (!open) setDeleting(null); }}
-        title="Delete this template?"
-        description={deleting && `The template for ${deleting.category} and its preview are removed, and Marketing no longer sees a design reference for this category. Existing posts are not changed.`}
-        confirmLabel="Delete template"
-        pendingLabel="Deleting…"
-        onConfirm={remove}
-      />
+      <DeleteTemplateDialog template={deleting} onOpenChange={(open) => { if (!open) setDeleting(null); }} onConfirm={remove} />
     </div>
   );
 }

@@ -19,7 +19,7 @@ const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateS
  * The API decides every case (this only says it first), and its message is shown when it refuses.
  */
 export function CanvasDesignBlock({ template, onChanged }: { template: DesignTemplate; onChanged(): void }) {
-  const toast = useToast();
+  const toast = useToast("top-right");
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -96,7 +96,7 @@ export function CanvasDesignBlock({ template, onChanged }: { template: DesignTem
   const notice = attachNotice(template);
 
   return (
-    <section aria-labelledby="canvas-design-heading" className="flex flex-col gap-3 rounded-2xl border border-border p-4">
+    <section aria-labelledby="canvas-design-heading" className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
         <PaletteIcon aria-hidden className="size-4 text-muted" />
         <h2 id="canvas-design-heading" className="type-body-sb-s text-fg">Canvas design</h2>

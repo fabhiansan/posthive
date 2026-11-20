@@ -8,6 +8,11 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 export type TemplateFormat = "carousel" | "single" | "reel_cover" | "story" | "video";
 export type TemplatePlatform = "instagram" | "linkedin";
 
+export interface SlideImage {
+  url: string;
+  label: string | null;
+}
+
 export interface DesignTemplate {
   id: string;
   name: string;
@@ -21,6 +26,10 @@ export interface DesignTemplate {
   /** Carousel only. */
   slides: number | null;
   platforms: TemplatePlatform[];
+  /** One image per slide of a carousel, in order, each with an optional short name ("Cover"). Empty for every other format. */
+  slideImages: SlideImage[];
+  /** What a caption for this kind of post should do, written by the design team. A guide for Marketing: never copied into a post. */
+  captionGuideline: string | null;
   /** The Canvas design this template is made in, and the number of its latest published revision (null: none yet). */
   designId?: string | null;
   canvasRevision?: number | null;

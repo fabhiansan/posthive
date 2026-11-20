@@ -9,7 +9,7 @@ import { DesignReferenceCard } from "./DesignReferenceCard";
 
 const t = (patch: Partial<DesignTemplate> = {}): DesignTemplate => ({
   id: "t1", name: "Case Study", pillar: "Promotional", category: "Case Study", linkUrl: "https://www.figma.com/design/AbC/Case",
-  previewUrl: null, published: true, format: null, slides: null, platforms: [], createdAt: "2026-11-12T03:00:00.000Z", createdBy: null, ...patch,
+  previewUrl: null, published: true, format: null, slides: null, platforms: [], slideImages: [], captionGuideline: null, createdAt: "2026-11-12T03:00:00.000Z", createdBy: null, ...patch,
 });
 const show = (template: DesignTemplate | null) => render(<DesignReferenceCard template={template} category="Case Study" />);
 afterEach(cleanup);
@@ -49,5 +49,25 @@ describe("DesignReferenceCard", () => {
   it("says there is no template for a category that has none", () => {
     show(null);
     expect(screen.getByText(/No design template for Case Study yet/)).toBeTruthy();
+  });
+});
+
+describe("DesignReferenceCard: the caption guideline", () => {
+  it("shows what the design team wrote, with its line breaks, next to the design", () => {
+    show(t({ captionGuideline: "Open with the problem.\nClose with one call to action." }));
+    const text = screen.getByText(/Open with the problem\./);
+    expect(text.textContent).toContain("Close with one call to action.");
+    expect(text.className).toContain("whitespace-pre-line");
+    expect(screen.getByText("Caption guideline")).toBeTruthy();
+  });
+
+  it("a template with no guideline shows no empty heading", () => {
+    show(t());
+    expect(screen.queryByText("Caption guideline")).toBeNull();
+  });
+
+  it("is still shown for a template designed in Canvas (no link)", () => {
+    show(t({ linkUrl: null, designId: "d1", canvasRevision: 1, captionGuideline: "Be brief." }));
+    expect(screen.getByText("Be brief.")).toBeTruthy();
   });
 });
