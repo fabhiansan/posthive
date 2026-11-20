@@ -11,9 +11,9 @@ import { checklistOf, dateLine, dateTimeLine, formatText, guidelineParts, platfo
 import { fileHref, hasFigmaSource, type DesignTemplate } from "@/lib/templates";
 
 /** A card of the detail page: a title, and a line on the right saying what the card is for. */
-export function DetailCard({ title, hint, headingId, className, children }: { title: string; hint?: string; headingId: string; className?: string; children: ReactNode }) {
+export function DetailCard({ title, hint, headingId, children }: { title: string; hint?: string; headingId: string; children: ReactNode }) {
   return (
-    <Card className={cn("gap-4 border-0 p-5", className)} role="region" aria-labelledby={headingId}>
+    <Card className="gap-4 border-0 p-5" role="region" aria-labelledby={headingId}>
       <div className="flex items-baseline justify-between gap-3">
         <h2 id={headingId} className="type-body-sb-m text-fg">{title}</h2>
         {hint && <p className="min-w-0 truncate text-right type-body-r-xs text-muted">{hint}</p>}
@@ -22,6 +22,8 @@ export function DetailCard({ title, hint, headingId, className, children }: { ti
     </Card>
   );
 }
+
+const visibility = (t: DesignTemplate) => (t.published ? "Visible to Marketing" : "Hidden from Marketing");
 
 /** One chip of the strip under the title. */
 function Chip({ children, tone = "plain" }: { children: ReactNode; tone?: "plain" | "success" }) {
@@ -45,7 +47,7 @@ export function MetaStrip({ template: t, canManage }: { template: DesignTemplate
       {canManage && (
         <Chip tone={t.published ? "success" : "plain"}>
           <EyeIcon aria-hidden="true" className="size-3.5" />
-          {t.published ? "Visible to Marketing" : "Hidden from Marketing"}
+          {visibility(t)}
         </Chip>
       )}
       <Chip>Pillar: {t.pillar ?? "No pillar"}</Chip>
@@ -78,7 +80,7 @@ export function DetailsCard({ template: t, canManage }: { template: DesignTempla
   const linked = hasFigmaSource(t.linkUrl) && t.linkUrl;
   const edited = dateTimeLine(t.updatedAt);
   return (
-    <DetailCard title="Template details" headingId="details-heading" hint={canManage ? (t.published ? "Visible to Marketing" : "Hidden from Marketing") : undefined}>
+    <DetailCard title="Template details" headingId="details-heading" hint={canManage ? visibility(t) : undefined}>
       <dl className="rounded-xl bg-neutral-50 px-4 py-2">
         {t.createdBy && <Row label="Created by">{t.createdBy} · Design team</Row>}
         <Row label="Created">{dateTimeLine(t.createdAt) || "Unknown"}</Row>

@@ -16,9 +16,10 @@ const buttonVariants = cva(
         olive: "bg-neutral-600 text-white hover:bg-neutral-800",
         // The yellow-outlined button of the dashboard's empty states ("Add Content", "Create milestone")
         "outline-brand": "border border-brand-500 bg-surface text-brand-800 hover:bg-brand-100",
-        destructive: "bg-destructive text-destructive-foreground hover:bg-red-600",
+        // the focus ring is red too: a person who tabs onto a dangerous button is warned by the ring as well
+        destructive: "bg-destructive text-destructive-foreground hover:bg-red-600 focus-visible:ring-red-600/40",
         "destructive-outline":
-          "border border-red-200 bg-surface text-red-600 hover:bg-red-50",
+          "border border-red-200 bg-surface text-red-600 hover:bg-red-50 focus-visible:ring-red-600/40",
         ghost: "text-muted-foreground hover:bg-neutral-100 hover:text-fg",
         link: "text-brand-800 underline-offset-4 hover:text-brand-900 hover:underline",
         // Dark auth screens: taller, brighter yellow

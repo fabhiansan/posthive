@@ -7,6 +7,7 @@ import { BRAND } from "@/lib/brand";
 import { shortName } from "@/lib/dashboard-format";
 import { dateLine, formatText } from "@/lib/template-library";
 import type { DesignTemplate } from "@/lib/templates";
+import { useOpenSnapshot } from "@/lib/useOpenSnapshot";
 import { useTemplateUsage } from "@/lib/useTemplateUsage";
 import { cn } from "@/lib/cn";
 import { TemplateCover } from "./TemplateCover";
@@ -31,14 +32,24 @@ function Summary({ template: t }: { template: DesignTemplate }) {
   );
 }
 
-/** A box that says what the action does to the posts: shown only when there is a number to say. */
-function Callout({ tone, icon, title, children }: { tone: "warning" | "danger"; icon: ReactNode; title: string; children: ReactNode }) {
+/**
+ * A red box that says what the action does to the posts: drawn only when there is a number to say. Both actions are dangerous,
+ * so it is always red. The numbers come after the dialog has opened, so the box opens its row (0fr to 1fr) instead of popping in:
+ * the dialog grows smoothly, it does not jump.
+ */
+function Callout({ title, children }: { title?: string; children?: ReactNode }) {
   return (
-    <div role="note" className={cn("flex gap-3 rounded-xl p-3", tone === "warning" ? "bg-brand-100 text-brand-800" : "bg-red-50 text-red-600")}>
-      <span aria-hidden="true" className="mt-0.5 shrink-0 [&_svg]:size-4">{icon}</span>
-      <div className="min-w-0">
-        <p className="type-body-sb-s">{title}</p>
-        <p className="mt-0.5 type-body-r-xs text-fg">{children}</p>
+    <div className={cn("grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none", title ? "grid-rows-[1fr]" : "grid-rows-[0fr]")}>
+      <div className="min-h-0 overflow-hidden">
+        {title && (
+          <div role="note" className="mb-3 flex gap-3 rounded-xl bg-red-50 p-3 text-red-600">
+            <TriangleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <div className="min-w-0">
+              <p className="type-body-sb-s">{title}</p>
+              <p className="mt-0.5 type-body-r-xs text-fg">{children}</p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -63,32 +74,33 @@ type Props = {
 
 /** "Unpublish {category}?": the template goes back to a draft and leaves Marketing's list. Says how many posts in review are of its category. */
 export function UnpublishTemplateDialog({ template, onOpenChange, onConfirm }: Props) {
-  const usage = useTemplateUsage(template?.id, template !== null);
+  const t = useOpenSnapshot(template);
+  const usage = useTemplateUsage(t?.id, template !== null);
   const inReview = usage?.inReview ?? 0;
   return (
     <ConfirmDialog
       open={template !== null}
       onOpenChange={onOpenChange}
-      tone="warning"
+      tone="danger"
       layout="stacked"
       icon={<EyeOffIcon />}
-      title={template ? `Unpublish ${template.category}?` : ""}
+      title={t ? `Unpublish ${t.category}?` : ""}
       description="The template goes back to Draft and disappears from Marketing's Pick from templates list. You can publish it again anytime."
       confirmLabel="Unpublish template"
       pendingLabel="Unpublishing…"
       onConfirm={onConfirm}
     >
-      {template && (
-        <div className="mt-2 flex flex-col gap-3">
-          {inReview > 0 && (
-            <Callout tone="warning" icon={<TriangleAlertIcon />} title={`${plural(inReview, "post", "posts")} in review ${inReview === 1 ? "uses" : "use"} this template`}>
-              {inReview === 1 ? "It keeps" : "They keep"} the current design. Marketing just can&apos;t start new posts from it until you publish again.
-            </Callout>
-          )}
-          <Summary template={template} />
-          <dl>
-            <Fact label="New status">Draft · hidden from Marketing</Fact>
-          </dl>
+      {t && (
+        <div className="mt-2">
+          <Callout title={inReview > 0 ? `${plural(inReview, "post", "posts")} in review ${inReview === 1 ? "uses" : "use"} this template` : undefined}>
+            {inReview === 1 ? "It keeps" : "They keep"} the current design. Marketing just can&apos;t start new posts from it until you publish again.
+          </Callout>
+          <div className="flex flex-col gap-3">
+            <Summary template={t} />
+            <dl>
+              <Fact label="New status">Draft · hidden from Marketing</Fact>
+            </dl>
+          </div>
         </div>
       )}
     </ConfirmDialog>
@@ -97,7 +109,8 @@ export function UnpublishTemplateDialog({ template, onOpenChange, onConfirm }: P
 
 /** "Delete {category}?": the template, its preview, its slides and its Figma link are removed for good. Says how many posts are of its category. */
 export function DeleteTemplateDialog({ template, onOpenChange, onConfirm }: Props) {
-  const usage = useTemplateUsage(template?.id, template !== null);
+  const t = useOpenSnapshot(template);
+  const usage = useTemplateUsage(t?.id, template !== null);
   const created = usage?.created ?? 0;
   return (
     <ConfirmDialog
@@ -106,23 +119,23 @@ export function DeleteTemplateDialog({ template, onOpenChange, onConfirm }: Prop
       tone="danger"
       layout="stacked"
       icon={<TriangleAlertIcon />}
-      title={template ? `Delete ${template.category}?` : ""}
-      description={`This permanently removes the template, its preview and its Figma link from ${BRAND.name}. This can't be undone.${template?.designId ? " Its Canvas design stays in your Canvas designs." : ""}`}
+      title={t ? `Delete ${t.category}?` : ""}
+      description={`This permanently removes the template, its preview and its Figma link from ${BRAND.name}. This can't be undone.${t?.designId ? " Its Canvas design stays in your Canvas designs." : ""}`}
       confirmLabel="Delete template"
       pendingLabel="Deleting…"
       onConfirm={onConfirm}
     >
-      {template && (
-        <div className="mt-2 flex flex-col gap-3">
-          {created > 0 && (
-            <Callout tone="danger" icon={<TriangleAlertIcon />} title={`${plural(created, "post", "posts")} ${created === 1 ? "is" : "are"} of this category`}>
-              Existing posts stay as they are, but they have no design reference to open any more.{template.published ? " Unpublish instead if you might need it later." : ""}
-            </Callout>
-          )}
-          <Summary template={template} />
-          <dl>
-            <Fact label="Created by">{[shortName(template.createdBy), dateLine(template.createdAt)].filter(Boolean).join(" · ") || "Unknown"}</Fact>
-          </dl>
+      {t && (
+        <div className="mt-2">
+          <Callout title={created > 0 ? `${plural(created, "post", "posts")} ${created === 1 ? "is" : "are"} of this category` : undefined}>
+            Existing posts stay as they are, but they have no design reference to open any more.{t.published ? " Unpublish instead if you might need it later." : ""}
+          </Callout>
+          <div className="flex flex-col gap-3">
+            <Summary template={t} />
+            <dl>
+              <Fact label="Created by">{[shortName(t.createdBy), dateLine(t.createdAt)].filter(Boolean).join(" · ") || "Unknown"}</Fact>
+            </dl>
+          </div>
         </div>
       )}
     </ConfirmDialog>

@@ -9,7 +9,7 @@ const h = vi.hoisted(() => ({
   push: vi.fn(),
   role: "designer" as string,
   id: "case",
-  toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), danger: vi.fn(), warning: vi.fn() },
   // what the page asked useToast for: the Template Library puts its toasts under the header
   toastPosition: vi.fn(),
   usage: { created: 0, inReview: 0 } as { created: number; inReview: number },
@@ -134,7 +134,9 @@ describe("Template page: the design team", () => {
       await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
       await userEvent.click(within(await dialog()).getByRole("button", { name: "Unpublish template" }));
       await waitFor(() => expect(statusCalls()[0][1]).toEqual({ method: "PATCH", body: JSON.stringify({ published: false }) }));
-      await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Case Study unpublished. Marketing no longer sees it."));
+      // it took the template away from Marketing: a red toast, not the green one of "published"
+      await waitFor(() => expect(h.toast.danger).toHaveBeenCalledWith("Case Study unpublished. Marketing no longer sees it."));
+      expect(h.toast.success).not.toHaveBeenCalled();
       expect(await screen.findByRole("button", { name: "Publish" })).toBeTruthy();
     });
 
@@ -221,7 +223,8 @@ describe("Template page: the design team", () => {
     await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete template" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/templates/case", { method: "DELETE" }));
     await waitFor(() => expect(h.push).toHaveBeenCalledWith("/templates"));
-    expect(h.toast.success).toHaveBeenCalledWith("Case Study template deleted.");
+    expect(h.toast.danger).toHaveBeenCalledWith("Case Study template deleted.");
+    expect(h.toast.success).not.toHaveBeenCalled();
   });
 
   it("the Delete dialog says how many posts are of the category, and offers Unpublish instead for a published template", async () => {
@@ -261,6 +264,84 @@ describe("Template page: the design team", () => {
     await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Not found"));
     expect(screen.getByRole("alertdialog")).toBeTruthy();
     expect(h.push).not.toHaveBeenCalled();
+  });
+
+  // The closing frame of the dialogs is tested in components/templates/TemplateDialogs.test.tsx (jsdom has no fade-out).
+  describe("the red box of a dialog", () => {
+    it("the red box has its place from the first frame: it is in the page with no height until there is a count (nothing jumps in)", async () => {
+      list = [{ ...CASE, published: true }];
+      h.usage = { created: 0, inReview: 0 };
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+      const d = await screen.findByRole("alertdialog", { name: "Delete Case Study?" });
+      await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/templates/case/usage"));
+      expect(within(d).queryByRole("note")).toBeNull();
+      // the row that holds the box is closed (0fr), so a box that arrives later opens it instead of pushing the dialog
+      expect(d.querySelector(".grid-rows-\\[0fr\\]")).not.toBeNull();
+    });
+  });
+
+  // A dangerous action is red from the button that asks to the button that confirms, so nobody meets it half-warned.
+  describe("every dangerous action is red", () => {
+    const red = (el: Element) => expect(el.className).toContain("text-red-600");
+
+    it("Delete and Unpublish are red outlines in the bar; Edit template is the yellow one", async () => {
+      list = [{ ...CASE, published: true }];
+      render(<TemplateDetailPage />);
+      const del = await screen.findByRole("button", { name: "Delete" });
+      const unpublish = screen.getByRole("button", { name: "Unpublish" });
+      for (const b of [del, unpublish]) {
+        red(b);
+        expect(b.className).toContain("border-red-200");
+      }
+      expect(screen.getByRole("button", { name: "Edit template" }).className).not.toContain("red");
+    });
+
+    it("a draft's bar has a red Delete and a yellow Publish", async () => {
+      render(<TemplateDetailPage />);
+      red(await screen.findByRole("button", { name: "Delete" }));
+      expect(screen.getByRole("button", { name: "Publish" }).className).not.toContain("red");
+    });
+
+    it("the Unpublish dialog is red: its icon, its box and its confirm button", async () => {
+      list = [{ ...CASE, published: true }];
+      h.usage = { created: 12, inReview: 3 };
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Unpublish" }));
+      const d = await screen.findByRole("alertdialog", { name: "Unpublish Case Study?" });
+      expect(d.querySelector("[data-slot=alert-dialog-media]")!.className).toContain("bg-red-50");
+      expect((await within(d).findByRole("note")).className).toContain("bg-red-50");
+      expect(within(d).getByRole("button", { name: "Unpublish template" }).className).toContain("bg-destructive");
+    });
+
+    it("the Delete dialog is red: its icon, its box and its confirm button", async () => {
+      h.usage = { created: 2, inReview: 0 };
+      render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+      const d = await screen.findByRole("alertdialog", { name: "Delete Case Study?" });
+      expect(d.querySelector("[data-slot=alert-dialog-media]")!.className).toContain("bg-red-50");
+      expect((await within(d).findByRole("note")).className).toContain("bg-red-50");
+      expect(within(d).getByRole("button", { name: "Delete template" }).className).toContain("bg-destructive");
+    });
+
+    it("Remove link is red, and so is its dialog's confirm button", async () => {
+      list = [{ ...CASE, designId: "d1", canvasRevision: 1 }];
+      withDesigns([]);
+      render(<TemplateDetailPage />);
+      const remove = await screen.findByRole("button", { name: /Remove link/ });
+      red(remove);
+      await userEvent.click(remove);
+      const d = await screen.findByRole("alertdialog");
+      expect(d.querySelector("[data-slot=alert-dialog-media]")!.className).toContain("bg-red-50");
+      expect(within(d).getByRole("button", { name: "Remove link" }).className).toContain("bg-destructive");
+    });
+
+    it("what is not dangerous is not red: linking, creating and opening the design", async () => {
+      list = [{ ...CASE, designId: "d1", canvasRevision: 1 }];
+      withDesigns([]);
+      render(<TemplateDetailPage />);
+      expect((await screen.findByRole("link", { name: /Open in Canvas/ })).className).not.toContain("red");
+    });
   });
 
   it("a template that is not in the list is 'not found', with a way back", async () => {
@@ -639,6 +720,8 @@ describe("Template page: the Canvas design of a template (the design team)", () 
     expect(h.apiFetch.mock.calls.filter(([, i]) => i?.method === "DELETE")).toHaveLength(0);
     await userEvent.click(within(dialog).getByRole("button", { name: "Remove link" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/canvas/templates/case/design", { method: "DELETE" }));
+    await waitFor(() => expect(h.toast.danger).toHaveBeenCalledWith("The Canvas design was unlinked. It is still in your Canvas designs."));
+    expect(h.toast.success).not.toHaveBeenCalled();
   });
 
   it("Marketing sees no Canvas block, no Create, no Link and no Remove", async () => {

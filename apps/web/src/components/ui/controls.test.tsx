@@ -35,6 +35,22 @@ describe("Button", () => {
     expect(screen.getByText("c").className).toContain("text-red-600");
   });
 
+  it("the two red variants have a red focus ring, not the yellow one", () => {
+    render(
+      <>
+        <Button variant="destructive">b</Button>
+        <Button variant="destructive-outline">c</Button>
+        <Button>d</Button>
+      </>
+    );
+    for (const name of ["b", "c"]) {
+      const cls = screen.getByText(name).className;
+      expect(cls).toContain("focus-visible:ring-red-600/40");
+      expect(cls).not.toContain("focus-visible:ring-ring/40");
+    }
+    expect(screen.getByText("d").className).toContain("focus-visible:ring-ring/40");
+  });
+
   it("the small size swaps the text style instead of stacking two", () => {
     render(<Button size="sm">Small</Button>);
     const cls = screen.getByText("Small").className;

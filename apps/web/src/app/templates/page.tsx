@@ -40,7 +40,7 @@ export default function TemplatesPage() {
   const router = useRouter();
   const { canManageTemplates: canManage, canEditContent: canUse } = usePermissions();
   // The toasts of the Template Library sit under the header's bell and avatar, not in the corner
-  const { success, error: toastError } = useToast("top-right");
+  const { success, danger, error: toastError } = useToast("top-right");
   const { data, loading, error, reload } = useTemplates();
 
   const [filters, setFilters] = useState<LibraryFilters>(NO_FILTERS);
@@ -64,7 +64,7 @@ export default function TemplatesPage() {
     const { id, category } = deleting;
     try {
       await apiFetch(`/templates/${id}`, { method: "DELETE" });
-      success(`${category} template deleted.`);
+      danger(`${category} template deleted.`);
       reload();
     } catch (e) {
       toastError(e instanceof Error && e.message ? e.message : "Couldn't delete the template.");

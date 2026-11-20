@@ -8,7 +8,7 @@ const h = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   push: vi.fn(),
   role: "designer" as string,
-  toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  toast: { toast: vi.fn(), success: vi.fn(), error: vi.fn(), danger: vi.fn(), warning: vi.fn() },
   csv: vi.fn(),
   // what the page asked useToast for
   toastPosition: vi.fn(),
@@ -183,7 +183,7 @@ describe("Template Library: the design team", () => {
     await userEvent.click(screen.getByRole("button", { name: "Delete Blog Post" }));
     await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete template" }));
     await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/templates/blog", { method: "DELETE" }));
-    await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith("Blog Post template deleted."));
+    await waitFor(() => expect(h.toast.danger).toHaveBeenCalledWith("Blog Post template deleted."));
     await waitFor(() => expect(h.apiFetch.mock.calls.filter(([p, i]) => p === "/templates" && !i)).toHaveLength(2));
   });
 

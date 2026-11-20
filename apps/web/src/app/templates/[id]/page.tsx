@@ -37,7 +37,7 @@ export default function TemplateDetailPage() {
   const { canManageTemplates: canManage, canEditContent: canUse } = usePermissions();
   const { activeWorkspace } = useWorkspace();
   // The toasts of the Template Library sit under the header's bell and avatar, not in the corner
-  const { success, error: toastError } = useToast("top-right");
+  const { success, danger, error: toastError } = useToast("top-right");
   const { data, loading, error, reload } = useTemplates();
 
   const [editing, setEditing] = useState(false);
@@ -52,7 +52,9 @@ export default function TemplateDetailPage() {
     setSwitching(true);
     try {
       await apiFetch(`/templates/${template.id}/status`, { method: "PATCH", body: JSON.stringify({ published }) });
-      success(published ? `${template.category} published. Marketing can see it now.` : `${template.category} unpublished. Marketing no longer sees it.`);
+      // Publish is good news (green); Unpublish took the template away from Marketing (red, like the button)
+      if (published) success(`${template.category} published. Marketing can see it now.`);
+      else danger(`${template.category} unpublished. Marketing no longer sees it.`);
       reload();
     } catch (e) {
       toastError(e instanceof Error && e.message ? e.message : "Couldn't change the status. Try again.");
@@ -70,7 +72,7 @@ export default function TemplateDetailPage() {
       toastError(e instanceof Error && e.message ? e.message : "Couldn't delete the template.");
       throw e;
     }
-    success(`${template.category} template deleted.`);
+    danger(`${template.category} template deleted.`);
     router.push("/templates");
   }
 
@@ -168,7 +170,7 @@ export default function TemplateDetailPage() {
                 </Button>
                 {canManage ? (
                   <>
-                    <Button variant="ghost" className="text-red-600 hover:bg-red-50 hover:text-red-600" onClick={() => setDeleting(true)}>
+                    <Button variant="destructive-outline" onClick={() => setDeleting(true)}>
                       <Trash2Icon />
                       Delete
                     </Button>

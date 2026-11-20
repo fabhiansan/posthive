@@ -84,7 +84,7 @@ export function CanvasDesignBlock({ template, onChanged }: { template: DesignTem
   async function unlink() {
     try {
       await detachDesign(template.id);
-      toast.success("The Canvas design was unlinked. It is still in your Canvas designs.");
+      toast.danger("The Canvas design was unlinked. It is still in your Canvas designs.");
       onChanged();
     } catch (err) {
       fail(err, "The design could not be unlinked.");
@@ -117,7 +117,7 @@ export function CanvasDesignBlock({ template, onChanged }: { template: DesignTem
                 <ExternalLinkIcon /> Open in Canvas
               </Link>
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => setRemoving(true)}>
+            <Button variant="destructive-outline" size="sm" onClick={() => setRemoving(true)}>
               <Unlink2Icon /> Remove link
             </Button>
           </div>
@@ -170,7 +170,8 @@ export function CanvasDesignBlock({ template, onChanged }: { template: DesignTem
       <ConfirmDialog
         open={removing}
         onOpenChange={setRemoving}
-        tone="default"
+        tone="danger"
+        icon={<Unlink2Icon />}
         title="Remove the Canvas design?"
         description="The design, its revisions and its images are kept in your Canvas designs. The template just stops using it."
         confirmLabel="Remove link"

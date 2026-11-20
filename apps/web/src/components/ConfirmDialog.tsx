@@ -26,8 +26,8 @@ type Props = {
   /** Shown on the confirm button while onConfirm runs. */
   pendingLabel?: string;
   cancelLabel?: string;
-  /** "danger" = red icon tile and red button (delete, disconnect, cancel plan); "warning" = yellow tile, the yellow button (unpublish). */
-  tone?: "danger" | "warning" | "default";
+  /** "danger" = red icon tile and red button (delete, unpublish, disconnect, cancel plan); "default" = a yellow tile and button. */
+  tone?: "danger" | "default";
   /**
    * "inline" (default): the icon beside the title. "stacked": the icon above a larger title, a wider panel, a line above two
    * equal buttons: for a dialog that shows what it acts on (the template dialogs).
@@ -90,7 +90,6 @@ export function ConfirmDialog({
           <AlertDialogMedia
             className={cn(
               danger && "border-red-200 bg-red-50 text-red-600",
-              tone === "warning" && "border-brand-300 bg-brand-100 text-brand-800",
               stacked && "size-14"
             )}
           >

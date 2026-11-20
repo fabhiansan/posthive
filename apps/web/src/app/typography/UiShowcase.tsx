@@ -164,6 +164,7 @@ export function UiShowcase() {
         <Row label="toast">
           <Button variant="secondary" size="sm" onClick={() => toast.success("Post deleted.")}>Success</Button>
           <Button variant="secondary" size="sm" onClick={() => toast.error("Could not publish: the token has expired.")}>Error (6s)</Button>
+          <Button variant="secondary" size="sm" onClick={() => toast.danger("Case Study template deleted.")}>Danger</Button>
           <Button variant="secondary" size="sm" onClick={() => toast.warning("Trial ends in 3 days.")}>Warning</Button>
           <Button variant="secondary" size="sm" onClick={() => toast.toast("Copied!")}>Info</Button>
         </Row>

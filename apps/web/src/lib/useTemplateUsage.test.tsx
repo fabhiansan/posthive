@@ -27,11 +27,18 @@ describe("useTemplateUsage: the counts a dialog names", () => {
     expect(h.apiFetch).toHaveBeenCalledWith("/templates/t1/usage");
   });
 
-  it("forgets them when it closes, so the next time never shows the last numbers", async () => {
+  it("keeps them while the dialog fades out (it must not change shape as it closes), and starts from nothing when it opens again", async () => {
+    let finish!: (v: unknown) => void;
     const { result, rerender } = renderHook(({ open }) => useTemplateUsage("t1", open), { initialProps: { open: true } });
-    await waitFor(() => expect(result.current).not.toBeNull());
+    await waitFor(() => expect(result.current).toEqual({ created: 12, inReview: 3 }));
     rerender({ open: false });
+    expect(result.current).toEqual({ created: 12, inReview: 3 });
+    // the next opening never shows these numbers: they are gone in the very render that opens it, before the answer is here
+    h.apiFetch.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    rerender({ open: true });
     expect(result.current).toBeNull();
+    await act(async () => { finish({ created: 1, inReview: 0 }); });
+    expect(result.current).toEqual({ created: 1, inReview: 0 });
   });
 
   it("asks nothing without a template", () => {
@@ -84,6 +91,10 @@ describe("useTemplateUsage: the counts a dialog names", () => {
     const { result, rerender } = renderHook(({ open }) => useTemplateUsage("t1", open), { initialProps: { open: true } });
     rerender({ open: false });
     await act(async () => { finish({ created: 99, inReview: 99 }); });
+    expect(result.current).toBeNull();
+    // and the next opening is empty until ITS answer comes
+    h.apiFetch.mockReturnValueOnce(new Promise(() => {}));
+    rerender({ open: true });
     expect(result.current).toBeNull();
   });
 });

@@ -2,15 +2,18 @@
 
 import * as React from "react"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { CheckIcon, InfoIcon, TriangleAlertIcon, XIcon } from "lucide-react"
+import { CheckIcon, InfoIcon, MinusIcon, TriangleAlertIcon, XIcon } from "lucide-react"
 import { cn } from "@/lib/cn"
 import { TONE } from "@/lib/tone"
 
-export type ToastType = "success" | "error" | "warning" | "info"
+// "danger" is for an action the person asked for that took something away (delete, unpublish, unlink): red like the button that
+// asked for it, and polite for a screen reader, because nothing failed. "error" is for what went wrong.
+export type ToastType = "success" | "error" | "danger" | "warning" | "info"
 
 const ICONS = {
   success: CheckIcon,
   error: XIcon,
+  danger: MinusIcon,
   warning: TriangleAlertIcon,
   info: InfoIcon,
 } as const
@@ -19,6 +22,7 @@ const ICONS = {
 const TONES: Record<ToastType, { box: string; icon: string }> = {
   success: { box: TONE.success, icon: "bg-green-100" },
   error: { box: TONE.danger, icon: "bg-red-100" },
+  danger: { box: TONE.danger, icon: "bg-red-100" },
   warning: { box: TONE.warning, icon: "bg-brand-200" },
   info: { box: TONE.info, icon: "bg-blue-100" },
 }

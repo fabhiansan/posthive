@@ -25,6 +25,7 @@ describe("useToast (sonner adapter)", () => {
         <button onClick={() => t.success("Post deleted.")}>ok</button>
         <button onClick={() => t.error("Token expired")}>fail</button>
         <button onClick={() => t.warning("Trial ends soon")}>warn</button>
+        <button onClick={() => t.danger("Case Study template deleted.")}>gone</button>
         <button onClick={() => t.toast("FYI")}>info</button>
         <button onClick={() => t.toast("Custom", "success", 1234)}>custom</button>
       </>
@@ -35,7 +36,7 @@ describe("useToast (sonner adapter)", () => {
     let api!: ReturnType<typeof useToast>;
     function Probe() { api = useToast(); return null; }
     render(<Probe />);
-    expect(Object.keys(api).sort()).toEqual(["error", "success", "toast", "warning"]);
+    expect(Object.keys(api).sort()).toEqual(["danger", "error", "success", "toast", "warning"]);
   });
 
   it("returns the same object on every render, so it is safe in an effect's dependency list", () => {
@@ -80,6 +81,19 @@ describe("useToast (sonner adapter)", () => {
     expect(warn.getAttribute("role")).toBe("alert");
   });
 
+  it("danger is red like an error, but polite for a screen reader (nothing failed) and as short as a success", async () => {
+    const custom = vi.spyOn(sonner, "custom");
+    render(<><Toaster /><Buttons /></>);
+    await userEvent.click(screen.getByText("gone"));
+    const box = (await screen.findByText("Case Study template deleted.")).closest("[data-slot=toast]")!;
+    expect(box.getAttribute("data-type")).toBe("danger");
+    expect(box.className).toContain("bg-red-50");
+    expect(box.className).toContain("text-red-600");
+    expect(box.getAttribute("role")).toBe("status");
+    expect((custom.mock.calls[0][1] as { duration: number }).duration).toBe(4000);
+    custom.mockRestore();
+  });
+
   it("toast(message) defaults to info", async () => {
     render(<><Toaster /><Buttons /></>);
     await userEvent.click(screen.getByText("info"));
@@ -117,10 +131,11 @@ describe("useToast (sonner adapter)", () => {
     top.success("b");
     top.error("c");
     top.warning("d");
+    top.danger("f");
     top.toast("e", "info", 1234);
     const options = custom.mock.calls.map((c) => c[1] as { duration: number; position?: string });
-    expect(options.map((o) => o.position)).toEqual([undefined, "top-right", "top-right", "top-right", "top-right"]);
-    expect(options.map((o) => o.duration)).toEqual([4000, 4000, 6000, 4000, 1234]); // the durations are the same as ever
+    expect(options.map((o) => o.position)).toEqual([undefined, "top-right", "top-right", "top-right", "top-right", "top-right"]);
+    expect(options.map((o) => o.duration)).toEqual([4000, 4000, 6000, 4000, 4000, 1234]); // the durations are the same as ever
     custom.mockRestore();
   });
 
@@ -322,18 +337,18 @@ describe("ConfirmDialog", () => {
     process.off("unhandledRejection", unhandled);
   });
 
-  it("the stacked layout is a wider panel with the title big, and the warning tone has a yellow tile; the default is unchanged", async () => {
+  it("the stacked layout is a wider panel with the title big and a custom icon, still red; the default is unchanged", async () => {
     const { rerender } = render(<Host onConfirm={() => {}} />);
     const inline = await screen.findByRole("alertdialog");
     expect(inline.className).not.toContain("p-0");
     expect(screen.getByText("Delete this post?").className).not.toContain("type-head-sb-5");
-    rerender(<Host onConfirm={() => {}} layout="stacked" tone="warning" icon={<svg data-testid="i" />} />);
+    rerender(<Host onConfirm={() => {}} layout="stacked" icon={<svg data-testid="i" />} />);
     const stacked = await screen.findByRole("alertdialog");
     expect(stacked.className).toContain("p-0");
     expect(screen.getByText("Delete this post?").className).toContain("type-head-sb-5");
-    expect(screen.getByTestId("i").closest("[data-slot=alert-dialog-media]")!.className).toContain("bg-brand-100");
-    // a warning is not a delete: the confirm button is the yellow one
-    expect(screen.getByRole("button", { name: "Delete post" }).className).toContain("bg-primary");
+    // a dangerous action is red all the way: the tile and the confirm button
+    expect(screen.getByTestId("i").closest("[data-slot=alert-dialog-media]")!.className).toContain("bg-red-50");
+    expect(screen.getByRole("button", { name: "Delete post" }).className).toContain("bg-destructive");
   });
 
   it("danger is red, default is the yellow button, and extra content shows", async () => {
