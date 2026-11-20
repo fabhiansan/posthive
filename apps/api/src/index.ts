@@ -38,6 +38,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { uploadRoutes } from "./routes/upload.js";
 import { userRoutes } from "./routes/user.js";
 import { profileSecurityRoutes } from "./routes/profileSecurity.js";
+import { TRUSTED_PROXIES } from "./lib/ipRateLimit.js";
 import { profilePhotoRoutes } from "./routes/profilePhoto.js";
 import { twoStepRoutes } from "./routes/twoStep.js";
 import { billingRoutes } from "./routes/billing.js";
@@ -96,6 +97,7 @@ async function main() {
       ? { transport: { target: "pino-pretty", options: { colorize: true, translateTime: "HH:MM:ss", ignore: "pid,hostname" } }, redact: ["req.query.token", "req.params.apiKey"] }
       : { redact: ["req.query.token", "req.params.apiKey"] },
     bodyLimit: 1_048_576, // 1 MB
+    trustProxy: TRUSTED_PROXIES, // req.ip is the visitor behind Caddy / the platform proxy, not the proxy (lib/ipRateLimit.ts)
   });
 
   const allowedOrigins = [
