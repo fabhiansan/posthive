@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { createDesign, deleteDesign, DESIGN_LIST_MAX, listDesigns, type DesignSummary } from "@/lib/canvas";
 import { useBootNone } from "./CanvasBoot";
+import { ReviewIndicator } from "./ReviewIndicator";
 
 type Listing = { status: "loading" } | { status: "error" } | { status: "ready"; designs: DesignSummary[] };
 
@@ -68,9 +69,12 @@ export function CanvasHome() {
           </Link>
         </Button>
         <h1 className="type-body-sb-m text-fg">Canvas</h1>
-        <Button size="sm" className="ml-auto" onClick={create} disabled={creating}>
-          {creating ? <Spinner size="sm" label="Creating" /> : <PlusIcon />} New design
-        </Button>
+        <div className="ml-auto flex items-center gap-2">
+          <ReviewIndicator />
+          <Button size="sm" onClick={create} disabled={creating}>
+            {creating ? <Spinner size="sm" label="Creating" /> : <PlusIcon />} New design
+          </Button>
+        </div>
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto">

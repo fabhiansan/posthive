@@ -22,6 +22,35 @@ interface DesignRow {
   createdAt?: Date;
   overrides?: unknown;
   baseRevisionId?: string | null;
+  // Phase 6 (instances only): set when a submitted design is archived
+  archivedAt?: Date | null;
+}
+
+/** A review snapshot, as the database holds one (insert only). */
+interface SubmissionRow {
+  id: string;
+  workspaceId: string;
+  instanceId: string;
+  number: number;
+  instanceVersion: number;
+  name: string;
+  note: string | null;
+  baseRevisionId: string;
+  overrides: unknown;
+  document: unknown;
+  submittedByUserId: string;
+  createdAt: Date;
+}
+interface ReviewRow {
+  id: string;
+  workspaceId: string;
+  submissionId: string;
+  status: string;
+  pendingInstanceId: string | null;
+  comment: string | null;
+  decidedByUserId: string | null;
+  decidedAt: Date | null;
+  createdAt: Date;
 }
 
 interface TemplateRow {
@@ -51,6 +80,13 @@ const h = vi.hoisted(() => ({
   designs: [] as DesignRow[],
   templates: [] as TemplateRow[],
   revisions: [] as RevisionRow[],
+  submissions: [] as SubmissionRow[],
+  reviews: [] as ReviewRow[],
+  // Submissions another connection committed while a transaction ran: a rollback of THIS transaction must not undo them.
+  outsideSubmissions: [] as SubmissionRow[],
+  // People of the workspace (for "is there a designer?") and the accounts that exist (for names).
+  members: [] as Array<{ workspaceId: string; userId: string; role: string }>,
+  users: [] as Array<{ id: string; name: string }>,
   clock: 0,
   createFails: false,
   // What ran, in order. "tx:" and "out:" say whether a read happened inside a $transaction; "lock:" is a FOR UPDATE.
@@ -66,7 +102,7 @@ const h = vi.hoisted(() => ({
   userId: "user-1",
   // Called right after a lock is taken. A test uses it to be "the other transaction" that committed while this one waited
   // for the lock: it changes the store, and whatever the route reads AFTER the lock must see that.
-  onLock: null as null | ((which: "template" | "design") => void),
+  onLock: null as null | ((which: "template" | "design" | "instance") => void),
 }));
 
 // What a Prisma `where` on a Design can say: equality, `lt` for the keyset boundary, a relation filter, AND and OR.
@@ -78,10 +114,18 @@ type Cond = {
   createdByUserId?: string;
   createdAt?: Date | { lt: Date };
   baseRevision?: { designId: string };
+  // Phase 6: `null` is "not archived", `{ not: null }` is "archived".
+  archivedAt?: null | { not: null };
   AND?: Cond[];
   OR?: Cond[];
 };
 type Where = Cond;
+// A `where` key the double does not understand must FAIL the test, not be ignored: a filter that is silently dropped here (an
+// `archivedAt` forgotten on a route) would pass every test and leak archived rows in production.
+const KNOWN_KEYS = new Set(["id", "workspaceId", "kind", "version", "createdByUserId", "createdAt", "baseRevision", "archivedAt", "AND", "OR"]);
+const rejectUnknown = (w: object, what: string) => {
+  for (const k of Object.keys(w)) if (!KNOWN_KEYS.has(k)) throw new Error(`the test double does not understand \`${k}\` in a ${what} where: add it, or the filter is silently ignored`);
+};
 const nul = (v: unknown) => typeof v === "string" && v.includes("\u0000");
 // PostgreSQL refuses a NUL in text (error 22021) and Prisma throws it: a test double that quietly matched nothing
 // would hide a 500 that the real database causes. Checked against the real dev database.
@@ -89,7 +133,9 @@ const refuseNul = (...values: unknown[]) => {
   if (values.some(nul)) throw new Error('invalid byte sequence for encoding "UTF8": 0x00');
 };
 const matches = (d: DesignRow, w: Cond): boolean => {
+  rejectUnknown(w, "design");
   refuseNul(w.id);
+  const archivedOk = w.archivedAt === undefined || (w.archivedAt === null ? (d.archivedAt ?? null) === null : (d.archivedAt ?? null) !== null);
   const idOk = w.id === undefined || (typeof w.id === "string" ? d.id === w.id : d.id < w.id.lt);
   const at = (d.createdAt ?? new Date(0)).getTime();
   const createdOk = w.createdAt === undefined || (w.createdAt instanceof Date ? at === w.createdAt.getTime() : at < w.createdAt.lt.getTime());
@@ -98,6 +144,7 @@ const matches = (d: DesignRow, w: Cond): boolean => {
     idOk &&
     createdOk &&
     baseOk &&
+    archivedOk &&
     (w.workspaceId === undefined || d.workspaceId === w.workspaceId) &&
     (w.kind === undefined || d.kind === w.kind) &&
     (w.version === undefined || d.version === w.version) &&
@@ -112,10 +159,21 @@ const shapeError = (d: DesignRow): string | null => {
   const hasDoc = d.document !== undefined && d.document !== null;
   const base = d.baseRevisionId ?? null;
   const ov = d.overrides ?? null;
+  // Design_archive_check: only an instance can be archived.
+  if (d.archivedAt && d.kind !== "instance") return `new row for relation "Design" violates check constraint "Design_archive_check" (${d.kind})`;
   if (d.kind === "template" && hasDoc && base === null && ov === null) return null;
   if (d.kind === "instance" && !hasDoc && base !== null && ov !== null) return null;
   return `new row for relation "Design" violates check constraint "Design_shape_check" (${d.kind})`;
 };
+/** The database's foreign keys that point at a Design: a template, a pinning instance, or a submission. */
+const designReferenced = (d: DesignRow): string | null => {
+  if (h.designs.some((i) => i.kind === "instance" && h.revisions.some((r) => r.id === i.baseRevisionId && r.designId === d.id))) return "Design_baseRevisionId_fkey";
+  if (h.submissions.some((s) => s.instanceId === d.id)) return "DesignSubmission_instanceId_fkey"; // NO ACTION: a submitted instance cannot be hard-deleted
+  if (h.submissions.some((s) => h.revisions.some((r) => r.id === s.baseRevisionId && r.designId === d.id))) return "DesignSubmission_baseRevisionId_fkey";
+  return null;
+};
+const fkError = (name: string) => Object.assign(new Error(`Foreign key constraint failed on the field: \`${name}\``), { code: "P2003" });
+const triggerError = (what: string) => Object.assign(new Error(what), { code: "P2010" });
 
 type Spec = true | { select?: Record<string, unknown>; take?: number; orderBy?: unknown };
 const pick = (row: object, select: Record<string, unknown>) => Object.fromEntries(Object.entries(select).filter(([, on]) => on).map(([k]) => [k, (row as Record<string, unknown>)[k]]));
@@ -141,6 +199,7 @@ const selectFrom = (row: DesignRow, select: Record<string, Spec>) =>
           const r = h.revisions.find((x) => x.id === row.baseRevisionId);
           return [k, r ? pick(r, (spec as { select: Record<string, unknown> }).select) : null];
         }
+        if (k === "archivedAt") return [k, row.archivedAt ?? null]; // a column, NULL until archived
         return [k, (row as unknown as Record<string, unknown>)[k]];
       }),
   );
@@ -151,6 +210,87 @@ const selectTemplate = (t: TemplateRow, select: Record<string, Spec>) =>
       .map(([k, spec]) => (k === "design" ? [k, t.designId ? { revisions: revisionsOf(t.designId, (spec as { select: { revisions: Spec } }).select.revisions) } : null] : [k, (t as unknown as Record<string, unknown>)[k]])),
   );
 const trace = (op: string) => h.log.push(`${h.inTx ? "tx" : "out"}:${op}`);
+
+// ── The phase 6 tables ──
+type Sel = Record<string, unknown>;
+const pickRow = (row: object, select: Sel) => Object.fromEntries(Object.entries(select).filter(([, on]) => on).map(([k]) => [k, (row as Record<string, unknown>)[k] ?? null]));
+const sub = (spec: unknown) => (spec as { select: Sel }).select;
+
+type SubWhere = { instanceId?: string; workspaceId?: string; number?: number | { lt: number }; baseRevision?: { designId: string } };
+const subMatches = (s: SubmissionRow, w: SubWhere): boolean => {
+  for (const k of Object.keys(w)) if (!["instanceId", "workspaceId", "number", "baseRevision"].includes(k)) throw new Error(`the test double does not understand \`${k}\` in a submission where`);
+  return (
+    (w.instanceId === undefined || s.instanceId === w.instanceId) &&
+    (w.workspaceId === undefined || s.workspaceId === w.workspaceId) &&
+    (w.number === undefined || (typeof w.number === "number" ? s.number === w.number : s.number < w.number.lt)) &&
+    (w.baseRevision === undefined || h.revisions.some((r) => r.id === s.baseRevisionId && r.designId === w.baseRevision!.designId))
+  );
+};
+const projectSubmission = (s: SubmissionRow, select: Sel): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(select)
+      .filter(([, on]) => on)
+      .map(([k, spec]) => {
+        if (k === "review") {
+          const r = h.reviews.find((x) => x.submissionId === s.id);
+          return [k, r ? projectReview(r, sub(spec)) : null];
+        }
+        if (k === "baseRevision") {
+          const r = h.revisions.find((x) => x.id === s.baseRevisionId);
+          return [k, r ? pickRow(r, sub(spec)) : null];
+        }
+        if (k === "instance") {
+          const d = h.designs.find((x) => x.id === s.instanceId);
+          return [k, d ? { ...pickRow(d, sub(spec)) } : null];
+        }
+        return [k, (s as unknown as Record<string, unknown>)[k]];
+      }),
+  );
+
+type ReviewWhere = {
+  id?: string | { lt: string };
+  workspaceId?: string;
+  status?: string | { in: string[] };
+  pendingInstanceId?: string;
+  createdAt?: Date | { lt: Date };
+  AND?: ReviewWhere[];
+  OR?: ReviewWhere[];
+};
+const reviewMatches = (r: ReviewRow, w: ReviewWhere): boolean => {
+  for (const k of Object.keys(w)) if (!["id", "workspaceId", "status", "pendingInstanceId", "createdAt", "AND", "OR"].includes(k)) throw new Error(`the test double does not understand \`${k}\` in a review where`);
+  refuseNul(typeof w.id === "string" ? w.id : undefined);
+  const at = r.createdAt.getTime();
+  return (
+    (w.id === undefined || (typeof w.id === "string" ? r.id === w.id : r.id < w.id.lt)) &&
+    (w.workspaceId === undefined || r.workspaceId === w.workspaceId) &&
+    (w.status === undefined || (typeof w.status === "string" ? r.status === w.status : w.status.in.includes(r.status))) &&
+    (w.pendingInstanceId === undefined || r.pendingInstanceId === w.pendingInstanceId) &&
+    (w.createdAt === undefined || (w.createdAt instanceof Date ? at === w.createdAt.getTime() : at < w.createdAt.lt.getTime())) &&
+    (w.AND === undefined || w.AND.every((c) => reviewMatches(r, c))) &&
+    (w.OR === undefined || w.OR.some((c) => reviewMatches(r, c)))
+  );
+};
+const projectReview = (r: ReviewRow, select: Sel): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(select)
+      .filter(([, on]) => on)
+      .map(([k, spec]) => {
+        if (k === "submission") {
+          const s = h.submissions.find((x) => x.id === r.submissionId);
+          return [k, s ? projectSubmission(s, sub(spec)) : null];
+        }
+        return [k, (r as unknown as Record<string, unknown>)[k]];
+      }),
+  );
+/** The CHECK constraints of DesignReviewRequest (the migration), enforced on every insert and update. */
+const reviewCheck = (r: ReviewRow): string | null => {
+  if (!["pending", "approved", "changes_requested", "superseded"].includes(r.status)) return 'violates check constraint "DesignReviewRequest_status_check"';
+  if ((r.status === "pending") !== (r.pendingInstanceId !== null)) return 'violates check constraint "DesignReviewRequest_pending_check"';
+  const decided = r.status === "approved" || r.status === "changes_requested";
+  if (decided ? r.decidedAt === null || r.decidedByUserId === null : r.decidedAt !== null || r.decidedByUserId !== null || r.comment !== null) return 'violates check constraint "DesignReviewRequest_decided_check"';
+  if (r.status === "changes_requested" && (r.comment === null || r.comment.trim() === "")) return 'violates check constraint "DesignReviewRequest_comment_check"';
+  return null;
+};
 
 // The store lives in `h` and the helpers above are only called when a query runs, never while this factory runs.
 vi.mock("../lib/prisma.js", () => {
@@ -204,10 +344,12 @@ vi.mock("../lib/prisma.js", () => {
         trace("design.count");
         return h.designs.filter((d) => matches(d, where)).length;
       }),
-      updateMany: vi.fn(async ({ where, data }: { where: Where; data: { document?: unknown; overrides?: unknown; name?: string; version: { increment: number } } & Record<string, unknown> }) => {
+      updateMany: vi.fn(async ({ where, data }: { where: Where; data: { document?: unknown; overrides?: unknown; name?: string; archivedAt?: Date; version?: { increment: number } } & Record<string, unknown> }) => {
         h.log.push("write:design.update");
         const row = h.designs.find((d) => matches(d, where));
         if (!row) return { count: 0 };
+        // Design_archived_frozen: once archived, no UPDATE of any kind (no edit, no restore, no second archive).
+        if (row.archivedAt) throw triggerError(`An archived design cannot be changed (design ${row.id}).`);
         // The pin trigger: a kind or a base revision never changes after the insert.
         if (("baseRevisionId" in data && data.baseRevisionId !== row.baseRevisionId) || ("kind" in data && data.kind !== row.kind)) {
           throw Object.assign(new Error("A design's kind and base revision cannot be changed"), { code: "P2010" });
@@ -216,22 +358,122 @@ vi.mock("../lib/prisma.js", () => {
         if ("document" in data) next.document = data.document;
         if ("overrides" in data) next.overrides = data.overrides;
         if (data.name !== undefined) next.name = data.name;
-        const bad = shapeError(next); // the check constraint is enforced on every update
+        if (data.archivedAt !== undefined) next.archivedAt = data.archivedAt;
+        const bad = shapeError(next); // the check constraints are enforced on every update
         if (bad) throw Object.assign(new Error(bad), { code: "P2004" });
         Object.assign(row, next);
-        row.version += data.version.increment;
+        if (data.version) row.version += data.version.increment; // archiving does not bump the version
         row.updatedAt = new Date(2026, 0, 1, 0, 0, ++h.clock);
         return { count: 1 };
       }),
       deleteMany: vi.fn(async ({ where }: { where: Where }) => {
+        h.log.push("write:design.delete");
         const gone = h.designs.filter((d) => matches(d, where));
-        // The foreign key (NO ACTION): a design whose revisions an instance pins cannot be deleted.
-        if (gone.some((d) => h.designs.some((i) => i.kind === "instance" && h.revisions.some((r) => r.id === i.baseRevisionId && r.designId === d.id)))) {
-          throw Object.assign(new Error("Foreign key constraint failed on the field: `Design_baseRevisionId_fkey`"), { code: "P2003" });
+        // The foreign keys (NO ACTION): a design whose revisions an instance or a submission pins cannot be deleted, and an
+        // instance that has a submission cannot be deleted either.
+        for (const d of gone) {
+          const fk = designReferenced(d);
+          if (fk) throw fkError(fk);
         }
         h.designs = h.designs.filter((d) => !gone.includes(d));
         return { count: gone.length };
       }),
+    },
+    // ── Phase 6: snapshots and reviews ──
+    designSubmission: {
+      create: vi.fn(async ({ data, select }: { data: Omit<SubmissionRow, "id" | "createdAt">; select: Sel }) => {
+        h.log.push("write:submission");
+        // The foreign keys, the unique keys, and the shape NOT NULL columns give.
+        if (!h.designs.some((d) => d.id === data.instanceId)) throw fkError("DesignSubmission_instanceId_fkey");
+        if (!h.revisions.some((r) => r.id === data.baseRevisionId)) throw fkError("DesignSubmission_baseRevisionId_fkey");
+        if (h.submissions.some((s) => s.instanceId === data.instanceId && (s.number === data.number || s.instanceVersion === data.instanceVersion))) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        for (const k of ["workspaceId", "instanceId", "name", "baseRevisionId", "overrides", "document", "submittedByUserId"] as const) if (data[k] === undefined || data[k] === null) throw Object.assign(new Error(`Null constraint violation on ${k}`), { code: "P2011" });
+        const row: SubmissionRow = { id: `sub-${h.submissions.length + 1}`, createdAt: new Date(2026, 0, 5, 0, 0, ++h.clock), ...data, note: data.note ?? null };
+        h.submissions.push(row);
+        return projectSubmission(row, select);
+      }),
+      findFirst: vi.fn(async ({ where, orderBy, select }: { where: SubWhere; orderBy?: { number: "desc" }; select: Sel }) => {
+        trace("designSubmission.findFirst");
+        const rows = h.submissions.filter((s) => subMatches(s, where));
+        if (orderBy) rows.sort((a, b) => b.number - a.number);
+        return rows[0] ? projectSubmission(rows[0], select) : null;
+      }),
+      findMany: vi.fn(async ({ where, orderBy, take, select }: { where: SubWhere; orderBy?: { number: "desc" }; take?: number; select: Sel }) => {
+        trace("designSubmission.findMany");
+        const rows = h.submissions.filter((s) => subMatches(s, where));
+        if (orderBy) rows.sort((a, b) => b.number - a.number);
+        return rows.slice(0, take).map((s) => projectSubmission(s, select));
+      }),
+      count: vi.fn(async ({ where }: { where: SubWhere }) => {
+        trace("designSubmission.count");
+        return h.submissions.filter((s) => subMatches(s, where)).length;
+      }),
+      // Triggers: a submission is never updated or deleted. Nothing in the routes may call these; they fail loudly if one does.
+      update: vi.fn(async () => {
+        throw triggerError("A design submission cannot be changed");
+      }),
+      updateMany: vi.fn(async () => {
+        throw triggerError("A design submission cannot be changed");
+      }),
+      delete: vi.fn(async () => {
+        throw triggerError("A design submission cannot be deleted");
+      }),
+      deleteMany: vi.fn(async () => {
+        throw triggerError("A design submission cannot be deleted");
+      }),
+    },
+    designReviewRequest: {
+      create: vi.fn(async ({ data, select }: { data: Partial<ReviewRow> & { workspaceId: string; submissionId: string; status: string }; select: Sel }) => {
+        h.log.push("write:review");
+        if (!h.submissions.some((s) => s.id === data.submissionId)) throw fkError("DesignReviewRequest_submissionId_fkey");
+        const row: ReviewRow = { id: `rev-req-${h.reviews.length + 1}`, pendingInstanceId: null, comment: null, decidedByUserId: null, decidedAt: null, createdAt: new Date(2026, 0, 5, 0, 0, ++h.clock), ...data };
+        const bad = reviewCheck(row);
+        if (bad) throw Object.assign(new Error(bad), { code: "P2004" });
+        if (h.reviews.some((r) => r.submissionId === row.submissionId) || (row.pendingInstanceId !== null && h.reviews.some((r) => r.pendingInstanceId === row.pendingInstanceId))) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        h.reviews.push(row);
+        return projectReview(row, select);
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: ReviewWhere; data: Partial<ReviewRow> }) => {
+        h.log.push("write:review.update");
+        const row = h.reviews.find((r) => reviewMatches(r, where));
+        if (!row) return { count: 0 };
+        // DesignReviewRequest_guard_update: only a pending request changes, only to a decided or superseded one, and its identity never does.
+        if (row.status !== "pending") throw triggerError(`A design review that is no longer pending cannot be changed (review ${row.id}).`);
+        const next: ReviewRow = { ...row, ...data };
+        if (next.status === "pending" || next.id !== row.id || next.workspaceId !== row.workspaceId || next.submissionId !== row.submissionId || next.createdAt !== row.createdAt) throw triggerError("A pending design review can only be decided or superseded");
+        const bad = reviewCheck(next);
+        if (bad) throw Object.assign(new Error(bad), { code: "P2004" });
+        Object.assign(row, next);
+        return { count: 1 };
+      }),
+      findFirst: vi.fn(async ({ where, orderBy, select }: { where: ReviewWhere; orderBy?: unknown; select: Sel }) => {
+        trace("designReviewRequest.findFirst");
+        const rows = h.reviews.filter((r) => reviewMatches(r, where));
+        if (orderBy) rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1));
+        return rows[0] ? projectReview(rows[0], select) : null;
+      }),
+      findMany: vi.fn(async ({ where, orderBy, take, select }: { where: ReviewWhere; orderBy?: unknown; take?: number; select: Sel }) => {
+        trace("designReviewRequest.findMany");
+        const rows = h.reviews.filter((r) => reviewMatches(r, where));
+        if (orderBy) rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : -1));
+        return rows.slice(0, take).map((r) => projectReview(r, select));
+      }),
+      count: vi.fn(async ({ where }: { where: ReviewWhere }) => h.reviews.filter((r) => reviewMatches(r, where)).length),
+      update: vi.fn(async () => {
+        throw new Error("the review routes must use updateMany with status: pending in the where");
+      }),
+      delete: vi.fn(async () => {
+        throw triggerError("A design review cannot be deleted");
+      }),
+      deleteMany: vi.fn(async () => {
+        throw triggerError("A design review cannot be deleted");
+      }),
+    },
+    workspaceMember: {
+      count: vi.fn(async ({ where }: { where: { workspaceId: string; role: string } }) => h.members.filter((m) => m.workspaceId === where.workspaceId && m.role === where.role).length),
+    },
+    user: {
+      findMany: vi.fn(async ({ where, select }: { where: { id: { in: string[] } }; select: Sel }) => h.users.filter((u) => where.id.in.includes(u.id)).map((u) => pickRow(u, select))),
     },
     template: {
       // `designId: undefined` means no condition; `null` means "has no design", like Prisma.
@@ -259,9 +501,9 @@ vi.mock("../lib/prisma.js", () => {
       }),
     },
     designRevision: {
-      findFirst: vi.fn(async ({ where, orderBy, select }: { where: { designId: string; designVersion?: number }; orderBy?: { number: "desc" }; select: Record<string, boolean> }) => {
+      findFirst: vi.fn(async ({ where, orderBy, select }: { where: { designId?: string; id?: string; designVersion?: number }; orderBy?: { number: "desc" }; select: Record<string, boolean> }) => {
         trace("designRevision.findFirst");
-        const rows = h.revisions.filter((r) => r.designId === where.designId && (where.designVersion === undefined || r.designVersion === where.designVersion));
+        const rows = h.revisions.filter((r) => (where.designId === undefined || r.designId === where.designId) && (where.id === undefined || r.id === where.id) && (where.designVersion === undefined || r.designVersion === where.designVersion));
         if (orderBy) rows.sort((a, b) => b.number - a.number);
         return rows[0] ? pick(rows[0], select) : null;
       }),
@@ -284,6 +526,24 @@ vi.mock("../lib/prisma.js", () => {
         const [id, workspaceId] = values;
         return h.templates.some((t) => t.id === id && t.workspaceId === workspaceId) ? [{ id }] : [];
       }
+      // Phase 6: the lock on MY instance (any state, archived included), read back with its archivedAt.
+      if (sql.includes('FROM "Design"') && sql.includes('"createdByUserId"')) {
+        h.log.push("lock:instance");
+        h.onLock?.("instance");
+        const [id, workspaceId, kind, userId] = values;
+        const d = h.designs.find((x) => x.id === id && x.workspaceId === workspaceId && x.kind === kind && x.createdByUserId === userId);
+        return d ? [{ archivedAt: d.archivedAt ?? null }] : [];
+      }
+      // The newest submission of each listed instance, with its review (DISTINCT ON in the real query).
+      if (sql.includes("DISTINCT ON")) {
+        const [ids] = values as [string[]];
+        return ids.flatMap((instanceId) => {
+          const newest = h.submissions.filter((s) => s.instanceId === instanceId).sort((a, b) => b.number - a.number)[0];
+          if (!newest) return [];
+          const r = h.reviews.find((x) => x.submissionId === newest.id);
+          return [{ instanceId, id: newest.id, number: newest.number, instanceVersion: newest.instanceVersion, name: newest.name, overrides: newest.overrides, createdAt: newest.createdAt, reviewId: r?.id ?? null, status: r?.status ?? null, comment: r?.comment ?? null, decidedAt: r?.decidedAt ?? null }];
+        });
+      }
       if (sql.includes('FROM "Design"')) {
         h.log.push("lock:design");
         h.onLock?.("design");
@@ -302,7 +562,8 @@ vi.mock("../lib/prisma.js", () => {
         h.log.push("tx:begin");
         h.inTx = true;
         h.outsideDesigns = [];
-        const saved = { designs: h.designs.map((d) => ({ ...d })), templates: h.templates.map((t) => ({ ...t })), revisions: h.revisions.slice() };
+        h.outsideSubmissions = [];
+        const saved = { designs: h.designs.map((d) => ({ ...d })), templates: h.templates.map((t) => ({ ...t })), revisions: h.revisions.slice(), submissions: h.submissions.slice(), reviews: h.reviews.map((r) => ({ ...r })) };
         const through = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A): Promise<R> => {
           h.viaTx = true;
           try {
@@ -322,6 +583,8 @@ vi.mock("../lib/prisma.js", () => {
           h.designs = [...saved.designs, ...h.outsideDesigns];
           h.templates = saved.templates;
           h.revisions = saved.revisions;
+          h.submissions = [...saved.submissions, ...h.outsideSubmissions];
+          h.reviews = saved.reviews;
           h.log.push("tx:rollback");
           throw err;
         } finally {
@@ -358,6 +621,10 @@ const db = prisma as unknown as {
   designAsset: { count: Fn; findFirst: Fn };
   template: Record<"findFirst" | "updateMany", Fn>;
   designRevision: Record<"findFirst" | "create", Fn>;
+  designSubmission: Record<"create" | "findFirst" | "findMany" | "count" | "update" | "updateMany" | "delete" | "deleteMany", Fn>;
+  designReviewRequest: Record<"create" | "updateMany" | "findFirst" | "findMany" | "count" | "update" | "delete" | "deleteMany", Fn>;
+  workspaceMember: { count: Fn };
+  user: { findMany: Fn };
   $transaction: Fn;
   $queryRaw: Fn;
 };
@@ -401,6 +668,10 @@ beforeEach(() => {
   h.designs = [];
   h.templates = [];
   h.revisions = [];
+  h.submissions = [];
+  h.reviews = [];
+  h.members = [{ workspaceId: "ws-1", userId: "designer-1", role: "designer" }]; // a workspace has a designer unless a test says otherwise
+  h.users = [{ id: "designer-1", name: "Dana Designer" }, { id: "user-1", name: "Mia Marketing" }];
   h.log = [];
   h.inTx = false;
   h.attachRaces = false;
@@ -410,7 +681,7 @@ beforeEach(() => {
   h.onLock = null;
   h.clock = 0;
   h.createFails = false;
-  for (const fn of [...Object.values(db.design), ...Object.values(db.template), ...Object.values(db.designRevision), db.$transaction, db.$queryRaw]) fn.mockClear();
+  for (const fn of [...Object.values(db.design), ...Object.values(db.template), ...Object.values(db.designRevision), ...Object.values(db.designSubmission), ...Object.values(db.designReviewRequest), db.workspaceMember.count, db.user.findMany, db.$transaction, db.$queryRaw]) fn.mockClear();
   db.designAsset.count.mockClear();
   db.designAsset.findFirst.mockClear();
 });
@@ -2171,7 +2442,10 @@ describe("GET /canvas/instances/:id", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
     const { instance } = res.json();
-    expect(Object.keys(instance).sort()).toEqual(["baseRevision", "createdAt", "document", "id", "manifest", "name", "overrides", "updatedAt", "version"]);
+    // Phase 6 adds `review` (nothing submitted yet here); archivedAt is never sent: an archived design has no editor.
+    expect(Object.keys(instance).sort()).toEqual(["baseRevision", "createdAt", "document", "id", "manifest", "name", "overrides", "review", "submitted", "updatedAt", "version"]);
+    expect(instance.review).toMatchObject({ latestReviewStatus: null, hasChangesSinceSubmitted: false, workingVersion: 2 });
+    expect(instance.submitted).toBeNull(); // nothing was submitted yet
     expect(instance.overrides).toEqual([{ nodeId: "head", text: "Mine" }]);
     expect(instance.document).toEqual(doc("Headline one"));
     expect(Object.keys(instance.baseRevision).sort()).toEqual(["createdAt", "number"]);
@@ -2341,7 +2615,8 @@ describe("PUT /canvas/instances/:id: the complete override set, checked against 
   it("writes ONLY the overrides, the name and the version: the conditional update names the owner, and never the pinned revision, the kind, the document or the dates", async () => {
     await putInstance(id, { version: 1, overrides: [{ nodeId: "head", text: "x" }], name: "N" });
     const call = db.design.updateMany.mock.calls[0][0];
-    expect(call.where).toEqual({ id, workspaceId: "ws-1", kind: "instance", createdByUserId: "user-1", version: 1 });
+    // archivedAt: null (phase 6): a design archived between the read and the write is not saved.
+    expect(call.where).toEqual({ id, workspaceId: "ws-1", kind: "instance", createdByUserId: "user-1", version: 1, archivedAt: null });
     expect(Object.keys(call.data).sort()).toEqual(["name", "overrides", "version"]);
     expect(call.data.version).toEqual({ increment: 1 });
     expect(row()).toMatchObject({ baseRevisionId: "r-base-1", kind: "instance", createdByUserId: "user-1" });
@@ -2407,8 +2682,11 @@ describe("GET /canvas/instances: my designs, in pages", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(ids(res)).toEqual(["i003", "i002", "i001"]);
-    expect(Object.keys(res.json().instances[0]).sort()).toEqual(["baseRevision", "createdAt", "id", "name", "updatedAt", "version"]);
+    // Phase 6 adds `review` (a summary of the newest submission); the stored overrides are read to compute it and never sent.
+    expect(Object.keys(res.json().instances[0]).sort()).toEqual(["archivedAt", "baseRevision", "createdAt", "id", "name", "review", "updatedAt", "version"]);
     expect(res.json().instances[0].baseRevision).toEqual({ number: 1 });
+    expect(res.json().instances[0].archivedAt).toBeNull();
+    expect(res.json().instances[0].review).toMatchObject({ latestReviewStatus: null, hasChangesSinceSubmitted: false });
     expect(res.json().nextCursor).toBeNull();
     for (const secret of ["document", "overrides", "baseRevisionId", "createdByUserId", "workspaceId"]) expect(res.body).not.toContain(secret);
   });
@@ -2681,5 +2959,943 @@ describe("the database's own rules, as the test double enforces them (so the rou
     seedInstance({ id: "i1" });
     await expect(db.design.updateMany({ where: { id: "i1" }, data: { baseRevisionId: "other", version: { increment: 1 } } })).rejects.toMatchObject({ code: "P2010" });
     await expect(db.design.updateMany({ where: { id: "i1" }, data: { kind: "template", version: { increment: 1 } } })).rejects.toMatchObject({ code: "P2010" });
+  });
+});
+
+// ── Phase 6: design review ────────────────────────────────────────────────────────────────────────────────────────
+
+const submit = (id: string, payload: unknown = { version: 1 }) => app.inject({ method: "POST", url: `/canvas/instances/${id}/submit`, payload: payload as object });
+const history = (id: string, query = "") => app.inject({ method: "GET", url: `/canvas/instances/${id}/submissions${query}` });
+const oneSubmission = (id: string, n: number | string) => app.inject({ method: "GET", url: `/canvas/instances/${id}/submissions/${n}` });
+const queueOf = (query = "") => app.inject({ method: "GET", url: `/canvas/reviews${query}` });
+const reviewOf = (id: string) => app.inject({ method: "GET", url: `/canvas/reviews/${id}` });
+const reviewSummaryOf = () => app.inject({ method: "GET", url: "/canvas/reviews/summary" });
+const decide = (id: string, payload: unknown) => app.inject({ method: "POST", url: `/canvas/reviews/${id}/decision`, payload: payload as object });
+const inst = (id: string) => h.designs.find((d) => d.id === id)!;
+const pendingCount = () => h.reviews.filter((r) => r.status === "pending").length;
+const layerText = (d: unknown, nodeId: string) => (d as { nodes: Array<{ id: string; text?: string }> }).nodes.find((n) => n.id === nodeId)?.text;
+
+/** A published campaign, and one of MY instances made from it, with its first save done (version 2). */
+async function seedMine(overrides: unknown[] = [{ nodeId: "head", text: "Mine" }]) {
+  h.role = "member";
+  const campaign = seedCampaign();
+  const id = (await customize("tpl")).json().instance.id as string;
+  await putInstance(id, { version: 1, overrides });
+  return { id, ...campaign };
+}
+const asDesigner = () => {
+  h.role = "designer";
+  h.userId = "designer-1";
+};
+const asMarketing = () => {
+  h.role = "member";
+  h.userId = "user-1";
+};
+
+describe("phase 6: who may do what", () => {
+  const marketing = (id: string) => [() => submit(id), () => history(id), () => oneSubmission(id, 1)];
+  const designer = () => [() => reviewSummaryOf(), () => queueOf(), () => reviewOf("rv1"), () => decide("rv1", { decision: "approve" })];
+
+  it("answers 401 when signed out, on every phase 6 endpoint, and touches nothing", async () => {
+    const { id } = await seedMine();
+    h.authed = false;
+    for (const call of [...marketing(id), ...designer()]) expect((await call()).statusCode).toBe(401);
+    expect(db.designSubmission.create).not.toHaveBeenCalled();
+    expect(db.designReviewRequest.updateMany).not.toHaveBeenCalled();
+    expect(h.submissions).toHaveLength(0);
+  });
+
+  it.each(["designer", "viewer", null])("Marketing's endpoints answer 403 for the %s role, and touch nothing", async (role) => {
+    const { id } = await seedMine();
+    h.role = role;
+    db.$queryRaw.mockClear();
+    for (const call of marketing(id)) {
+      const res = await call();
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ code: "FORBIDDEN" });
+    }
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+    expect(db.designSubmission.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["member", "admin", "owner", "viewer", null])("the review endpoints answer 403 for the %s role (review is the design team's, owner and admin included), and touch nothing", async (role) => {
+    await seedMine();
+    h.role = role;
+    for (const call of designer()) {
+      const res = await call();
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ code: "FORBIDDEN" });
+    }
+    expect(db.designReviewRequest.findMany).not.toHaveBeenCalled();
+    expect(db.designReviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["member", "admin", "owner"])("the %s role may submit its own design", async (role) => {
+    const { id } = await seedMine();
+    h.role = role;
+    expect((await submit(id, { version: 2 })).statusCode).toBe(201);
+  });
+
+  it("another person's design, another workspace's and a malformed id are all the same 404, and nothing is written", async () => {
+    await seedMine();
+    seedInstance({ id: "theirs", createdByUserId: "someone-else" });
+    seedInstance({ id: "other-ws", workspaceId: "ws-2" });
+    for (const id of ["theirs", "other-ws", "nope", "a%00b"]) {
+      for (const call of [() => submit(id), () => history(id), () => oneSubmission(id, 1)]) expect((await call()).statusCode, id).toBe(404);
+    }
+    expect(h.submissions).toHaveLength(0);
+  });
+});
+
+describe("POST /canvas/instances/:id/submit", () => {
+  it("snapshots the design as the SERVER composes it: the pinned revision's document plus the overrides, nothing from the client", async () => {
+    h.rows.push({ id: "asset-2", workspaceId: "ws-1", storageRef: "x" }); // before the save: an image must be an asset of the workspace
+    const { id, doc } = await seedMine([{ nodeId: "head", text: "Mine" }, { nodeId: "photo", assetId: "asset-2" }]);
+    const res = await submit(id, { version: 2, note: "  For the launch  " });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ submission: { number: 1 }, review: { status: "pending" } });
+    const s = h.submissions[0];
+    expect(s).toMatchObject({ instanceId: id, workspaceId: "ws-1", number: 1, instanceVersion: 2, name: "Case Study", note: "For the launch", baseRevisionId: "r-base-1", submittedByUserId: "user-1" });
+    const expected = doc("Headline one") as { nodes: Array<Record<string, unknown>> };
+    expect(s.document).toEqual({ ...expected, nodes: expected.nodes.map((n) => (n.id === "head" ? { ...n, text: "Mine" } : n.id === "photo" ? { ...n, assetId: "asset-2" } : n)) });
+    expect(s.overrides).toEqual(inst(id).overrides); // exactly what the instance held
+    expect(h.reviews[0]).toMatchObject({ submissionId: s.id, status: "pending", pendingInstanceId: id, workspaceId: "ws-1", comment: null, decidedByUserId: null });
+    expect(res.body).not.toContain("document"); // the answer is small: ids and numbers
+  });
+
+  it("takes only the version and an optional note: a document, overrides, a revision, a workspace or a status from the client is a 400", async () => {
+    const { id } = await seedMine();
+    for (const body of [{ version: 2, document: {} }, { version: 2, overrides: [] }, { version: 2, baseRevisionId: "r" }, { version: 2, workspaceId: "ws-2" }, { version: 2, status: "approved" }, { version: 2, submittedByUserId: "x" }, {}, { version: "2" }]) {
+      expect((await submit(id, body)).statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(h.submissions).toHaveLength(0);
+  });
+
+  it("answers 415 for a body that is not JSON, and 400 for a note over 500 characters", async () => {
+    const { id } = await seedMine();
+    expect((await app.inject({ method: "POST", url: `/canvas/instances/${id}/submit`, headers: { "content-type": "text/plain" }, payload: "{}" })).statusCode).toBe(415);
+    const long = await submit(id, { version: 2, note: "a".repeat(501) });
+    expect(long.statusCode).toBe(400);
+    expect(long.json()).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(h.submissions).toHaveLength(0);
+  });
+
+  it("the first submission is allowed even with no overrides at all (P6-D3)", async () => {
+    h.role = "member";
+    seedCampaign();
+    const id = (await customize("tpl")).json().instance.id as string;
+    const res = await submit(id, { version: 1 });
+    expect(res.statusCode).toBe(201);
+    expect(h.submissions[0].overrides).toEqual({ schemaVersion: 1, fields: [] });
+    expect(h.submissions[0].document).toEqual(h.revisions[0].document); // the revision as published
+  });
+
+  it("a note is optional: none, or only spaces, is stored as null", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    expect(h.submissions[0].note).toBeNull();
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Other" }] });
+    await submit(id, { version: 3, note: "   " });
+    expect(h.submissions[1].note).toBeNull();
+  });
+
+  it("409 VERSION_CONFLICT when the editor's version is not the stored one, and nothing is written", async () => {
+    const { id } = await seedMine();
+    const res = await submit(id, { version: 1 }); // stored is 2
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "VERSION_CONFLICT" });
+    expect(h.submissions).toHaveLength(0);
+    expect(h.reviews).toHaveLength(0);
+  });
+
+  it("409 NO_REVIEWER when the workspace has no designer, and nothing is written", async () => {
+    const { id } = await seedMine();
+    h.members = [{ workspaceId: "ws-1", userId: "m1", role: "member" }, { workspaceId: "ws-2", userId: "d9", role: "designer" }]; // a designer of ANOTHER workspace does not count
+    const res = await submit(id, { version: 2 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "NO_REVIEWER" });
+    expect(h.submissions).toHaveLength(0);
+    expect(db.workspaceMember.count.mock.calls[0][0]).toEqual({ where: { workspaceId: "ws-1", role: "designer" } });
+  });
+
+  it("409 NO_CHANGES for the same state again, after a pending, an approved and a changes-requested submission", async () => {
+    const { id } = await seedMine();
+    expect((await submit(id, { version: 2 })).statusCode).toBe(201);
+    for (const next of [null, "approved", "changes_requested"]) {
+      if (next) {
+        const rv = h.reviews[h.reviews.length - 1];
+        if (next === "approved") {
+          asDesigner();
+          await decide(rv.id, { decision: "approve" });
+          asMarketing();
+        }
+      }
+      const again = await submit(id, { version: 2 });
+      expect(again.statusCode, String(next)).toBe(409);
+      expect(again.json()).toMatchObject({ code: "NO_CHANGES" });
+    }
+    expect(h.submissions).toHaveLength(1);
+  });
+
+  it("a note alone is never a change: the same design with a new note is NO_CHANGES", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2, note: "first" });
+    const again = await submit(id, { version: 2, note: "an explanation, no edit" });
+    expect(again.statusCode).toBe(409);
+    expect(h.submissions).toHaveLength(1);
+  });
+
+  it("an edit makes a new submission possible, and it SUPERSEDES the pending review (one pending per design)", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Second" }] });
+    const res = await submit(id, { version: 3, note: "v2" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json().submission.number).toBe(2);
+    expect(h.reviews.map((r) => [r.status, r.pendingInstanceId])).toEqual([["superseded", null], ["pending", id]]);
+    expect(pendingCount()).toBe(1);
+    expect(h.submissions.map((s) => s.number)).toEqual([1, 2]);
+    expect(layerText(h.submissions[0].document, "head")).toBe("Mine"); // the first snapshot is untouched
+    expect(layerText(h.submissions[1].document, "head")).toBe("Second");
+  });
+
+  it("A, then B, then A again: each is a new submission, because only the LATEST is compared (no unique key on the content)", async () => {
+    const { id } = await seedMine([{ nodeId: "head", text: "A" }]);
+    expect((await submit(id, { version: 2 })).statusCode).toBe(201); // A
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "B" }] });
+    expect((await submit(id, { version: 3 })).statusCode).toBe(201); // B
+    await putInstance(id, { version: 3, overrides: [{ nodeId: "head", text: "A" }] });
+    expect((await submit(id, { version: 4 })).statusCode).toBe(201); // A again
+    expect(h.submissions.map((s) => [s.number, s.instanceVersion, layerText(s.document, "head")])).toEqual([[1, 2, "A"], [2, 3, "B"], [3, 4, "A"]]);
+    expect(pendingCount()).toBe(1);
+  });
+
+  it("edit then revert to what was submitted is NO_CHANGES (a newer version, the same content)", async () => {
+    const { id } = await seedMine([{ nodeId: "head", text: "A" }]);
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "B" }] });
+    await putInstance(id, { version: 3, overrides: [{ nodeId: "head", text: "A" }] });
+    expect(inst(id).version).toBe(4);
+    const res = await submit(id, { version: 4 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "NO_CHANGES" });
+  });
+
+  it("a rename alone is a change", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Mine" }], name: "Renamed" });
+    expect((await submit(id, { version: 3 })).statusCode).toBe(201);
+    expect(h.submissions[1].name).toBe("Renamed");
+  });
+
+  it("after a decision, editing and submitting again is allowed (the earlier answer stays on its own submission)", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "request_changes", comment: "Shorter" });
+    asMarketing();
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Shorter" }] });
+    expect((await submit(id, { version: 3 })).statusCode).toBe(201);
+    expect(h.reviews.map((r) => r.status)).toEqual(["changes_requested", "pending"]);
+  });
+
+  it("409 UNKNOWN_ASSET when an image of the design is no longer an asset of this workspace, and nothing is written", async () => {
+    h.rows.push({ id: "asset-2", workspaceId: "ws-1", storageRef: "x" });
+    const { id } = await seedMine([{ nodeId: "photo", assetId: "asset-2" }]);
+    h.rows = [];
+    const res = await submit(id, { version: 2 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "UNKNOWN_ASSET" });
+    expect(h.submissions).toHaveLength(0);
+  });
+
+  it("a revision that is not what publishing wrote fails CLOSED: a 500, and nothing is written", async () => {
+    const { id } = await seedMine();
+    h.revisions[0].manifest = { schemaVersion: 9, fields: [] };
+    expect((await submit(id, { version: 2 })).statusCode).toBe(500);
+    expect(h.submissions).toHaveLength(0);
+    expect(h.reviews).toHaveLength(0);
+  });
+
+  it("stored overrides that no longer validate are damage: a 500, and nothing is written", async () => {
+    const { id } = await seedMine();
+    inst(id).overrides = { schemaVersion: 1, fields: [{ nodeId: "legal", text: "x" }] }; // a locked layer
+    expect((await submit(id, { version: 2 })).statusCode).toBe(500);
+    expect(h.submissions).toHaveLength(0);
+  });
+
+  it("takes the instance's row lock FIRST and no other lock (not the template's, not the template design's), all in one transaction", async () => {
+    const { id } = await seedMine();
+    h.log = [];
+    await submit(id, { version: 2 });
+    expect(h.log.filter((e) => e.startsWith("lock:"))).toEqual(["lock:instance"]);
+    expect(h.log.indexOf("tx:begin")).toBeLessThan(h.log.indexOf("lock:instance"));
+    expect(h.log.indexOf("lock:instance")).toBeLessThan(h.log.indexOf("write:submission"));
+    expect(h.log.indexOf("write:submission")).toBeLessThan(h.log.indexOf("write:review"));
+    expect(h.log.indexOf("tx:end")).toBeGreaterThan(h.log.indexOf("write:review"));
+    // the old pending review is replaced in the same transaction, both columns in one statement (the table's CHECK)
+    expect(db.designReviewRequest.updateMany.mock.calls[0][0]).toEqual({ where: { pendingInstanceId: id, status: "pending" }, data: { status: "superseded", pendingInstanceId: null } });
+  });
+
+  it("a failure after the first write rolls the whole thing back: no submission without its review, no superseded review left behind", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Second" }] });
+    db.designReviewRequest.create.mockRejectedValueOnce(new Error("db down"));
+    expect((await submit(id, { version: 3 })).statusCode).toBe(500);
+    expect(h.submissions).toHaveLength(1); // the second submission was rolled back
+    expect(h.reviews.map((r) => r.status)).toEqual(["pending"]); // and the first review is still pending, not superseded
+  });
+
+  it("a double submit: the second request finds the first one's snapshot and is NO_CHANGES (serialized by the lock)", async () => {
+    const { id } = await seedMine();
+    const [a, b] = await Promise.all([submit(id, { version: 2 }), submit(id, { version: 2 })]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([201, 409]);
+    expect(h.submissions).toHaveLength(1);
+  });
+
+  it("the table's unique keys are only a backstop: a P2002 from a race that got past the check is NO_CHANGES, not a 500", async () => {
+    const { id } = await seedMine();
+    db.designSubmission.create.mockRejectedValueOnce(Object.assign(new Error("Unique constraint failed"), { code: "P2002" }));
+    const res = await submit(id, { version: 2 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "NO_CHANGES" });
+  });
+
+  it("never touches the template, its design or its revisions", async () => {
+    const { id } = await seedMine();
+    const before = JSON.stringify([h.templates, h.revisions]);
+    db.template.findFirst.mockClear();
+    await submit(id, { version: 2 });
+    expect(JSON.stringify([h.templates, h.revisions])).toBe(before);
+    expect(db.template.findFirst).not.toHaveBeenCalled();
+    expect(db.designRevision.create).not.toHaveBeenCalled();
+  });
+
+  it("a template that was unpublished or detached since does not matter: the instance pins an immutable revision (policy A)", async () => {
+    const { id, template } = await seedMine();
+    template.published = false;
+    template.designId = null;
+    expect((await submit(id, { version: 2 })).statusCode).toBe(201);
+  });
+});
+
+describe("submission history (Marketing, read-only)", () => {
+  it("lists my submissions newest first with the answers and the reviewer's NAME, never an id or an email", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2, note: "one" });
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "request_changes", comment: "Shorter" });
+    asMarketing();
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Short" }] });
+    await submit(id, { version: 3 });
+    const res = await history(id);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const { submissions, nextCursor } = res.json();
+    expect(nextCursor).toBeNull();
+    expect(submissions.map((s: { number: number; status: string }) => [s.number, s.status])).toEqual([[2, "pending"], [1, "changes_requested"]]);
+    expect(submissions[1]).toMatchObject({ number: 1, note: "one", comment: "Shorter", reviewer: "Dana Designer" });
+    expect(submissions[0]).toMatchObject({ reviewer: null, comment: null });
+    for (const secret of ["document", "overrides", "decidedByUserId", "submittedByUserId", "workspaceId", "email", "designer-1"]) expect(res.body, secret).not.toContain(secret);
+  });
+
+  it("shows 'Former team member' when the reviewer's account no longer exists, and names the person while it does", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "approve" });
+    asMarketing();
+    expect((await history(id)).json().submissions[0].reviewer).toBe("Dana Designer");
+    h.users = h.users.filter((u) => u.id !== "designer-1"); // the account was deleted
+    h.members = []; // and they left the workspace
+    expect((await history(id)).json().submissions[0].reviewer).toBe("Former team member");
+    expect((await oneSubmission(id, 1)).json().submission.reviewer).toBe("Former team member");
+    h.users.push({ id: "designer-1", name: "Dana Renamed" }); // a rename shows at once: names are read, never stored
+    expect((await history(id)).json().submissions[0].reviewer).toBe("Dana Renamed");
+  });
+
+  it("one submission comes back as it was submitted, with its document, ready to draw", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2, note: "n" });
+    const res = await oneSubmission(id, 1);
+    expect(res.statusCode).toBe(200);
+    const { submission } = res.json();
+    expect(submission).toMatchObject({ number: 1, name: "Case Study", note: "n", status: "pending", baseRevision: { number: 1 } });
+    expect(submission.document).toEqual(h.submissions[0].document);
+    expect(res.body).not.toContain("overrides");
+    expect(res.body).not.toContain("submittedByUserId");
+  });
+
+  it("pages with a cursor, and a bad limit or cursor is a 400", async () => {
+    const { id } = await seedMine();
+    for (let i = 0; i < 3; i++) {
+      await submit(id, { version: 2 + i });
+      await putInstance(id, { version: 2 + i, overrides: [{ nodeId: "head", text: `T${i}` }] });
+    }
+    const first = (await history(id, "?limit=2")).json();
+    expect(first.submissions.map((s: { number: number }) => s.number)).toEqual([3, 2]);
+    expect(first.nextCursor).toBe("2");
+    const last = (await history(id, `?limit=2&cursor=${first.nextCursor}`)).json();
+    expect(last.submissions.map((s: { number: number }) => s.number)).toEqual([1]);
+    expect(last.nextCursor).toBeNull();
+    for (const q of ["?limit=0", "?limit=x", "?cursor=abc", "?cursor=0", "?cursor=-1", "?cursor=1.5"]) expect((await history(id, q)).statusCode, q).toBe(400);
+    expect((await oneSubmission(id, 0)).statusCode).toBe(404);
+    expect((await oneSubmission(id, "x")).statusCode).toBe(404);
+    expect((await oneSubmission(id, 99)).statusCode).toBe(404);
+  });
+
+  it("an empty history is an empty list, not a 404", async () => {
+    const { id } = await seedMine();
+    expect((await history(id)).json()).toEqual({ submissions: [], nextCursor: null, archived: false });
+  });
+
+  it("says whether the design is archived, so the page does not depend on which address it was opened from", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    expect((await history(id)).json().archived).toBe(false);
+    await delInstance(id);
+    expect((await history(id)).json().archived).toBe(true);
+  });
+});
+
+describe("the designer's review queue", () => {
+  async function onePending() {
+    const { id } = await seedMine();
+    await submit(id, { version: 2, note: "first" });
+    return id;
+  }
+
+  it("the summary counts what waits and when the newest arrived", async () => {
+    await onePending();
+    asDesigner();
+    const res = await reviewSummaryOf();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.json()).toMatchObject({ pending: 1 });
+    expect(res.json().latestSubmittedAt).not.toBeNull();
+    Object.assign(h.reviews[0], { status: "approved", pendingInstanceId: null, decidedByUserId: "d", decidedAt: new Date() }); // (the double lets a test set the state directly)
+    expect((await reviewSummaryOf()).json()).toEqual({ pending: 0, latestSubmittedAt: null });
+  });
+
+  it("the queue lists what waits by default, newest first, with the submitter's NAME and no email, document or person id", async () => {
+    await onePending();
+    asDesigner();
+    const res = await queueOf();
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    const { reviews } = res.json();
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({ status: "pending", number: 1, name: "Case Study", note: "first", baseRevisionNumber: 1, submitter: "Mia Marketing", archivedBySubmitter: false });
+    for (const secret of ["document", "email", "submittedByUserId", "decidedByUserId", "user-1", "workspaceId", "pendingInstanceId"]) expect(res.body, secret).not.toContain(secret);
+  });
+
+  it("'decided' lists approved and changes-requested ones, and not pending or superseded ones", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "B" }] });
+    await submit(id, { version: 3 }); // the first is now superseded
+    asDesigner();
+    await decide(h.reviews[1].id, { decision: "approve" });
+    expect((await queueOf("?status=decided")).json().reviews.map((r: { status: string }) => r.status)).toEqual(["approved"]);
+    expect((await queueOf("?status=pending")).json().reviews).toEqual([]);
+    expect(h.reviews.map((r) => r.status)).toEqual(["superseded", "approved"]);
+  });
+
+  it("is scoped to the designer's workspace: another workspace's submissions are never listed, opened or decided", async () => {
+    await onePending();
+    h.reviews[0].workspaceId = "ws-2";
+    asDesigner();
+    expect((await queueOf()).json().reviews).toEqual([]);
+    expect((await reviewSummaryOf()).json().pending).toBe(0);
+    expect((await reviewOf(h.reviews[0].id)).statusCode).toBe(404);
+    expect((await decide(h.reviews[0].id, { decision: "approve" })).statusCode).toBe(404);
+    expect(h.reviews[0].status).toBe("pending");
+  });
+
+  it("pages with a cursor like 'my designs', and a bad status, limit or cursor is a 400", async () => {
+    const { id } = await seedMine();
+    for (let i = 0; i < 3; i++) {
+      await submit(id, { version: 2 + i });
+      await putInstance(id, { version: 2 + i, overrides: [{ nodeId: "head", text: `T${i}` }] });
+      asDesigner();
+      await decide(h.reviews[h.reviews.length - 1].id, { decision: "approve" });
+      asMarketing();
+    }
+    asDesigner();
+    const first = (await queueOf("?status=decided&limit=2")).json();
+    expect(first.reviews).toHaveLength(2);
+    expect(first.nextCursor).not.toBeNull();
+    const rest = (await queueOf(`?status=decided&limit=2&cursor=${first.nextCursor}`)).json();
+    expect(rest.reviews).toHaveLength(1);
+    expect(rest.nextCursor).toBeNull();
+    for (const q of ["?status=nope", "?limit=0", "?limit=x", "?cursor=abc"]) expect((await queueOf(q)).statusCode, q).toBe(400);
+  });
+
+  it("the detail has the submitted document, what changed from the published revision (first) or the previous submission, and the history", async () => {
+    const { id } = await seedMine([{ nodeId: "head", text: "First" }]);
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Second" }] });
+    await submit(id, { version: 3, note: "again" });
+    asDesigner();
+    const first = (await reviewOf(h.reviews[0].id)).json();
+    expect(first.changes).toEqual([expect.objectContaining({ nodeId: "head", kind: "text", before: "Headline one", after: "First" })]); // against the revision
+    const second = (await reviewOf(h.reviews[1].id)).json();
+    expect(second.changes).toEqual([expect.objectContaining({ nodeId: "head", before: "First", after: "Second" })]); // against the previous submission
+    expect(second.review).toMatchObject({ id: h.reviews[1].id, status: "pending", reviewer: null });
+    expect(second.submission).toMatchObject({ number: 2, name: "Case Study", note: "again", submitter: "Mia Marketing", baseRevision: { number: 1 } });
+    expect(second.submission.document).toEqual(h.submissions[1].document);
+    expect(second.history.map((x: { number: number; status: string }) => [x.number, x.status])).toEqual([[2, "pending"], [1, "superseded"]]);
+    expect(second.archivedBySubmitter).toBe(false);
+    expect(first.rename).toBeNull(); // nothing to compare the first submission's name with
+    expect(second.rename).toBeNull(); // the name did not change
+    for (const secret of ["email", "submittedByUserId", "decidedByUserId", "overrides"]) expect(JSON.stringify(second), secret).not.toContain(secret);
+  });
+
+  it("a rename is shown as a change, though it is not a field: the name counts for resubmitting, so the designer must see it", async () => {
+    const { id } = await seedMine([{ nodeId: "head", text: "Same" }]);
+    await submit(id, { version: 2 });
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Same" }], name: "Case Study Q4" }); // only the name changes
+    await submit(id, { version: 3 });
+    asDesigner();
+    const second = (await reviewOf(h.reviews[1].id)).json();
+    expect(second.changes).toEqual([]);
+    expect(second.rename).toEqual({ before: "Case Study", after: "Case Study Q4" });
+  });
+
+  it("an unknown or malformed review id is a 404", async () => {
+    asDesigner();
+    for (const id of ["nope", "a%00b"]) {
+      expect((await reviewOf(id)).statusCode, id).toBe(404);
+      expect((await decide(id, { decision: "approve" })).statusCode, id).toBe(404);
+    }
+  });
+});
+
+describe("POST /canvas/reviews/:id/decision", () => {
+  async function pending() {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    asDesigner();
+    return { id, rv: h.reviews[0] };
+  }
+
+  it("approves: one conditional update on status = pending, naming the workspace, and stamping who and when", async () => {
+    const { rv } = await pending();
+    const res = await decide(rv.id, { decision: "approve", comment: " Nice " });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, review: { id: rv.id, status: "approved" } });
+    expect(rv).toMatchObject({ status: "approved", pendingInstanceId: null, comment: "Nice", decidedByUserId: "designer-1" });
+    expect(rv.decidedAt).toBeInstanceOf(Date);
+    expect(db.designReviewRequest.updateMany.mock.calls.at(-1)![0].where).toEqual({ id: rv.id, workspaceId: "ws-1", status: "pending" });
+  });
+
+  it("asks for changes only WITH a comment, and a blank one is a 400 that changes nothing", async () => {
+    const { rv } = await pending();
+    for (const body of [{ decision: "request_changes" }, { decision: "request_changes", comment: "   " }]) expect((await decide(rv.id, body)).statusCode).toBe(400);
+    expect(rv.status).toBe("pending");
+    expect((await decide(rv.id, { decision: "request_changes", comment: "Shorter" })).json().review.status).toBe("changes_requested");
+    expect(rv).toMatchObject({ comment: "Shorter", decidedByUserId: "designer-1" });
+  });
+
+  it("a comment over 2000 characters, an unknown decision and extra fields are 400s; a non-JSON body is 415", async () => {
+    const { rv } = await pending();
+    for (const body of [{ decision: "approve", comment: "a".repeat(2001) }, { decision: "reject" }, { decision: "approve", status: "approved" }, { decision: "approve", decidedByUserId: "x" }, {}]) {
+      expect((await decide(rv.id, body)).statusCode, JSON.stringify(body)).toBe(400);
+    }
+    expect(rv.status).toBe("pending");
+    expect((await app.inject({ method: "POST", url: `/canvas/reviews/${rv.id}/decision`, headers: { "content-type": "text/plain" }, payload: "{}" })).statusCode).toBe(415);
+  });
+
+  it("409 NOT_PENDING for a review that was already answered, and the first answer stands", async () => {
+    const { rv } = await pending();
+    await decide(rv.id, { decision: "approve" });
+    const again = await decide(rv.id, { decision: "request_changes", comment: "Too late" });
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toMatchObject({ code: "NOT_PENDING" });
+    expect(rv).toMatchObject({ status: "approved", comment: null });
+  });
+
+  it("409 NOT_PENDING for a review a newer submission replaced", async () => {
+    const { id, rv } = await pending();
+    asMarketing();
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Newer" }] });
+    await submit(id, { version: 3 });
+    asDesigner();
+    expect(rv.status).toBe("superseded");
+    const res = await decide(rv.id, { decision: "approve" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "NOT_PENDING" });
+    expect(rv.status).toBe("superseded");
+  });
+
+  it("two designers answering at once: exactly one wins", async () => {
+    const { rv } = await pending();
+    const [a, b] = await Promise.all([decide(rv.id, { decision: "approve" }), decide(rv.id, { decision: "request_changes", comment: "No" })]);
+    expect([a.statusCode, b.statusCode].sort()).toEqual([200, 409]);
+    expect(["approved", "changes_requested"]).toContain(rv.status);
+  });
+
+  it("touches nothing but the review: not the submission, the instance or the template", async () => {
+    const { id, rv } = await pending();
+    const before = JSON.stringify([h.submissions, h.designs, h.templates, h.revisions]);
+    db.design.updateMany.mockClear();
+    await decide(rv.id, { decision: "approve" });
+    expect(JSON.stringify([h.submissions, h.designs, h.templates, h.revisions])).toBe(before);
+    expect(db.design.updateMany).not.toHaveBeenCalled();
+    expect(inst(id).version).toBe(2);
+  });
+
+  it("works on a review whose design was archived (B1): a pending submission of an archived design is still decidable", async () => {
+    const { id, rv } = await pending();
+    asMarketing();
+    expect((await delInstance(id)).json()).toMatchObject({ archived: true });
+    asDesigner();
+    expect((await reviewOf(rv.id)).json().archivedBySubmitter).toBe(true);
+    expect((await queueOf()).json().reviews[0].archivedBySubmitter).toBe(true);
+    expect((await decide(rv.id, { decision: "approve" })).statusCode).toBe(200);
+    expect(rv.status).toBe("approved");
+  });
+});
+
+describe("deleting or archiving a design (P6-D2)", () => {
+  it("a design that was NEVER submitted is deleted for good, as in phase 5", async () => {
+    const { id } = await seedMine();
+    const res = await delInstance(id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(h.designs.some((d) => d.id === id)).toBe(false);
+  });
+
+  it("a design with a PENDING submission is archived, never deleted, and its snapshots and review are untouched", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    const before = JSON.stringify([h.submissions, h.reviews]);
+    const res = await delInstance(id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, archived: true });
+    expect(inst(id).archivedAt).toBeInstanceOf(Date);
+    expect(inst(id).version).toBe(2); // archiving is not an edit
+    expect(JSON.stringify([h.submissions, h.reviews])).toBe(before);
+    expect(db.design.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([["approved"], ["changes_requested"], ["superseded"]])("a design whose latest review is %s is archived too: any submission at all blocks the hard delete", async (status) => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    Object.assign(h.reviews[0], { status, pendingInstanceId: null, comment: status === "changes_requested" ? "c" : null, decidedAt: status === "superseded" ? null : new Date(), decidedByUserId: status === "superseded" ? null : "designer-1" });
+    expect((await delInstance(id)).json()).toEqual({ ok: true, archived: true });
+    expect(h.designs.some((d) => d.id === id)).toBe(true);
+    expect(h.submissions).toHaveLength(1);
+  });
+
+  it("asking again is the same answer (idempotent) and does not archive twice; a design that is not mine is a 404", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await delInstance(id);
+    const stamp = inst(id).archivedAt;
+    expect((await delInstance(id)).json()).toEqual({ ok: true, archived: true });
+    expect(inst(id).archivedAt).toBe(stamp);
+    seedInstance({ id: "theirs", createdByUserId: "someone-else" });
+    expect((await delInstance("theirs")).statusCode).toBe(404);
+    expect(h.designs.some((d) => d.id === "theirs")).toBe(true);
+  });
+
+  it("takes the instance lock first, counts the submissions inside the same transaction, and takes no other lock", async () => {
+    const { id } = await seedMine();
+    h.log = [];
+    await delInstance(id);
+    expect(h.log.filter((e) => e.startsWith("lock:"))).toEqual(["lock:instance"]);
+    expect(h.log.indexOf("lock:instance")).toBeGreaterThan(h.log.indexOf("tx:begin"));
+    expect(h.log.indexOf("tx:end")).toBeGreaterThan(h.log.indexOf("write:design.delete"));
+    expect(h.log).toContain("tx:designSubmission.count");
+  });
+
+  it("a submission that appeared between the count and the delete: the foreign key refuses the delete (P2003) and the retry archives", async () => {
+    const { id } = await seedMine();
+    db.design.deleteMany.mockImplementationOnce(async () => {
+      const late = { id: "late", workspaceId: "ws-1", instanceId: id, number: 1, instanceVersion: 2, name: "x", note: null, baseRevisionId: "r-base-1", overrides: {}, document: {}, submittedByUserId: "user-1", createdAt: new Date() };
+      h.submissions.push(late);
+      h.outsideSubmissions.push(late); // committed by another connection: this transaction's rollback does not take it back
+      throw Object.assign(new Error("Foreign key constraint failed on the field: `DesignSubmission_instanceId_fkey`"), { code: "P2003" });
+    });
+    const res = await delInstance(id);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, archived: true });
+    expect(h.designs.some((d) => d.id === id)).toBe(true);
+  });
+
+  it("the DATABASE refuses to hard-delete a submitted instance by itself (the foreign key), whatever the route does", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await expect(db.design.deleteMany({ where: { id } })).rejects.toMatchObject({ code: "P2003" });
+    expect(h.designs.some((d) => d.id === id)).toBe(true);
+  });
+
+  it("an error other than the foreign key is not swallowed", async () => {
+    const { id } = await seedMine();
+    db.design.deleteMany.mockRejectedValueOnce(new Error("db down"));
+    expect((await delInstance(id)).statusCode).toBe(500);
+  });
+
+  it("the images stay: neither deleting nor archiving touches an asset", async () => {
+    const { id } = await seedMine();
+    h.rows.push({ id: "asset-9", workspaceId: "ws-1", storageRef: "x" });
+    await delInstance(id);
+    expect(h.rows.some((r) => r.id === "asset-9")).toBe(true);
+  });
+});
+
+describe("an archived design is frozen, but its history is not", () => {
+  async function archived() {
+    const mine = await seedMine();
+    await submit(mine.id, { version: 2, note: "n" });
+    await delInstance(mine.id);
+    return mine;
+  }
+
+  it("the editor's read, a save and a submit all answer 404 DESIGN_ARCHIVED (not 'deleted'), and write nothing", async () => {
+    const { id } = await archived();
+    const before = JSON.stringify([h.designs, h.submissions, h.reviews]);
+    for (const call of [() => getInstance(id), () => putInstance(id, { version: 2, overrides: [] }), () => putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "x" }], name: "Y" }), () => submit(id, { version: 2 })]) {
+      const res = await call();
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ code: "DESIGN_ARCHIVED" });
+    }
+    expect(JSON.stringify([h.designs, h.submissions, h.reviews])).toBe(before);
+  });
+
+  it("a save that raced the archive (past the read) is refused by the conditional update, not applied", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    db.design.findFirst.mockImplementationOnce(async () => ({ version: 2, name: "Case Study", overrides: inst(id).overrides, archivedAt: null, baseRevision: { document: h.revisions[0].document, manifest: h.revisions[0].manifest } }));
+    inst(id).archivedAt = new Date(); // archived after the read
+    const res = await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "late" }] });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ code: "DESIGN_ARCHIVED" });
+  });
+
+  it("an archived design is not in 'my designs'; ?archived=1 lists only the archived ones, and a bad value is a 400", async () => {
+    const { id } = await archived();
+    expect((await listInstances()).json().instances.map((i: { id: string }) => i.id)).not.toContain(id);
+    const only = (await listInstances("?archived=1")).json().instances;
+    expect(only.map((i: { id: string }) => i.id)).toEqual([id]);
+    expect(only[0].archivedAt).not.toBeNull();
+    expect(only[0].review).toMatchObject({ latestReviewStatus: "pending" });
+    expect((await listInstances("?archived=0")).statusCode).toBe(200);
+    for (const q of ["?archived=2", "?archived=true", "?archived="]) expect((await listInstances(q)).statusCode, q).toBe(400);
+  });
+
+  it("its submission history stays readable by its owner, reviewer names included", async () => {
+    const { id } = await archived();
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "request_changes", comment: "Shorter" });
+    asMarketing();
+    const list = (await history(id)).json();
+    expect(list.submissions).toHaveLength(1);
+    expect(list.submissions[0]).toMatchObject({ number: 1, status: "changes_requested", comment: "Shorter", reviewer: "Dana Designer", note: "n" });
+    const one = (await oneSubmission(id, 1)).json().submission;
+    expect(one.document).toEqual(h.submissions[0].document);
+    expect(one.reviewer).toBe("Dana Designer");
+  });
+
+  it("someone else's archived design is still a plain 404 for its history", async () => {
+    const { id } = await archived();
+    h.userId = "someone-else";
+    expect((await history(id)).statusCode).toBe(404);
+    expect((await oneSubmission(id, 1)).statusCode).toBe(404);
+  });
+
+  it("the database's frozen trigger refuses any later update of an archived design, even one that skips the route", async () => {
+    const { id } = await archived();
+    await expect(db.design.updateMany({ where: { id }, data: { name: "x", version: { increment: 1 } } })).rejects.toMatchObject({ code: "P2010" });
+    await expect(db.design.updateMany({ where: { id }, data: { archivedAt: new Date() } })).rejects.toMatchObject({ code: "P2010" });
+  });
+});
+
+describe("what the review state shows on the design", () => {
+  it("GET one carries the two facts: the latest review status and whether there are unsubmitted changes", async () => {
+    const { id } = await seedMine();
+    expect((await getInstance(id)).json().instance.review).toMatchObject({ latestReviewStatus: null, hasChangesSinceSubmitted: false });
+    await submit(id, { version: 2, note: "n" });
+    const afterSubmit = (await getInstance(id)).json().instance;
+    expect(afterSubmit.review).toMatchObject({ latestReviewStatus: "pending", hasChangesSinceSubmitted: false, submissionNumber: 1, submittedVersion: 2, workingVersion: 2 });
+    expect(afterSubmit.submitted).toEqual({ name: "Case Study", overrides: [{ nodeId: "head", text: "Mine" }] }); // what the editor compares its live state with
+    expect(JSON.stringify(afterSubmit.submitted)).not.toContain("note"); // the note is not an input to a change
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Edited" }] });
+    expect((await getInstance(id)).json().instance.review).toMatchObject({ latestReviewStatus: "pending", hasChangesSinceSubmitted: true, workingVersion: 3 }); // an edit does NOT clear the status
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "approve" });
+    asMarketing();
+    expect((await getInstance(id)).json().instance.review).toMatchObject({ latestReviewStatus: "approved", hasChangesSinceSubmitted: true });
+  });
+
+  it("the list carries it for every design of the page, from ONE query", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    seedInstance({ id: "plain" });
+    db.$queryRaw.mockClear();
+    const res = await listInstances();
+    const byId = Object.fromEntries(res.json().instances.map((i: { id: string; review: unknown }) => [i.id, i.review]));
+    expect(byId[id]).toMatchObject({ latestReviewStatus: "pending", hasChangesSinceSubmitted: false });
+    expect(byId.plain).toMatchObject({ latestReviewStatus: null, hasChangesSinceSubmitted: false });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(String(db.$queryRaw.mock.calls[0][0].join("?"))).toContain("DISTINCT ON");
+  });
+
+  it("an empty page makes no review query at all", async () => {
+    h.role = "member";
+    db.$queryRaw.mockClear();
+    expect((await listInstances()).json().instances).toEqual([]);
+    expect(db.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe("a template design a submission was made from cannot be deleted (the extra safeguard)", () => {
+  it("DELETE /canvas/designs/:id counts submissions as well as instances, and refuses with DESIGN_IN_USE", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    h.designs = h.designs.filter((d) => d.id !== id); // only the snapshot is left to pin the revision
+    h.submissions[0].instanceId = "gone";
+    h.templates = [];
+    asDesigner();
+    const res = await app.inject({ method: "DELETE", url: "/canvas/designs/base" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "DESIGN_IN_USE" });
+    expect(h.designs.some((d) => d.id === "base")).toBe(true);
+  });
+
+  it("an ARCHIVED instance still counts: the design it pins cannot be deleted", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await delInstance(id);
+    h.templates = [];
+    asDesigner();
+    const res = await app.inject({ method: "DELETE", url: "/canvas/designs/base" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "DESIGN_IN_USE" });
+  });
+
+  it("the database refuses it too, whatever the route checked: DesignSubmission_baseRevisionId_fkey", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    h.designs = h.designs.filter((d) => d.id !== id);
+    h.submissions[0].instanceId = "gone";
+    await expect(db.design.deleteMany({ where: { id: "base" } })).rejects.toMatchObject({ code: "P2003" });
+  });
+});
+
+describe("the double's own rules for the new tables (so the routes are tested against them)", () => {
+  it("a submission can never be updated or deleted, and a review only leaves 'pending' once", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    await expect(db.designSubmission.updateMany({ where: {}, data: { name: "x" } })).rejects.toMatchObject({ code: "P2010" });
+    await expect(db.designSubmission.deleteMany({ where: {} })).rejects.toMatchObject({ code: "P2010" });
+    await expect(db.designReviewRequest.deleteMany({ where: {} })).rejects.toMatchObject({ code: "P2010" });
+    const rv = h.reviews[0];
+    await db.designReviewRequest.updateMany({ where: { id: rv.id }, data: { status: "approved", pendingInstanceId: null, decidedByUserId: "d", decidedAt: new Date() } });
+    await expect(db.designReviewRequest.updateMany({ where: { id: rv.id }, data: { status: "changes_requested", comment: "x", decidedByUserId: "d", decidedAt: new Date() } })).rejects.toMatchObject({ code: "P2010" });
+    expect(id).toBeTruthy();
+  });
+
+  it("the review table's CHECKs: pending iff pendingInstanceId, a decision needs who and when, changes need a comment, one pending per design", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    const second = { ...h.submissions[0], id: "sub-x", number: 2, instanceVersion: 9 };
+    h.submissions.push(second);
+    const make = (data: Record<string, unknown>) => db.designReviewRequest.create({ data: { workspaceId: "ws-1", submissionId: "sub-x", ...data }, select: { id: true } });
+    await expect(make({ status: "pending", pendingInstanceId: null })).rejects.toMatchObject({ code: "P2004" });
+    await expect(make({ status: "approved", pendingInstanceId: id })).rejects.toMatchObject({ code: "P2004" });
+    await expect(make({ status: "approved", pendingInstanceId: null, decidedAt: null })).rejects.toMatchObject({ code: "P2004" });
+    await expect(make({ status: "changes_requested", pendingInstanceId: null, decidedAt: new Date(), decidedByUserId: "d", comment: "  " })).rejects.toMatchObject({ code: "P2004" });
+    await expect(make({ status: "weird", pendingInstanceId: null })).rejects.toMatchObject({ code: "P2004" });
+    await expect(make({ status: "pending", pendingInstanceId: id })).rejects.toMatchObject({ code: "P2002" }); // one pending review per design
+  });
+
+  it("only an instance can be archived (Design_archive_check)", async () => {
+    seedCampaign();
+    await expect(db.design.updateMany({ where: { id: "base" }, data: { archivedAt: new Date() } })).rejects.toMatchObject({ code: "P2004" });
+  });
+
+  it("a where key the double does not know fails the test instead of being ignored", async () => {
+    seedDesign(); // with no row the matcher never runs
+    await expect(db.design.findFirst({ where: { archived: true }, select: { id: true } })).rejects.toThrow(/does not understand/);
+  });
+});
+
+describe("rate limiting of the phase 6 write routes", () => {
+  // The real @fastify/rate-limit with the real helper on a tiny app. The route tests above mock auth, so the ORDER of auth and
+  // limiter, and the key, are proven here against the actual plugin.
+  async function limited(max: number) {
+    const [{ default: FastifyApp }, { default: rateLimit }, { userLimit }] = await Promise.all([import("fastify"), import("@fastify/rate-limit"), import("../lib/userRateLimit.js")]);
+    const a = FastifyApp();
+    // the same global limiter shape as src/index.ts: it would key every proxied browser on the shared address
+    await a.register(rateLimit, { global: true, max: 1000, timeWindow: "1 minute", keyGenerator: (req) => req.ip });
+    const seen: string[] = [];
+    const auth = async (req: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) => {
+      seen.push("auth");
+      const who = req.headers["x-user"];
+      if (!who) return reply.status(401).send({ error: "no" });
+      req.user = { id: String(who) } as never;
+      req.workspaceId = String(req.headers["x-ws"] ?? "ws-1");
+    };
+    a.post("/w", { preHandler: [auth], config: userLimit(max) }, async () => {
+      seen.push("handler");
+      return { ok: true };
+    });
+    await a.ready();
+    const hit = (user?: string, ws?: string) => a.inject({ method: "POST", url: "/w", remoteAddress: "10.0.0.1", headers: { ...(user ? { "x-user": user } : {}), ...(ws ? { "x-ws": ws } : {}) } }).then((r) => r.statusCode);
+    return { a, hit, seen };
+  }
+
+  it("two people behind the SAME address get separate allowances (the proxy's address is not the key)", async () => {
+    const { a, hit } = await limited(2);
+    expect([await hit("ann"), await hit("ann"), await hit("ann")]).toEqual([200, 200, 429]);
+    expect([await hit("bob"), await hit("bob"), await hit("bob")]).toEqual([200, 200, 429]); // bob is not held back by ann
+    await a.close();
+  });
+
+  it("the same person in another workspace has a separate allowance", async () => {
+    const { a, hit } = await limited(1);
+    expect([await hit("ann", "ws-1"), await hit("ann", "ws-1"), await hit("ann", "ws-2")]).toEqual([200, 429, 200]);
+    await a.close();
+  });
+
+  it("authentication runs BEFORE the limiter: an unauthenticated request is a 401, never reaches the handler, and uses up nothing", async () => {
+    const { a, hit, seen } = await limited(1);
+    for (let i = 0; i < 5; i++) expect(await hit()).toBe(401); // never a 429, however many
+    expect(seen.filter((s) => s === "handler")).toHaveLength(0);
+    expect(await hit("ann")).toBe(200); // the 401s did not consume anyone's allowance
+    await a.close();
+  });
+
+  it("the key: a person in a workspace is 'workspace:person'; with no person it falls back to the address, never to one shared key", async () => {
+    const { userKey } = await import("../lib/userRateLimit.js");
+    expect(userKey({ ip: "1.2.3.4" } as never)).toBe("1.2.3.4");
+    expect(userKey({ ip: "1.2.3.4", user: { id: "u" } } as never)).toBe("1.2.3.4");
+    expect(userKey({ ip: "1.2.3.4", user: { id: "u" }, workspaceId: "w" } as never)).toBe("w:u");
+  });
+
+  it("the routes use the approved numbers: submit 10, decision 30, archive/delete 30 a minute, per person, after auth; the existing limits are unchanged", async () => {
+    const routes = new Map<string, { max: number; hook?: string; keyed: boolean }>();
+    const probe = Fastify();
+    probe.addHook("onRoute", (r) => {
+      const rl = (r.config as { rateLimit?: { max: number; hook?: string; keyGenerator?: unknown } } | undefined)?.rateLimit;
+      if (rl) routes.set(`${String(r.method)} ${r.url}`, { max: rl.max, hook: rl.hook, keyed: typeof rl.keyGenerator === "function" });
+    });
+    await probe.register(multipart);
+    await probe.register(canvasRoutes, { storage } as never);
+    await probe.ready();
+    await probe.close();
+    expect(routes.get("POST /canvas/instances/:id/submit")).toEqual({ max: 10, hook: "preHandler", keyed: true });
+    expect(routes.get("POST /canvas/reviews/:id/decision")).toEqual({ max: 30, hook: "preHandler", keyed: true });
+    expect(routes.get("DELETE /canvas/instances/:id")).toEqual({ max: 30, hook: "preHandler", keyed: true });
+    // the phase 3 to 5 limits are exactly what they were: plain per-route numbers on the global hook and key
+    expect(routes.get("PUT /canvas/instances/:id")).toEqual({ max: 120, hook: undefined, keyed: false });
+    expect(routes.get("POST /canvas/instances")).toEqual({ max: 30, hook: undefined, keyed: false });
+    expect(routes.get("PUT /canvas/designs/:id")).toEqual({ max: 120, hook: undefined, keyed: false });
+    // the phase 6 read routes carry no route limit of their own: they are on the global limiter, like the other reads
+    for (const read of ["GET /canvas/reviews", "GET /canvas/reviews/summary", "GET /canvas/reviews/:id", "GET /canvas/instances/:id/submissions", "GET /canvas/instances/:id/submissions/:number"]) expect(routes.get(read), read).toBeUndefined();
   });
 });

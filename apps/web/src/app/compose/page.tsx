@@ -31,6 +31,7 @@ import { canReview } from "../../lib/permissions";
 import { fileHref, templatesByCategory, type DesignTemplate } from "../../lib/templates";
 import { ContentTypeSelects, toContentType, type ContentType } from "../../components/ContentTypeSelects";
 import { DesignReferenceCard } from "../../components/DesignReferenceCard";
+import { DesignReviewPrompt } from "../../components/canvas/DesignReviewPrompt";
 import { cn } from "../../lib/cn";
 import Link from "next/link";
 
@@ -744,6 +745,7 @@ const [youtubeShortsWarning, setYoutubeShortsWarning] = useState<string | null>(
 
   return (
     <><div className="flex flex-col h-full overflow-hidden">
+      <DesignReviewPrompt />
       <TrialUrgentBanner />
 
       {/* Top bar */}

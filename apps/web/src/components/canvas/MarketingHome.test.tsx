@@ -19,15 +19,25 @@ vi.mock("next/link", () => ({
 
 import { MarketingHome } from "./MarketingHome";
 
+/** Nothing submitted yet: the review facts of a design that was never sent. */
+const NOT_SUBMITTED = { latestReviewStatus: null, hasChangesSinceSubmitted: false, submissionNumber: null, submittedVersion: null, workingVersion: 1, submittedAt: null, latestReviewId: null, comment: null, decidedAt: null };
 const design = (i: number, over: Record<string, unknown> = {}) => ({
   id: `i${i}`,
   name: `Design ${i}`,
   version: 1,
   createdAt: "2026-11-18T10:00:00.000Z",
   updatedAt: "2026-11-18T11:00:00.000Z",
+  archivedAt: null,
+  review: NOT_SUBMITTED,
   baseRevision: { number: 2 },
   ...over,
 });
+/** A design that was submitted: its newest review has this status (and the work has/has not moved on since). */
+const submitted = (i: number, status: string, over: { changed?: boolean; comment?: string | null; archivedAt?: string | null } = {}) =>
+  design(i, {
+    archivedAt: over.archivedAt ?? null,
+    review: { ...NOT_SUBMITTED, latestReviewStatus: status, hasChangesSinceSubmitted: over.changed ?? false, submissionNumber: 1, submittedVersion: 1, latestReviewId: `r${i}`, comment: over.comment ?? null },
+  });
 const template = (id: string, over: Record<string, unknown> = {}) => ({
   id,
   name: id,
@@ -49,16 +59,21 @@ let templates: unknown[];
 /** Pages of "my designs", served by cursor: "" is the first page. */
 let pages: Record<string, { instances: unknown[]; nextCursor: string | null }>;
 let failCursor: string | null;
+/** Pages of the ARCHIVED designs (?archived=1), served by cursor too. */
+let archivedPages: Record<string, { instances: unknown[]; nextCursor: string | null }>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   templates = [template("Case Study")];
   pages = { "": { instances: [design(3), design(2), design(1)], nextCursor: null } };
+  archivedPages = { "": { instances: [], nextCursor: null } };
   failCursor = null;
   h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
     if (path === "/templates") return { templates };
     if (path.startsWith("/canvas/instances") && !init?.method) {
-      const cursor = new URL(`http://x${path}`).searchParams.get("cursor") ?? "";
+      const query = new URL(`http://x${path}`).searchParams;
+      if (query.get("archived") === "1") return archivedPages[query.get("cursor") ?? ""];
+      const cursor = query.get("cursor") ?? "";
       if (failCursor !== null && cursor === failCursor) throw new Error("offline");
       return pages[cursor];
     }
@@ -257,5 +272,193 @@ describe("Marketing home: my designs", () => {
       await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Server error"));
       expect(screen.getByText("Design 1")).toBeTruthy();
     });
+  });
+});
+
+// ── Phase 6: review state, archive, history ───────────────────────────────────────────────────────────────────────
+
+describe("Marketing home: review state (phase 6)", () => {
+  it("shows the answer to the newest submission as a chip, and 'Unsubmitted changes' as a SEPARATE badge, both at once", async () => {
+    pages = { "": { instances: [submitted(3, "approved", { changed: true }), submitted(2, "pending"), submitted(1, "changes_requested", { comment: "Make it shorter" }), design(0)], nextCursor: null } };
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    const rows = mine()!.getAllByRole("listitem");
+    expect(within(rows[0]).getByText("Approved")).toBeTruthy();
+    expect(within(rows[0]).getByText("Unsubmitted changes")).toBeTruthy(); // an edit does not clear "Approved": it adds the badge
+    expect(within(rows[1]).getByText("In review")).toBeTruthy();
+    expect(within(rows[1]).queryByText("Unsubmitted changes")).toBeNull();
+    expect(within(rows[2]).getByText("Changes requested")).toBeTruthy();
+    expect(within(rows[2]).getByText(/Make it shorter/)).toBeTruthy(); // the designer's words, to the owner
+    expect(within(rows[3]).queryByText(/In review|Approved|Changes requested|Unsubmitted/)).toBeNull(); // never submitted: nothing to say
+  });
+
+  it("a design that was never submitted offers Delete; one that was submitted offers Archive and its history instead", async () => {
+    pages = { "": { instances: [submitted(2, "pending"), design(1)], nextCursor: null } };
+    render(<MarketingHome />);
+    await screen.findByText("Design 2");
+    expect(screen.getByRole("button", { name: "Archive Design 2" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete Design 2" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Submission history of Design 2" }).getAttribute("href")).toBe("/canvas/i2?view=history");
+    expect(screen.getByRole("button", { name: "Delete Design 1" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Archive Design 1" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Submission history of Design 1" })).toBeNull();
+  });
+
+  it("archiving asks first, says what it means (no editing, no new submission, no restore, history kept), and the design leaves the list", async () => {
+    pages = { "": { instances: [submitted(2, "approved"), design(1)], nextCursor: null } };
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path === "/templates") return { templates };
+      if (init?.method === "DELETE") return { ok: true, archived: true };
+      if (path.startsWith("/canvas/instances")) return new URL(`http://x${path}`).searchParams.get("archived") === "1" ? archivedPages[""] : pages[""];
+      return { ok: true };
+    });
+    render(<MarketingHome />);
+    await screen.findByText("Design 2");
+    await userEvent.click(screen.getByRole("button", { name: "Archive Design 2" }));
+    expect(await screen.findByText("Archive this design?")).toBeTruthy();
+    expect(screen.getByText(/can no longer edit it, submit it again or restore it/)).toBeTruthy();
+    expect(screen.getByText(/history stays available to you/)).toBeTruthy();
+    expect(screen.queryByText(/cannot be undone/i)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(h.apiFetch.mock.calls.some(([, i]) => i?.method === "DELETE")).toBe(false); // Cancel archives nothing
+    await userEvent.click(screen.getByRole("button", { name: "Archive Design 2" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Archive design" }));
+    await waitFor(() => expect(screen.queryByText("Design 2")).toBeNull());
+    expect(h.apiFetch.mock.calls.find(([, i]) => i?.method === "DELETE")![0]).toBe("/canvas/instances/i2");
+    expect(screen.getByText("Design 1")).toBeTruthy();
+    expect(h.toast.success).not.toHaveBeenCalled(); // the person asked for Archive and got it: no surprise to explain
+  });
+
+  it("a design the list showed as unsubmitted but the server archived (it was submitted from another tab) says so", async () => {
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path === "/templates") return { templates };
+      if (init?.method === "DELETE") return { ok: true, archived: true };
+      return path.includes("archived=1") ? archivedPages[""] : pages[""];
+    });
+    render(<MarketingHome />);
+    await screen.findByText("Design 1");
+    await userEvent.click(screen.getByRole("button", { name: "Delete Design 1" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete design" }));
+    await waitFor(() => expect(screen.queryByText("Design 1")).toBeNull());
+    expect(h.toast.success).toHaveBeenCalledWith("This design had been submitted, so it was archived instead of deleted.");
+  });
+
+  it("a failed archive says it was an archive and keeps the design", async () => {
+    pages = { "": { instances: [submitted(2, "pending")], nextCursor: null } };
+    const original = h.apiFetch.getMockImplementation()!;
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (init?.method === "DELETE") throw Object.assign(new Error("The design could not be archived."), { status: 500 });
+      return original(path, init);
+    });
+    render(<MarketingHome />);
+    await screen.findByText("Design 2");
+    await userEvent.click(screen.getByRole("button", { name: "Archive Design 2" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Archive design" }));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("The design could not be archived."));
+    expect(screen.getByText("Design 2")).toBeTruthy();
+  });
+});
+
+describe("Marketing home: archived designs (phase 6)", () => {
+  const section = () => within(screen.getByRole("heading", { name: /Archived designs/ }).closest("section") as HTMLElement);
+
+  it("is collapsed and asks for nothing until it is opened; the active list never mixes with it", async () => {
+    archivedPages = { "": { instances: [submitted(9, "approved", { archivedAt: "2026-11-19T10:00:00.000Z" })], nextCursor: null } };
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    expect(h.apiFetch.mock.calls.some(([p]) => String(p).includes("archived=1"))).toBe(false); // nothing asked yet
+    expect(screen.queryByText("Design 9")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    expect(await screen.findByText("Design 9")).toBeTruthy();
+    expect(h.apiFetch.mock.calls.filter(([p]) => String(p).includes("archived=1")).map(([p]) => p)).toEqual(["/canvas/instances?archived=1"]);
+    expect(within(mine()!.getByRole("list")).queryByText("Design 9")).toBeNull(); // not in "My designs"
+  });
+
+  it("each archived design is read-only: it shows Archived and the last answer, opens its HISTORY (never the editor), and has no delete, archive or restore", async () => {
+    archivedPages = { "": { instances: [submitted(9, "changes_requested", { archivedAt: "2026-11-19T10:00:00.000Z" })], nextCursor: null } };
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    await screen.findByText("Design 9");
+    const row = section().getByRole("listitem");
+    expect(within(row).getByText("Archived", { selector: "span" })).toBeTruthy();
+    expect(within(row).getByText("Changes requested")).toBeTruthy();
+    expect(within(row).getByRole("link").getAttribute("href")).toBe("/canvas/i9?view=history");
+    expect(within(row).queryByRole("button")).toBeNull();
+    expect(within(row).queryByText("Unsubmitted changes")).toBeNull(); // a frozen design has no more work to submit
+  });
+
+  it("says so when there is nothing archived, and pages with Load more using the cursor it was given", async () => {
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    expect(await screen.findByText("You have not archived any design.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ })); // close
+    archivedPages = {
+      "": { instances: [submitted(9, "approved", { archivedAt: "2026-11-19T10:00:00.000Z" })], nextCursor: "a1" },
+      a1: { instances: [submitted(8, "pending", { archivedAt: "2026-11-19T09:00:00.000Z" })], nextCursor: null },
+    };
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    await screen.findByText("Design 9");
+    await userEvent.click(section().getByRole("button", { name: "Load more" }));
+    await screen.findByText("Design 8");
+    expect(section().getAllByRole("listitem")).toHaveLength(2);
+    expect(h.apiFetch.mock.calls.map(([p]) => p)).toContain("/canvas/instances?cursor=a1&archived=1");
+  });
+
+  it("an archived design that is archived just now appears in an open section without reopening it", async () => {
+    pages = { "": { instances: [submitted(2, "approved")], nextCursor: null } };
+    render(<MarketingHome />);
+    await screen.findByText("Design 2");
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    await screen.findByText("You have not archived any design.");
+    archivedPages = { "": { instances: [submitted(2, "approved", { archivedAt: "2026-11-19T10:00:00.000Z" })], nextCursor: null } };
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (path === "/templates") return { templates };
+      if (init?.method === "DELETE") return { ok: true, archived: true };
+      return path.includes("archived=1") ? archivedPages[""] : { instances: [], nextCursor: null };
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Archive Design 2" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Archive design" }));
+    await waitFor(() => expect(within(screen.getByRole("heading", { name: /Archived designs/ }).closest("section") as HTMLElement).getByText("Design 2")).toBeTruthy());
+  });
+
+  it("a late 'Load more' from a section that was closed and reopened is dropped: it does not land in the new list or replace its cursor", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    archivedPages = {
+      "": { instances: [submitted(9, "approved", { archivedAt: "2026-11-19T10:00:00.000Z" })], nextCursor: "a1" },
+      a1: { instances: [submitted(8, "pending", { archivedAt: "2026-11-19T09:00:00.000Z" })], nextCursor: null },
+    };
+    const original = h.apiFetch.getMockImplementation()!;
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (String(path).includes("cursor=a1")) await gate; // the second page is slow
+      return original(path, init);
+    });
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    await screen.findByText("Design 9");
+    await userEvent.click(section().getByRole("button", { name: "Load more" }));
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ })); // close, and open again: a new list
+    archivedPages = { "": { instances: [submitted(7, "approved", { archivedAt: "2026-11-19T08:00:00.000Z" })], nextCursor: null }, a1: archivedPages.a1 };
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    await screen.findByText("Design 7");
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByText("Design 8")).toBeNull(); // the old list's second page did not land here
+    expect(section().queryByRole("button", { name: "Load more" })).toBeNull(); // and its cursor did not replace this list's (none)
+  });
+
+  it("a section that fails to load says so", async () => {
+    const original = h.apiFetch.getMockImplementation()!;
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (String(path).includes("archived=1")) throw new Error("offline");
+      return original(path, init);
+    });
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    expect(await screen.findByText(/Archived designs didn't load/)).toBeTruthy();
   });
 });

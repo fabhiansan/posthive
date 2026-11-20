@@ -1,7 +1,6 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Prisma } from "@prisma/client";
-import type { ZodError } from "zod";
-import { withAuth, getUser, getWorkspaceId, requireContentEditorRole, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
+import { withAuth, getUser, getWorkspaceId } from "../lib/auth/withAuth.js";
 import { prisma } from "../lib/prisma.js";
 import type { StorageAdapter } from "../lib/storage.js";
 import { AssetRejected, CANVAS_PRIVATE_DIR, MAX_ASSET_BYTES, isPrivateAssetStorage, processAsset } from "../lib/canvasAssets.js";
@@ -34,14 +33,17 @@ import {
   type OverrideEntry,
 } from "../lib/canvas.js";
 import { SOURCE_SELECT, hasFigmaSource, hasUsableSource, lockTemplate, sourceOf } from "../lib/templates.js";
+import { ARCHIVED, INSTANCE, KIND, YOURS, contentEditorOnly, designerOnly, errorCode, invalidBody, isRefusal, jsonOnly, lockInstance, notFound, refuse, wellFormedId } from "../lib/canvasHttp.js";
+import { reviewSummary } from "../lib/canvasReview.js";
+import { latestForInstances, latestSubmission } from "../lib/canvasReviewDb.js";
+import { userLimit } from "../lib/userRateLimit.js";
+import { canvasReviewRoutes } from "./canvasReview.js";
 
 const STORAGE_UNSUPPORTED = {
   error: "Canvas image assets need local storage (STORAGE_PROVIDER=local). R2 and Supabase private storage is not supported yet.",
   code: "CANVAS_STORAGE_UNSUPPORTED",
 } as const;
 
-const KIND = "template"; // the designer's working copies
-const INSTANCE = "instance"; // what Marketing makes from a published template (phase 5)
 const DESIGN_LIST_MAX = 200;
 
 // A design as the editor and the designer's list read it (never the document, except GET one): which template it is
@@ -62,13 +64,7 @@ const json = (doc: CanvasDocumentJson) => doc as unknown as Prisma.InputJsonObje
 const overridesJson = (fields: OverrideEntry[]) => ({ ...EMPTY_OVERRIDES, fields }) as unknown as Prisma.InputJsonObject;
 
 // A design in "My designs": no document and no overrides, which are only read when one is opened.
-const INSTANCE_SUMMARY = { id: true, name: true, version: true, createdAt: true, updatedAt: true, baseRevision: { select: { number: true } } } as const;
-
-/** The same refusal as a status and a body, so a transaction can hand it back and the route can send it after the transaction ends. */
-type Refusal = { status: number; body: { error: string; code?: string } };
-const refuse = (status: number, error: string, code?: string): Refusal => ({ status, body: code ? { error, code } : { error } });
-const isRefusal = (x: unknown): x is Refusal => typeof x === "object" && x !== null && "status" in x && "body" in x;
-const errorCode = (err: unknown): string | undefined => (typeof err === "object" && err !== null ? (err as { code?: string }).code : undefined);
+const INSTANCE_SUMMARY = { id: true, name: true, version: true, createdAt: true, updatedAt: true, archivedAt: true, overrides: true, baseRevision: { select: { number: true } } } as const;
 
 const DESIGN_LINKED = refuse(409, "This design is already attached to a template.", "DESIGN_LINKED");
 
@@ -78,12 +74,6 @@ async function lockDesign(tx: Prisma.TransactionClient, id: string, workspaceId:
   return rows.length > 0;
 }
 
-/** A body the schema refused: which part it was decides the code, so the editor can say what to fix. */
-function invalidBody(error: ZodError) {
-  const { field, message } = firstIssue(error);
-  return { error: message, code: field === "document" ? "INVALID_DOCUMENT" : field === "name" ? "INVALID_NAME" : field === "overrides" ? "INVALID_OVERRIDES" : "INVALID_REQUEST" };
-}
-
 export async function canvasRoutes(app: FastifyInstance, { storage }: { storage: StorageAdapter }): Promise<void> {
   const local = isPrivateAssetStorage(storage);
   if (!local) app.log.warn("Canvas image assets are disabled: they need STORAGE_PROVIDER=local (private delivery is only built for local disk).");
@@ -91,14 +81,6 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // Fail closed, before auth or storage is touched: on any other provider the files could be public.
   const needsLocalStorage = async (_req: unknown, reply: FastifyReply) => {
     if (!local) return reply.status(501).send(STORAGE_UNSUPPORTED);
-  };
-
-  // An id that is not shaped like an id cannot name anything, so it is the same 404 as an unknown one, and nothing is
-  // queried. Without this a NUL in the path (/canvas/designs/a%00b, /canvas/assets/a%00b/content) reaches PostgreSQL,
-  // which refuses it (error 22021), and the caller gets a 500. Always after the auth (and role) checks on purpose: a
-  // stranger learns nothing about what an id looks like. Real ids (cuid, uuid) all match LIMITS.id.
-  const wellFormedId = (what: "Design" | "Asset" | "Template") => async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!LIMITS.id.test((req.params as { id: string }).id)) return reply.status(404).send({ error: `${what} not found` });
   };
 
   // Any workspace member may import: Marketing replaces images and Designers build with them.
@@ -178,18 +160,8 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // The designer's saved working copies. Designer only. Every query names the workspace and the kind, so another
   // workspace's id is a 404, and nothing in a request decides the kind, the workspace or the author. They work on
   // every storage provider: only image *bytes* need local disk, and a document holds just asset ids.
-  const designerOnly = async (req: FastifyRequest, reply: FastifyReply) => {
-    const forbidden = await requireTemplateManagerRole(getUser(req).id, getWorkspaceId(req));
-    if (forbidden) return reply.status(403).send(forbidden);
-  };
-  const notFound = (reply: FastifyReply) => reply.status(404).send({ error: "Design not found" });
-
-  // Creating takes a JSON object. A request with no body, a form or multipart post (no preflight, so a cross-site page
-  // can send one) or a bare `null` must not quietly become a blank design: only `{}` (no name) means "Untitled design".
-  const jsonOnly = async (req: FastifyRequest, reply: FastifyReply) => {
-    const type = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
-    if (type !== "application/json") return reply.status(415).send({ error: "Send this request as JSON (Content-Type: application/json).", code: "UNSUPPORTED_MEDIA_TYPE" });
-  };
+  // (designerOnly, notFound, jsonOnly and wellFormedId are in lib/canvasHttp.ts, shared with the review routes.) Creating
+  // takes a JSON object: only `{}` (no name) means "Untitled design".
 
   app.get("/canvas/designs", { preHandler: [withAuth, designerOnly] }, async (req, reply) => {
     // shortcut: the newest 200 designs, no paging (the page says when it shows that many); add paging when a workspace gets there.
@@ -255,7 +227,11 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // delete would take with it. An unlinked design nobody used goes with its revisions. The foreign keys are the backstop
   // for a link or an instance made in between.
   const inUse = (count: number) => refuse(409, `Marketing has made ${count} ${count === 1 ? "design" : "designs"} from this design's published revisions, so it cannot be deleted.`, "DESIGN_IN_USE");
-  const pinned = (id: string, workspaceId: string) => prisma.design.count({ where: { workspaceId, kind: INSTANCE, baseRevision: { designId: id } } });
+  // Instances count even when archived (an archived design still pins its revision). If there are none, a submission that
+  // pins one of its revisions still protects it: the database says the same through DesignSubmission_baseRevisionId_fkey.
+  const pinned = async (id: string, workspaceId: string) =>
+    (await prisma.design.count({ where: { workspaceId, kind: INSTANCE, baseRevision: { designId: id } } })) ||
+    (await prisma.designSubmission.count({ where: { workspaceId, baseRevision: { designId: id } } }));
   app.delete("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
@@ -433,12 +409,11 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // Unpublishing a template is NOT a way to take back designs Marketing already made. Creating needs a template that is
   // Published right now; once an instance exists it is unaffected by anything the design team does to the template
   // afterwards (unpublish, detach, delete, a newer revision), because it pins an immutable revision.
-  const contentEditorOnly = async (req: FastifyRequest, reply: FastifyReply) => {
-    const forbidden = await requireContentEditorRole(getUser(req).id, getWorkspaceId(req));
-    if (forbidden) return reply.status(403).send(forbidden);
-  };
+  //
+  // Phase 6: a design that has been submitted for review is never hard-deleted. Deleting it archives it instead (archivedAt),
+  // and an archived design is frozen: edits, new submissions and the editor's own read answer 404 DESIGN_ARCHIVED. Its
+  // submission history stays readable by its owner (routes/canvasReview.ts).
   const NO_REVISION = refuse(409, "This template has no published Canvas design to customize.", "NO_CANVAS_REVISION");
-  const YOURS = (id: string, workspaceId: string, userId: string) => ({ id, workspaceId, kind: INSTANCE, createdByUserId: userId });
 
   // Customize a template. ONE transaction, with the same lock order as every other writer of a template (the Template row,
   // then its Design), so that it cannot race an unpublish: whichever takes the Template lock first wins, and the other
@@ -482,13 +457,15 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   app.get("/canvas/instances", { preHandler: [withAuth, contentEditorOnly] }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const userId = getUser(req).id;
-    const { limit: rawLimit, cursor: rawCursor } = req.query as { limit?: unknown; cursor?: unknown };
+    const { limit: rawLimit, cursor: rawCursor, archived: rawArchived } = req.query as { limit?: unknown; cursor?: unknown; archived?: unknown };
     const limit = parseLimit(rawLimit);
     if (limit === null) return reply.status(400).send({ error: `limit must be a whole number from 1 to 100`, code: "INVALID_LIMIT" });
     const boundary = rawCursor === undefined ? null : decodeCursor(rawCursor);
     if (rawCursor !== undefined && boundary === null) return reply.status(400).send({ error: "cursor is not valid. Start again from the first page.", code: "INVALID_CURSOR" });
+    // Active designs by default; ?archived=1 lists the archived ones (their history stays readable).
+    if (rawArchived !== undefined && rawArchived !== "0" && rawArchived !== "1") return reply.status(400).send({ error: "archived must be 0 or 1", code: "INVALID_ARCHIVED" });
 
-    const mine = { workspaceId, kind: INSTANCE, createdByUserId: userId };
+    const mine = { workspaceId, kind: INSTANCE, createdByUserId: userId, archivedAt: rawArchived === "1" ? { not: null } : null };
     const after = boundary ? new Date(boundary.t) : null;
     const rows = await prisma.design.findMany({
       where: boundary && after ? { AND: [mine, { OR: [{ createdAt: { lt: after } }, { createdAt: after, id: { lt: boundary.i } }] }] } : mine,
@@ -496,9 +473,14 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
       take: limit + 1, // one more than the page, only to know whether there is a next one
       select: INSTANCE_SUMMARY,
     });
-    const instances = rows.slice(0, limit);
+    const page = rows.slice(0, limit);
     // From the last row actually returned, never from the extra one: the next page starts strictly after it.
-    const nextCursor = rows.length > limit ? encodeCursor(instances[instances.length - 1]) : null;
+    const nextCursor = rows.length > limit ? encodeCursor(page[page.length - 1]) : null;
+    // Each design's review state: the newest submission of the whole page in one query. The overrides were read only to compare
+    // them with it, and are not sent. shortcut: a page reads up to 100 override sets; the version check skips the comparison
+    // for a design saved since nothing, and a damaged set reads as empty here (it fails closed where it is written).
+    const latest = await latestForInstances(page.map((i) => i.id));
+    const instances = page.map(({ overrides, ...i }) => ({ ...i, review: reviewSummary(latest.get(i.id) ?? null, { version: i.version, name: i.name, overrides: readOverrides(overrides) ?? [] }) }));
     return reply.header("Cache-Control", "no-store").send({ instances, nextCursor });
   });
 
@@ -507,15 +489,22 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
     const { id } = req.params as { id: string };
     const row = await prisma.design.findFirst({
       where: YOURS(id, getWorkspaceId(req), getUser(req).id),
-      select: { id: true, name: true, version: true, createdAt: true, updatedAt: true, overrides: true, baseRevision: { select: { number: true, createdAt: true, document: true, manifest: true } } },
+      select: { id: true, name: true, version: true, createdAt: true, updatedAt: true, archivedAt: true, overrides: true, baseRevision: { select: { number: true, createdAt: true, document: true, manifest: true } } },
     });
     if (!row) return notFound(reply);
+    // The editor never gets an archived design; its history is read through /canvas/instances/:id/submissions.
+    if (row.archivedAt) return reply.status(ARCHIVED.status).send(ARCHIVED.body);
     const overrides = readOverrides(row.overrides);
     // The check constraint and the foreign key make both of these impossible; a row that has them is damaged, not missing.
     if (!row.baseRevision || !overrides) throw new Error(`Design ${id} is not a valid instance.`);
-    const { baseRevision, ...rest } = row;
+    const { baseRevision, archivedAt: _active, ...rest } = row;
+    const latest = await latestSubmission(prisma, id);
+    const review = reviewSummary(latest, { version: row.version, name: row.name, overrides });
+    // What was last submitted, so the editor can tell at once (as the person types, before anything is saved) whether there is
+    // more to submit. It is the person's own design: nothing here is the reviewer's or anyone else's.
+    const submitted = latest ? { name: latest.name, overrides: readOverrides(latest.overrides) ?? [] } : null;
     return reply.header("Cache-Control", "no-store").send({
-      instance: { ...rest, overrides, baseRevision: { number: baseRevision.number, createdAt: baseRevision.createdAt }, document: baseRevision.document, manifest: baseRevision.manifest },
+      instance: { ...rest, overrides, review, submitted, baseRevision: { number: baseRevision.number, createdAt: baseRevision.createdAt }, document: baseRevision.document, manifest: baseRevision.manifest },
     });
   });
 
@@ -534,9 +523,10 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
     // Revisions are immutable, so a cache keyed by revision id would be exactly right if saves ever show up in profiling.
     const row = await prisma.design.findFirst({
       where: YOURS(id, workspaceId, userId),
-      select: { version: true, name: true, overrides: true, baseRevision: { select: { document: true, manifest: true } } },
+      select: { version: true, name: true, overrides: true, archivedAt: true, baseRevision: { select: { document: true, manifest: true } } },
     });
     if (!row) return notFound(reply);
+    if (row.archivedAt) return reply.status(ARCHIVED.status).send(ARCHIVED.body); // frozen: the database refuses the update too (Design_archived_frozen)
     const stored = readOverrides(row.overrides);
     if (!row.baseRevision || !stored) throw new Error(`Design ${id} is not a valid instance.`);
 
@@ -562,21 +552,49 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
 
     // Only overrides, the name and the version are ever written; the pinned revision, the kind, the owner and the dates never are.
     const { count } = await prisma.design.updateMany({
-      where: { ...YOURS(id, workspaceId, userId), version },
+      where: { ...YOURS(id, workspaceId, userId), version, archivedAt: null }, // archived between the read and here: no row, not an edit
       data: { overrides: overridesJson(checked.fields), ...(name === undefined ? {} : { name }), version: { increment: 1 } },
     });
     if (count === 0) {
-      const exists = await prisma.design.findFirst({ where: YOURS(id, workspaceId, userId), select: { id: true } });
+      const exists = await prisma.design.findFirst({ where: YOURS(id, workspaceId, userId), select: { archivedAt: true } });
       if (!exists) return notFound(reply);
+      if (exists.archivedAt) return reply.status(ARCHIVED.status).send(ARCHIVED.body);
       return reply.status(409).send({ error: "This design was changed somewhere else.", code: "VERSION_CONFLICT" });
     }
     return reply.send({ version: version + 1 });
   });
 
-  app.delete("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")] }, async (req, reply) => {
+  // Deleting one of my designs. A design that was NEVER submitted is deleted for good. One that has at least one submission,
+  // pending or decided, is ARCHIVED instead: it can no longer be edited or submitted, and its submissions and reviews stay
+  // exactly as they were (the foreign key from DesignSubmission refuses the delete in the database too). ONE transaction that
+  // takes the instance's row lock first, the lock submit takes, so a submission cannot appear between the count and the delete.
+  // Asking again for an archived design answers the same: it is archived. 404 only for one that is not mine or is not there.
+  app.delete("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")], config: userLimit(30) }, async (req, reply) => {
+    const workspaceId = getWorkspaceId(req);
+    const userId = getUser(req).id;
     const { id } = req.params as { id: string };
-    const { count } = await prisma.design.deleteMany({ where: YOURS(id, getWorkspaceId(req), getUser(req).id) });
-    if (count === 0) return notFound(reply);
-    return reply.send({ ok: true }); // the images stay: there is no asset clean-up yet
+    const attempt = () =>
+      prisma.$transaction(async (tx) => {
+        const locked = await lockInstance(tx, id, workspaceId, userId);
+        if (!locked) return refuse(404, "Design not found");
+        if (locked.archivedAt) return { ok: true as const, archived: true as const };
+        if ((await tx.designSubmission.count({ where: { instanceId: id } })) === 0) {
+          await tx.design.deleteMany({ where: YOURS(id, workspaceId, userId) });
+          return { ok: true as const }; // the images stay: there is no asset clean-up yet
+        }
+        await tx.design.updateMany({ where: { ...YOURS(id, workspaceId, userId), archivedAt: null }, data: { archivedAt: new Date() } });
+        return { ok: true as const, archived: true as const };
+      });
+    let outcome;
+    try {
+      outcome = await attempt();
+    } catch (err) {
+      if (errorCode(err) !== "P2003") throw err;
+      outcome = await attempt(); // the foreign key refused the delete: a submission exists after all, so this time it archives
+    }
+    if (isRefusal(outcome)) return reply.status(outcome.status).send(outcome.body);
+    return reply.send(outcome);
   });
+
+  await canvasReviewRoutes(app);
 }

@@ -74,7 +74,7 @@ interface Images {
 
 const isDocument = (d: unknown): d is CanvasDocument => typeof d === "object" && d !== null && (d as CanvasDocument).schemaVersion === 1 && Array.isArray((d as CanvasDocument).nodes);
 
-const assetIdsOf = (doc: CanvasDocument): string[] => [...new Set(doc.nodes.flatMap((n) => (n.type === "image" ? [n.assetId] : [])))];
+export const assetIdsOf = (doc: CanvasDocument): string[] => [...new Set(doc.nodes.flatMap((n) => (n.type === "image" ? [n.assetId] : [])))];
 
 /** Never rejects: each image ends as loaded, missing (it will not come back) or failed (it may, on a retry). */
 async function loadImages(ids: string[]): Promise<Images> {

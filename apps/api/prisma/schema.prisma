@@ -97,6 +97,8 @@ model Workspace {
   accountGroups    AccountGroup[]
   designAssets     DesignAsset[]
   designs          Design[]
+  designSubmissions    DesignSubmission[]
+  designReviewRequests DesignReviewRequest[]
 
   // Back-ref for users whose activeWorkspace points here
   activeForUsers User[] @relation("UserActiveWorkspace")
@@ -477,10 +479,14 @@ model Design {
   baseRevision    DesignRevision? @relation("InstanceBase", fields: [baseRevisionId], references: [id], onDelete: NoAction)
   version         Int       @default(1)
   createdByUserId String? // no FK: deleting a user must not delete workspace designs. An instance belongs to this user alone
+  // Phase 6, instances only: set when the person archives a design that has been submitted for review (a submitted
+  // design is never hard-deleted). Once set the row never changes again (trigger Design_archived_frozen).
+  archivedAt      DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   revisions       DesignRevision[] @relation("DesignRevisions")
   template        Template?
+  submissions     DesignSubmission[] @relation("InstanceSubmissions") // NO ACTION on that side: an instance with a submission cannot be deleted
 
   @@index([workspaceId, kind, updatedAt])
   // "My designs": createdAt (never updatedAt, which every autosave changes) then id, the exact order of the keyset
@@ -499,6 +505,7 @@ model DesignRevision {
   designId        String
   design          Design   @relation("DesignRevisions", fields: [designId], references: [id], onDelete: Cascade)
   instances       Design[] @relation("InstanceBase") // the Marketing designs made from this exact revision (phase 5)
+  submissions     DesignSubmission[] @relation("SubmissionBase") // review snapshots made from it (phase 6)
   number          Int // 1, 2, 3 ... per design
   designVersion   Int // the Design.version it was published from: one revision per working version
   document        Json
@@ -508,6 +515,57 @@ model DesignRevision {
 
   @@unique([designId, number])
   @@unique([designId, designVersion])
+}
+
+// What one Marketing person submitted for review (phase 6). INSERT ONLY: triggers refuse any UPDATE and a direct DELETE (only
+// the cascade from deleting a Workspace removes a row). `document` is the design as the SERVER composed it from the pinned
+// revision and the overrides (never anything the client sent); `overrides` and `name` are what the review compares against.
+// `instanceId` is NO ACTION: an instance with a submission can never be hard-deleted (it is archived instead), and so can
+// the revision, through `baseRevisionId`. NEVER make either one CASCADE: a cascade runs at trigger depth 2, which the
+// DELETE trigger allows, so it would quietly erase review history. User ids carry no foreign key (a SetNull would update
+// an immutable row and break account deletion); the name is read from User when needed.
+model DesignSubmission {
+  id                String         @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instanceId        String
+  instance          Design         @relation("InstanceSubmissions", fields: [instanceId], references: [id], onDelete: NoAction)
+  number            Int // 1, 2, 3 ... per instance
+  instanceVersion   Int // the Design.version it was submitted from
+  name              String
+  note              String? // optional, up to 500 characters
+  baseRevisionId    String
+  baseRevision      DesignRevision @relation("SubmissionBase", fields: [baseRevisionId], references: [id], onDelete: NoAction)
+  overrides         Json // { schemaVersion: 1, fields: [...] }, as the instance held them
+  document          Json // the composed document
+  submittedByUserId String // no FK
+  createdAt         DateTime       @default(now())
+  review            DesignReviewRequest?
+
+  @@unique([instanceId, number])
+  @@unique([instanceId, instanceVersion])
+  @@index([baseRevisionId])
+  @@index([workspaceId])
+}
+
+// The designer's answer to one submission (phase 6). It leaves "pending" exactly once, to approved, changes_requested or
+// superseded (a newer submission replaced it), and never changes again (trigger). `pendingInstanceId` is set only while
+// pending and is unique, so an instance has at most one pending review without a partial index (Prisma drops those); it has
+// no foreign key on purpose (the submission's own foreign key already protects the instance).
+model DesignReviewRequest {
+  id                String           @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  submissionId      String           @unique
+  submission        DesignSubmission @relation(fields: [submissionId], references: [id], onDelete: NoAction)
+  status            String // pending | approved | changes_requested | superseded
+  pendingInstanceId String?          @unique
+  comment           String? // up to 2000 characters; required for changes_requested
+  decidedByUserId   String? // no FK
+  decidedAt         DateTime?
+  createdAt         DateTime         @default(now())
+
+  @@index([workspaceId, status, createdAt, id])
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.

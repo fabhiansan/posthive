@@ -12,6 +12,7 @@ import { ExportMenu } from "./ExportMenu";
 import { Inspector } from "./Inspector";
 import { LayersPanel } from "./LayersPanel";
 import { PublishAction } from "./PublishAction";
+import { ReviewIndicator } from "./ReviewIndicator";
 import { needsBanner, SaveBanner, SaveStatus } from "./SaveStatus";
 import { Toolbar } from "./Toolbar";
 import { useAutosave } from "./useAutosave";
@@ -243,6 +244,7 @@ export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?
         }
         actions={
           <>
+            {design && <ReviewIndicator beforeLeave={beforeLeave} />}
             {design && (
               <PublishAction
                 designId={design.id}

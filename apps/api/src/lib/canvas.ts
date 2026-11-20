@@ -46,7 +46,7 @@ export const LIMITS = {
 // check the database would fail the save with a 500.
 const UNSTORABLE = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
-const storable = (s: string) => !UNSTORABLE.test(s);
+export const storable = (s: string) => !UNSTORABLE.test(s);
 
 const number = ({ min, max }: { min: number; max: number }) => z.number().finite().min(min).max(max);
 const identifier = z.string().regex(LIMITS.id, "Must be letters, digits, - or _ (1 to 64).");
@@ -285,7 +285,7 @@ export const sameOverrides = (a: readonly OverrideEntry[], b: readonly OverrideE
 
 // What a revision must hold for an override to be checked against it. A revision that does not match is corrupt (it was
 // valid when published, and is immutable), so the write is refused: it fails closed instead of guessing.
-const manifestSchema = z
+export const manifestSchema = z
   .object({ schemaVersion: z.literal(1), fields: z.array(z.object({ nodeId: identifier, kind: z.enum(["text", "image"]) }).strict()).max(LIMITS.nodes) })
   .strict();
 

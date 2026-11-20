@@ -4,6 +4,7 @@ import type { KonvaEventObject } from "konva/lib/Node";
 import { Ellipse, Image as KonvaImage, Layer, Rect, Stage, Text, Transformer } from "react-konva";
 import { clamp, containCrop, coverCrop, foldScale, limitPatch, MAX_ZOOM, MIN_ZOOM, round2, type CanvasDocument, type CanvasNode, type NodePatch } from "./document";
 import { exportStage, type ExportOptions } from "./exportImage";
+import { handleRules, layerRules, type StageMode } from "./stageMode";
 
 export interface CanvasStageHandle {
   zoomBy(factor: number): void;
@@ -18,8 +19,10 @@ export interface CanvasStageProps {
    * "designer" (the default) edits everything. "marketing" is for a design made from a published template: nothing can be
    * dragged, resized or rotated, and only the layers in `selectable` react to the pointer; a click anywhere else, on a
    * locked layer included, goes through to the artboard and clears the selection. The server enforces the same rule.
+   * "readonly" shows a submitted design: nothing reacts to the pointer (no selection, no handles); zoom and pan still work.
+   * What each mode allows is in stageMode.ts.
    */
-  mode?: "designer" | "marketing";
+  mode?: StageMode;
   /** The layer ids Marketing may select (the revision's manifest). Used only in "marketing" mode. */
   selectable?: ReadonlySet<string>;
   selectedId: string | null;
@@ -53,7 +56,7 @@ const SELECTION = "#876114";
 const isTextField = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
 export function CanvasStage({ doc, mode = "designer", selectable, selectedId, images, fonts, onSelect, onChange, onEditText, onZoomChange, className, ref }: CanvasStageProps) {
-  const marketing = mode === "marketing";
+  const { handles, outline } = handleRules(mode);
   const host = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const shadowLayer = useRef<Konva.Layer>(null);
@@ -121,7 +124,8 @@ export function CanvasStage({ doc, mode = "designer", selectable, selectedId, im
 
   useEffect(() => onZoomChange?.(view.scale), [view.scale, onZoomChange]);
 
-  const selected = doc.nodes.find((n) => n.id === selectedId);
+  // A read-only stage has no selection, whatever the host passes: nothing is outlined.
+  const selected = outline ? doc.nodes.find((n) => n.id === selectedId) : undefined;
   // The Transformer follows the selected Konva node. It is re-attached after every document change
   // because the node it holds may have been redrawn.
   useEffect(() => {
@@ -163,9 +167,10 @@ export function CanvasStage({ doc, mode = "designer", selectable, selectedId, im
     rotation: n.rotation,
     opacity: n.opacity,
     visible: n.visible,
-    draggable: !panning && !marketing,
     // Marketing: a locked layer does not listen, so a click passes through it to a field beneath, or to the artboard.
-    listening: !marketing || (selectable?.has(n.id) ?? false),
+    // Read-only: no layer listens. (stageMode.ts)
+    draggable: !panning && layerRules(mode, selectable, n.id).draggable,
+    listening: layerRules(mode, selectable, n.id).listening,
     perfectDrawEnabled: false,
     onMouseDown: pick(n.id),
     onTouchStart: pick(n.id),
@@ -226,8 +231,8 @@ export function CanvasStage({ doc, mode = "designer", selectable, selectedId, im
             align={n.align}
             lineHeight={n.lineHeight}
             letterSpacing={n.letterSpacing}
-            onDblClick={() => onEditText?.(n.id)}
-            onDblTap={() => onEditText?.(n.id)}
+            onDblClick={mode === "readonly" ? undefined : () => onEditText?.(n.id)}
+            onDblTap={mode === "readonly" ? undefined : () => onEditText?.(n.id)}
           />
         );
       case "image": {
@@ -282,9 +287,9 @@ export function CanvasStage({ doc, mode = "designer", selectable, selectedId, im
               ref={transformer}
               flipEnabled={false}
               keepRatio={keepRatio}
-              enabledAnchors={marketing ? [] : selected?.type === "text" ? TEXT_ANCHORS : ALL_ANCHORS}
-              rotateEnabled={!marketing}
-              resizeEnabled={!marketing}
+              enabledAnchors={!handles ? [] : selected?.type === "text" ? TEXT_ANCHORS : ALL_ANCHORS}
+              rotateEnabled={handles}
+              resizeEnabled={handles}
               rotationSnaps={[0, 90, 180, 270]}
               rotationSnapTolerance={4}
               anchorSize={9}

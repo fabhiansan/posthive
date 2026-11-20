@@ -5,13 +5,14 @@ import type { CanvasDocument, CanvasStageHandle, ExportOptions, History, Overrid
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import type { Saved } from "@/lib/autosave";
-import { editorFonts, getInstance, loadAsset, saveInstance, uploadCanvasAsset, type InstanceDetail } from "@/lib/canvas";
+import { editorFonts, getInstance, liveReview, loadAsset, saveInstance, uploadCanvasAsset, type InstanceDetail } from "@/lib/canvas";
 import type { CanvasEngine, LoadedImages } from "./useCanvasBootstrap";
 import { download, isTyping, slugOf } from "./CanvasEditor";
 import { CanvasShell } from "./CanvasShell";
 import { ExportMenu } from "./ExportMenu";
 import { FieldInspector, type FieldView } from "./FieldInspector";
 import { FieldsPanel, type FieldRow } from "./FieldsPanel";
+import { ReviewAction } from "./ReviewAction";
 import { needsBanner, SaveBanner, SaveStatus } from "./SaveStatus";
 import { Toolbar } from "./Toolbar";
 import { useAutosave } from "./useAutosave";
@@ -29,7 +30,7 @@ type Overrides = readonly OverrideEntry[];
  * (key it by id). The Konva engine comes in as a prop because it loads in the browser only.
  */
 export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; instance: InstanceDetail & LoadedImages }) {
-  const { CanvasStage, applyOverrides, setOverride, clearOverride, nodeById, textRoom, cleanName, createHistory, commit, seal, undo, redo, canUndo, canRedo, ExportError, LIMITS } = engine;
+  const { CanvasStage, applyOverrides, setOverride, clearOverride, sameOverrides, nodeById, textRoom, cleanName, createHistory, commit, seal, undo, redo, canUndo, canRedo, ExportError, LIMITS } = engine;
   const toast = useToast();
 
   const base: CanvasDocument = instance.document;
@@ -77,6 +78,12 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
     },
     onReload,
   });
+
+  // The review facts as they are now: the newest answer is the server's, and "unsubmitted changes" follows what is on screen.
+  const review = useMemo(
+    () => liveReview(instance.review, instance.submitted, { name, overrides }, sameOverrides),
+    [instance.review, instance.submitted, name, overrides, sameOverrides],
+  );
 
   /** "Back to the dashboard": save first; if that cannot be done, ask before throwing the changes away. */
   const beforeLeave = async () => {
@@ -215,6 +222,7 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
         actions={
           <>
             <span className="hidden type-body-r-xs text-muted xl:inline">Based on revision {instance.baseRevision.number}</span>
+            <ReviewAction designId={instance.id} review={review} flush={autosave.flush} />
             <ExportMenu width={effective.width} height={effective.height} busy={exporting} onExport={onExport} />
           </>
         }

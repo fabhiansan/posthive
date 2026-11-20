@@ -380,6 +380,131 @@ describe("Marketing's designs: instances (phase 5)", () => {
   });
 });
 
+describe("design review (phase 6)", () => {
+  const last = () => fetchMock.mock.calls.at(-1) as [string, RequestInit];
+  const body = () => JSON.parse(last()[1].body as string) as Record<string, unknown>;
+
+  it("submitting names the saved version and, only when there is one, the note: never a document, overrides or revision", async () => {
+    fetchMock.mockImplementation(async () => json({ submission: { id: "s1", number: 1, createdAt: "x" }, review: { id: "r1", status: "pending" } }, 201));
+    const { submitInstance } = await import("./canvas");
+    await submitInstance("i1", 3);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/i1/submit");
+    expect(last()[1]).toMatchObject({ method: "POST", credentials: "include" });
+    expect(last()[1].headers).toMatchObject({ "Content-Type": "application/json" }); // the API refuses anything but JSON
+    expect(body()).toEqual({ version: 3 });
+    await submitInstance("i1", 3, "For the launch");
+    expect(body()).toEqual({ version: 3, note: "For the launch" });
+    await submitInstance("i1", 3, ""); // an empty note is no note
+    expect(body()).toEqual({ version: 3 });
+  });
+
+  it("the design's id is encoded, so it cannot change the path", async () => {
+    fetchMock.mockImplementation(async () => json({ submissions: [], nextCursor: null }));
+    const { listSubmissions, getSubmission, submitInstance } = await import("./canvas");
+    await listSubmissions("a/b?c");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/a%2Fb%3Fc/submissions");
+    await listSubmissions("i1", "2");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/i1/submissions?cursor=2");
+    await getSubmission("i1", 4);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/i1/submissions/4");
+    await submitInstance("a/b", 1).catch(() => {});
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances/a%2Fb/submit");
+  });
+
+  it("the archived list is asked for with archived=1, next to a cursor, and active is the default", async () => {
+    fetchMock.mockImplementation(async () => json({ instances: [], nextCursor: null }));
+    const { listInstances } = await import("./canvas");
+    await listInstances(null, undefined, true);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances?archived=1");
+    await listInstances("c1", undefined, true);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances?cursor=c1&archived=1");
+    await listInstances("c1", undefined, false);
+    expect(last()[0]).toBe("http://localhost:3001/canvas/instances?cursor=c1");
+  });
+
+  it("the design team's calls: the summary, a queue view with its cursor, one review, and a decision with an optional comment", async () => {
+    fetchMock.mockImplementation(async () => json({ reviews: [], nextCursor: null, pending: 0, latestSubmittedAt: null, ok: true }));
+    const { reviewSummaryCount, listReviews, getReview, decideReview } = await import("./canvas");
+    await reviewSummaryCount();
+    expect(last()[0]).toBe("http://localhost:3001/canvas/reviews/summary");
+    await listReviews("pending");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/reviews?status=pending");
+    await listReviews("decided", "abc_1");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/reviews?status=decided&cursor=abc_1");
+    await getReview("r/1");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/reviews/r%2F1");
+    await decideReview("r1", "approve");
+    expect(last()[0]).toBe("http://localhost:3001/canvas/reviews/r1/decision");
+    expect(last()[1]).toMatchObject({ method: "POST", credentials: "include" });
+    expect(body()).toEqual({ decision: "approve" });
+    await decideReview("r1", "request_changes", "Shorter");
+    expect(body()).toEqual({ decision: "request_changes", comment: "Shorter" });
+  });
+
+  it("archiving answers with archived: true, and a plain delete without it", async () => {
+    const { deleteInstance } = await import("./canvas");
+    fetchMock.mockImplementation(async () => json({ ok: true, archived: true }));
+    expect(await deleteInstance("i1")).toEqual({ ok: true, archived: true });
+    fetchMock.mockImplementation(async () => json({ ok: true }));
+    expect((await deleteInstance("i1")).archived).toBeUndefined();
+  });
+
+  it.each(["NO_CHANGES", "NO_REVIEWER", "VERSION_CONFLICT", "UNKNOWN_ASSET", "NOT_PENDING", "DESIGN_ARCHIVED"])("a refusal with the code %s reaches the page with its status and code", async (code) => {
+    fetchMock.mockImplementation(async () => json({ error: `refused: ${code}`, code }, code === "DESIGN_ARCHIVED" ? 404 : 409));
+    const { submitInstance, decideReview } = await import("./canvas");
+    for (const call of [() => submitInstance("i", 1), () => decideReview("r", "approve")]) {
+      expect(await call().catch((e: unknown) => e)).toMatchObject({ message: `refused: ${code}`, data: { code } });
+    }
+  });
+});
+
+describe("liveReview and canSubmitReview", () => {
+  const base = (over: Partial<import("./canvas").ReviewSummary> = {}): import("./canvas").ReviewSummary => ({
+    latestReviewStatus: "approved", hasChangesSinceSubmitted: false, submissionNumber: 1, submittedVersion: 2, workingVersion: 2, submittedAt: "x", latestReviewId: "r1", comment: null, decidedAt: "y", ...over,
+  });
+  const head = (text: string) => ({ nodeId: "head", text });
+  // the engine's own comparison, as the editor passes it
+  const same = (a: readonly { nodeId: string }[], b: readonly { nodeId: string }[]) => JSON.stringify(a) === JSON.stringify(b);
+
+  it("nothing submitted: the server's facts, untouched (no changes to report)", async () => {
+    const { liveReview } = await import("./canvas");
+    const r = base({ latestReviewStatus: null, submissionNumber: null });
+    expect(liveReview(r, null, { name: "N", overrides: [head("x")] }, same)).toBe(r);
+  });
+
+  it("an edit sets the changes flag and NEVER touches the answer; reverting clears the flag; a rename counts", async () => {
+    const { liveReview } = await import("./canvas");
+    const submitted = { name: "N", overrides: [head("A")] };
+    for (const status of ["pending", "approved", "changes_requested"] as const) {
+      const r = base({ latestReviewStatus: status });
+      expect(liveReview(r, submitted, { name: "N", overrides: [head("A")] }, same)).toMatchObject({ latestReviewStatus: status, hasChangesSinceSubmitted: false });
+      expect(liveReview(r, submitted, { name: "N", overrides: [head("B")] }, same)).toMatchObject({ latestReviewStatus: status, hasChangesSinceSubmitted: true });
+      expect(liveReview(r, submitted, { name: "Renamed", overrides: [head("A")] }, same)).toMatchObject({ latestReviewStatus: status, hasChangesSinceSubmitted: true });
+    }
+    // A, then B, then A again (typed locally, before any save): back to no changes
+    const r = base();
+    expect(liveReview(r, submitted, { name: "N", overrides: [head("B")] }, same).hasChangesSinceSubmitted).toBe(true);
+    expect(liveReview(r, submitted, { name: "N", overrides: [head("A")] }, same).hasChangesSinceSubmitted).toBe(false);
+  });
+
+  it("does not change what it was given", async () => {
+    const { liveReview } = await import("./canvas");
+    const r = base();
+    const before = JSON.stringify(r);
+    liveReview(r, { name: "N", overrides: [] }, { name: "X", overrides: [head("A")] }, same);
+    expect(JSON.stringify(r)).toBe(before);
+  });
+
+  it("can submit when nothing was submitted, or when there are changes; not otherwise (the same rule as the API's)", async () => {
+    const { canSubmitReview } = await import("./canvas");
+    expect(canSubmitReview({ latestReviewStatus: null, hasChangesSinceSubmitted: false })).toBe(true);
+    for (const s of ["pending", "approved", "changes_requested"] as const) {
+      expect(canSubmitReview({ latestReviewStatus: s, hasChangesSinceSubmitted: false }), s).toBe(false);
+      expect(canSubmitReview({ latestReviewStatus: s, hasChangesSinceSubmitted: true }), s).toBe(true);
+    }
+  });
+});
+
 describe("which images a Marketing design draws (instanceSource.imageIds)", () => {
   const image = (id: string, assetId: string) => ({ id, type: "image", assetId });
   const record = (nodes: unknown[], overrides: unknown[]) => ({ document: { nodes }, overrides }) as never;

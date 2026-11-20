@@ -1,17 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowLeftIcon, CircleAlertIcon, LayoutTemplateIcon, PaletteIcon, Trash2Icon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, CircleAlertIcon, HistoryIcon, LayoutTemplateIcon, PaletteIcon, Trash2Icon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Spinner } from "@/components/Spinner";
 import { useToast } from "@/components/Toast";
 import { CustomizeButton } from "@/components/templates/CustomizeButton";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { deleteInstance, listInstances, type InstanceSummary } from "@/lib/canvas";
+import { deleteInstance, formatWhen as when, listInstances, type InstanceSummary } from "@/lib/canvas";
 import { useTemplates } from "@/lib/useTemplates";
 import { useBootNone } from "./CanvasBoot";
+import { ReviewChips, ReviewComment } from "./ReviewChips";
 
 type Listing =
   | { status: "loading" }
@@ -19,7 +20,8 @@ type Listing =
   // `next` is the cursor of the page after the ones shown (null: that was the last page); `more` is the state of "Load more".
   | { status: "ready"; items: InstanceSummary[]; next: string | null; more: "idle" | "loading" | "error" };
 
-const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+/** A design that was submitted at least once is never deleted for good: removing it archives it. */
+export const hasSubmissions = (d: Pick<InstanceSummary, "review">): boolean => d.review.submissionNumber !== null;
 
 /**
  * Marketing's Canvas home: the templates the design team has published in Canvas (customize one), and the person's own
@@ -32,6 +34,7 @@ export function MarketingHome() {
   const [listing, setListing] = useState<Listing>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [doomed, setDoomed] = useState<InstanceSummary | null>(null);
+  const [archivedVersion, setArchivedVersion] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -62,16 +65,20 @@ export function MarketingHome() {
   }, [listing]);
 
   async function remove(design: InstanceSummary) {
+    let archived = false;
     try {
-      await deleteInstance(design.id);
+      archived = (await deleteInstance(design.id)).archived === true;
     } catch (err) {
       if ((err as { status?: number }).status !== 404) {
-        toast.error(err instanceof Error ? err.message : "The design could not be deleted.");
+        toast.error(err instanceof Error ? err.message : hasSubmissions(design) ? "The design could not be archived." : "The design could not be deleted.");
         throw err; // keeps the dialog open for another try
       }
       // 404: it was already gone. The list should say so too.
     }
+    // The server decides: a design submitted from another tab since this list loaded is archived even if the button said Delete.
+    if (archived && !hasSubmissions(design)) toast.success("This design had been submitted, so it was archived instead of deleted.");
     setListing((l) => (l.status === "ready" ? { ...l, items: l.items.filter((d) => d.id !== design.id) } : l));
+    setArchivedVersion((n) => n + 1); // the Archived section (if open) reads the list again
   }
 
   // Published, and made in Canvas. (A Figma-only template has nothing to customize here.)
@@ -185,10 +192,25 @@ export function MarketingHome() {
                         <p className="type-body-r-xs text-muted">
                           Revision {d.baseRevision.number} · Created {when(d.createdAt)} · Edited {when(d.updatedAt)}
                         </p>
+                        <ReviewChips review={d.review} />
+                        <ReviewComment review={d.review} />
                       </Link>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Delete ${d.name}`} onClick={() => setDoomed(d)}>
-                        <Trash2Icon />
-                      </Button>
+                      {hasSubmissions(d) && (
+                        <Button asChild variant="ghost" size="icon-sm">
+                          <Link href={`/canvas/${d.id}?view=history`} aria-label={`Submission history of ${d.name}`}>
+                            <HistoryIcon />
+                          </Link>
+                        </Button>
+                      )}
+                      {hasSubmissions(d) ? (
+                        <Button variant="ghost" size="icon-sm" aria-label={`Archive ${d.name}`} onClick={() => setDoomed(d)}>
+                          <ArchiveIcon />
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="icon-sm" aria-label={`Delete ${d.name}`} onClick={() => setDoomed(d)}>
+                          <Trash2Icon />
+                        </Button>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -204,18 +226,110 @@ export function MarketingHome() {
               </>
             )}
           </section>
+
+          <ArchivedSection reload={archivedVersion} />
         </div>
       </main>
 
       <ConfirmDialog
         open={doomed !== null}
         onOpenChange={(open) => !open && setDoomed(null)}
-        title="Delete this design?"
-        description={doomed ? `“${doomed.name}” and your changes to it will be deleted. The template it was made from is not affected. This cannot be undone.` : undefined}
-        confirmLabel="Delete design"
-        pendingLabel="Deleting…"
+        title={doomed && hasSubmissions(doomed) ? "Archive this design?" : "Delete this design?"}
+        description={
+          doomed
+            ? hasSubmissions(doomed)
+              ? `“${doomed.name}” was submitted for review. Archiving it means you can no longer edit it, submit it again or restore it. The design team keeps what you submitted, and the history stays available to you. The template it was made from is not affected.`
+              : `“${doomed.name}” and your changes to it will be deleted. The template it was made from is not affected. This cannot be undone.`
+            : undefined
+        }
+        confirmLabel={doomed && hasSubmissions(doomed) ? "Archive design" : "Delete design"}
+        pendingLabel={doomed && hasSubmissions(doomed) ? "Archiving…" : "Deleting…"}
         onConfirm={() => (doomed ? remove(doomed) : undefined)}
       />
     </div>
+  );
+}
+
+type ArchivedListing = { status: "closed" } | { status: "loading" } | { status: "error" } | { status: "ready"; items: InstanceSummary[]; next: string | null; more: "idle" | "loading" | "error" };
+
+/**
+ * Designs the person archived: collapsed until asked for, read-only (their history stays readable; nothing can be edited,
+ * submitted or restored). `reload` changes when a design was just archived, so an open section reads the list again.
+ */
+function ArchivedSection({ reload }: { reload: number }) {
+  const [listing, setListing] = useState<ArchivedListing>({ status: "closed" });
+  const open = listing.status !== "closed";
+  const generation = useRef(0); // which load the list on screen belongs to: a late "Load more" from an older one is dropped
+
+  useEffect(() => {
+    if (listing.status === "closed") return;
+    let live = true;
+    generation.current++;
+    listInstances(null, undefined, true).then(
+      ({ instances, nextCursor }) => live && setListing({ status: "ready", items: instances, next: nextCursor, more: "idle" }),
+      () => live && setListing({ status: "error" }),
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on open and when a design was just archived, not on every state change
+  }, [open, reload]);
+
+  async function more() {
+    if (listing.status !== "ready" || !listing.next || listing.more === "loading") return;
+    const cursor = listing.next;
+    const mine = generation.current;
+    setListing({ ...listing, more: "loading" });
+    try {
+      const page = await listInstances(cursor, undefined, true);
+      if (mine !== generation.current) return; // the section was closed, reopened or read again meanwhile
+      setListing((l) => {
+        if (l.status !== "ready") return l;
+        const shown = new Set(l.items.map((i) => i.id));
+        return { status: "ready", items: [...l.items, ...page.instances.filter((i) => !shown.has(i.id))], next: page.nextCursor, more: "idle" };
+      });
+    } catch {
+      if (mine === generation.current) setListing((l) => (l.status === "ready" ? { ...l, more: "error" } : l));
+    }
+  }
+
+  return (
+    <section aria-labelledby="archived-heading" className="flex flex-col gap-3">
+      <h2 id="archived-heading" className="type-body-sb-m text-fg">
+        <button type="button" aria-expanded={open} onClick={() => setListing((l) => (l.status === "closed" ? { status: "loading" } : { status: "closed" }))} className="flex cursor-pointer items-center gap-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+          <ArchiveIcon aria-hidden className="size-4 text-muted" /> Archived designs
+        </button>
+      </h2>
+      {listing.status === "loading" && (
+        <p className="flex items-center gap-2 type-body-r-s text-muted">
+          <Spinner label="Loading archived designs" className="text-brand-800" /> Loading
+        </p>
+      )}
+      {listing.status === "error" && <p className="type-body-r-s text-red-600">Archived designs didn&apos;t load. Close this section and open it again to retry.</p>}
+      {listing.status === "ready" && listing.items.length === 0 && <p className="type-body-r-s text-muted">You have not archived any design.</p>}
+      {listing.status === "ready" && listing.items.length > 0 && (
+        <>
+          <ul className="flex flex-col gap-2">
+            {listing.items.map((d) => (
+              <li key={d.id} className="card flex items-center gap-2 p-2">
+                <Link href={`/canvas/${d.id}?view=history`} className="min-w-0 flex-1 rounded-lg px-2 py-1 outline-none hover:bg-neutral-100 focus-visible:ring-2 focus-visible:ring-ring/40">
+                  <p className="truncate type-body-sb-m text-fg">{d.name}</p>
+                  <p className="type-body-r-xs text-muted">Archived · {d.archivedAt ? when(d.archivedAt) : ""} · See what you submitted</p>
+                  <ReviewChips review={d.review} archived />
+                </Link>
+              </li>
+            ))}
+          </ul>
+          {listing.next && (
+            <div className="flex flex-col items-center gap-2">
+              {listing.more === "error" && <p className="type-body-r-xs text-red-600">More could not be loaded.</p>}
+              <Button variant="secondary" disabled={listing.more === "loading"} onClick={() => void more()}>
+                {listing.more === "error" ? "Try again" : "Load more"}
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }

@@ -62,7 +62,7 @@ export function SaveStatus({ info, onRetry }: { info: AutosaveInfo; onRetry(): v
         </>
       );
       break;
-    default: // conflict, deleted, forbidden: the banner says why
+    default: // conflict, deleted, archived, forbidden: the banner says why
       body = (
         <>
           <CircleAlertIcon className="size-3.5 shrink-0 text-red-600" /> <Words className="text-red-600">Not saved</Words>
@@ -77,7 +77,7 @@ export function SaveStatus({ info, onRetry }: { info: AutosaveInfo; onRetry(): v
 }
 
 /** The states where saving has stopped and the person must be told why (and given the way out). */
-export const needsBanner = (state: AutosaveInfo["state"]): boolean => state === "conflict" || state === "deleted" || state === "forbidden" || state === "session";
+export const needsBanner = (state: AutosaveInfo["state"]): boolean => state === "conflict" || state === "deleted" || state === "archived" || state === "forbidden" || state === "session";
 
 /** What the person must know when saving has stopped for good: a notice under the top bar, with the way out. */
 export function SaveBanner({ state, onReload, onRetry }: { state: AutosaveInfo["state"]; onReload(): void; onRetry(): void }) {
@@ -102,6 +102,20 @@ export function SaveBanner({ state, onReload, onRetry }: { state: AutosaveInfo["
         <AlertTitle>{state === "deleted" ? "This design was deleted" : "You can't save designs here"}</AlertTitle>
         <AlertDescription>
           <p>{state === "deleted" ? "It no longer exists, so your latest changes cannot be saved. You can still export it." : "Designs are managed by the design team."}</p>
+          <Button asChild size="sm" variant="secondary">
+            <Link href="/canvas">Back to Canvas</Link>
+          </Button>
+        </AlertDescription>
+      </Alert>
+    );
+  }
+  if (state === "archived") {
+    return (
+      <Alert variant="warning">
+        <TriangleAlertIcon />
+        <AlertTitle>This design was archived</AlertTitle>
+        <AlertDescription>
+          <p>It can no longer be edited or submitted, so your latest changes cannot be saved. You can still export it. What you submitted and the answers stay in its history.</p>
           <Button asChild size="sm" variant="secondary">
             <Link href="/canvas">Back to Canvas</Link>
           </Button>

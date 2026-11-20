@@ -496,6 +496,41 @@ describe("failures", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  // Phase 6: a 404 is "deleted" unless the server says DESIGN_ARCHIVED (the design is there, but frozen: its answer is a 404 with a code).
+  it("a 404 with the code DESIGN_ARCHIVED stops autosave as archived, not deleted, and says so in words", async () => {
+    const { a, save, requests } = setup();
+    a.update(doc(1), "A");
+    await vi.advanceTimersByTimeAsync(1500);
+    requests[0].fail(Object.assign(new Error("archived"), { status: 404, data: { error: "This design was archived", code: "DESIGN_ARCHIVED" } }));
+    await settle();
+    expect(a.info).toMatchObject({ state: "archived", dirty: true, message: "This design was archived." });
+    a.update(doc(2), "A");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(save).toHaveBeenCalledTimes(1); // frozen: nothing more is sent
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("any other 404 body, or none, is still 'deleted'", async () => {
+    for (const data of [undefined, {}, { code: "SOMETHING_ELSE" }, { error: "Design not found" }]) {
+      const { a, requests } = setup();
+      a.update(doc(1), "A");
+      await vi.advanceTimersByTimeAsync(1500);
+      requests[0].fail(Object.assign(new Error("gone"), { status: 404, data }));
+      await settle();
+      expect(a.info.state, JSON.stringify(data)).toBe("deleted");
+    }
+  });
+
+  it("a 404 DESIGN_ARCHIVED in the drain (the editor already left) is reported as archived", async () => {
+    const { a, requests, abandoned } = setup();
+    a.update(doc(1), "A");
+    a.dispose();
+    requests[0].fail(Object.assign(new Error("archived"), { status: 404, data: { code: "DESIGN_ARCHIVED" } }));
+    await settle();
+    expect(abandoned).toHaveLength(1);
+    expect(abandoned[0]).toMatchObject({ reason: "archived", snapshot: { doc: doc(1), name: "A" } });
+  });
+
   it("after a 401 the person can retry once signed in again", async () => {
     const { a, save, requests } = setup();
     a.update(doc(1), "A");

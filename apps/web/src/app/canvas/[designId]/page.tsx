@@ -1,14 +1,16 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import { FileQuestionIcon, LockIcon } from "lucide-react";
 import { useBootNone } from "@/components/canvas/CanvasBoot";
 import { CanvasEditor } from "@/components/canvas/CanvasEditor";
 import { CanvasGate } from "@/components/canvas/CanvasGate";
 import { CanvasFailure, CanvasMessage, CanvasWaiting } from "@/components/canvas/CanvasMessage";
 import { InstanceEditor } from "@/components/canvas/InstanceEditor";
+import { SubmissionHistory } from "@/components/canvas/SubmissionHistory";
 import { instanceSource, useCanvasBootstrap, useOpenedDesign } from "@/components/canvas/useCanvasBootstrap";
-import type { InstanceDetail } from "@/lib/canvas";
+import { listSubmissions, type InstanceDetail } from "@/lib/canvas";
 import { usePermissions } from "@/lib/usePermissions";
 
 // One saved design, opened for editing. The address is the design's id, and what it opens depends on who is asking: the design
@@ -46,9 +48,47 @@ function DesignScreen({ designId }: { designId: string }) {
   return <CanvasEditor engine={engine} design={design} />;
 }
 
+// ?view=history opens what the person submitted for this design (it works for an archived design too); anything else opens the editor.
 function InstanceScreen({ designId }: { designId: string }) {
+  const history = useSearchParams().get("view") === "history";
+  return history ? <SubmissionHistory designId={designId} /> : <InstanceEditorScreen designId={designId} />;
+}
+
+/**
+ * The editor answered 404. That is "doesn't exist" for another person's design, a template's design or one that was deleted,
+ * and "archived" for one of mine that was submitted (it is frozen, not gone): the way to tell is that it has a history.
+ */
+function ArchivedOrGone({ designId }: { designId: string }) {
+  const [kind, setKind] = useState<"checking" | "archived" | "gone" | "failed">("checking");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let live = true;
+    listSubmissions(designId).then(
+      () => live && setKind("archived"),
+      (err: unknown) => live && setKind((err as { status?: number } | null)?.status === 404 ? "gone" : "failed"),
+    );
+    return () => {
+      live = false;
+    };
+  }, [designId, attempt]);
+  if (kind === "checking") return <CanvasWaiting />;
+  if (kind === "failed") {
+    return (
+      <CanvasFailure
+        message="Check your connection and try again."
+        retry={() => {
+          setKind("checking");
+          setAttempt((n) => n + 1);
+        }}
+      />
+    );
+  }
+  return kind === "archived" ? <SubmissionHistory designId={designId} /> : gone;
+}
+
+function InstanceEditorScreen({ designId }: { designId: string }) {
   const { engine, design, problem, failure } = useOpenedDesign<InstanceDetail>(designId, instanceSource);
-  if (problem === "not-found") return gone; // another person's design, a template's design, or one that was deleted: the same answer
+  if (problem === "not-found") return <ArchivedOrGone designId={designId} />;
   if (problem === "forbidden") {
     return <CanvasMessage icon={<LockIcon />} title="You can't open this design" description="Designs are made from published templates by Marketing and Admin." />;
   }

@@ -218,12 +218,56 @@ export const detachDesign = (templateId: string) => apiFetch<{ ok: true }>(templ
 /** One changed field: new text for a text layer, or the asset that replaces an image layer's image. The engine's own type (types only, like CanvasDocument), so the two can never drift. */
 export type OverrideEntry = EngineOverrideEntry;
 
+/** The two independent facts about a design's review (phase 6): the answer to the latest submission, and whether there is more work since. */
+export type ReviewStatus = "pending" | "approved" | "changes_requested" | "superseded";
+
+export interface ReviewSummary {
+  /** The status of the NEWEST submission's review. An edit never changes it. null: nothing was submitted. */
+  latestReviewStatus: ReviewStatus | null;
+  hasChangesSinceSubmitted: boolean;
+  submissionNumber: number | null;
+  submittedVersion: number | null;
+  workingVersion: number;
+  submittedAt: string | null;
+  latestReviewId: string | null;
+  comment: string | null;
+  decidedAt: string | null;
+}
+
+/** Marketing may submit when nothing was submitted yet, or when the work differs from the newest submission (the API's submit rule is the real check). */
+export const canSubmitReview = (r: Pick<ReviewSummary, "latestReviewStatus" | "hasChangesSinceSubmitted">): boolean => r.latestReviewStatus === null || r.hasChangesSinceSubmitted;
+
+/** What was last submitted, as the editor needs it to compare with what is on screen. */
+export interface SubmittedState {
+  name: string;
+  overrides: readonly EngineOverrideEntry[];
+}
+
+/**
+ * The review facts as they are NOW, while the person types: the answer to the newest submission is the server's and never
+ * changes with an edit; whether there are unsubmitted changes is recomputed from what is on screen (the name and the changes,
+ * the same two things the server compares), so it follows an edit, and a revert to what was submitted, without a request.
+ * `same` is the engine's sameOverrides. Nothing submitted: no changes to report.
+ */
+export function liveReview(
+  base: ReviewSummary,
+  submitted: SubmittedState | null,
+  now: SubmittedState,
+  same: (a: readonly EngineOverrideEntry[], b: readonly EngineOverrideEntry[]) => boolean,
+): ReviewSummary {
+  if (!submitted) return base;
+  return { ...base, hasChangesSinceSubmitted: submitted.name !== now.name || !same(submitted.overrides, now.overrides) };
+}
+
 export interface InstanceSummary {
   id: string;
   name: string;
   version: number;
   createdAt: string;
   updatedAt: string;
+  /** Set once the person has archived a design that was submitted: it can no longer be edited or submitted, only read. */
+  archivedAt: string | null;
+  review: ReviewSummary;
   /** The published revision this design was made from, which never changes. */
   baseRevision: { number: number };
 }
@@ -242,6 +286,9 @@ export interface InstanceDetail {
   createdAt: string;
   updatedAt: string;
   overrides: OverrideEntry[];
+  review: ReviewSummary;
+  /** The name and changes of the newest submission (null: nothing submitted). */
+  submitted: { name: string; overrides: OverrideEntry[] } | null;
   baseRevision: { number: number; createdAt: string };
   document: CanvasDocument;
   manifest: { schemaVersion: 1; fields: Array<{ nodeId: string; kind: "text" | "image" }> };
@@ -256,10 +303,11 @@ export const createInstance = (templateId: string) =>
     body: JSON.stringify({ templateId }),
   });
 /** One page of my designs. Pass the previous page's `nextCursor` for the next one. */
-export const listInstances = (cursor?: string | null, limit?: number) => {
+export const listInstances = (cursor?: string | null, limit?: number, archived?: boolean) => {
   const query = new URLSearchParams();
   if (limit !== undefined) query.set("limit", String(limit));
   if (cursor) query.set("cursor", cursor);
+  if (archived) query.set("archived", "1"); // the archived designs, whose history stays readable
   const qs = query.toString();
   return apiFetch<InstancePage>(`/canvas/instances${qs ? `?${qs}` : ""}`);
 };
@@ -270,4 +318,91 @@ export const getInstance = (id: string) => apiFetch<{ instance: InstanceDetail }
  */
 export const saveInstance = (id: string, body: { version: number; overrides: OverrideEntry[]; name?: string }) =>
   apiFetch<{ version: number }>(instancePath(id), { method: "PUT", body: JSON.stringify(body) });
-export const deleteInstance = (id: string) => apiFetch<{ ok: true }>(instancePath(id), { method: "DELETE" });
+/**
+ * Removes one of my designs. One that was never submitted is deleted for good; one that has been submitted is ARCHIVED
+ * instead (`archived: true`): it can no longer be edited or submitted, and its history stays. Asking again answers the same.
+ */
+export const deleteInstance = (id: string) => apiFetch<{ ok: true; archived?: true }>(instancePath(id), { method: "DELETE" });
+
+// ── Design review (phase 6) ─────────────────────────────────────────────────
+// Marketing submits one of its designs; the design team approves it or asks for changes. A submission is a snapshot the SERVER
+// made from the pinned revision and the saved changes. Names are the people's current names, never an email; "Former team
+// member" stands for an account that no longer exists. Error codes the pages read from `error.data.code`: NO_CHANGES,
+// NO_REVIEWER, VERSION_CONFLICT, UNKNOWN_ASSET, DESIGN_ARCHIVED, NOT_PENDING, INVALID_REQUEST.
+
+/** Submits the design at the version the editor last saved, with an optional note for the designer. */
+export const submitInstance = (id: string, version: number, note?: string) =>
+  apiFetch<{ submission: { id: string; number: number; createdAt: string }; review: { id: string; status: ReviewStatus } }>(`${instancePath(id)}/submit`, {
+    method: "POST",
+    body: JSON.stringify(note ? { version, note } : { version }),
+  });
+
+export interface SubmissionEntry {
+  number: number;
+  name: string;
+  note: string | null;
+  createdAt: string;
+  status: ReviewStatus | null;
+  comment: string | null;
+  decidedAt: string | null;
+  /** The designer who answered, by name; null while it waits. */
+  reviewer: string | null;
+}
+
+/** A date and time as the Canvas pages show them. */
+export const formatWhen = (iso: string): string => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+
+/** My submissions of one design, newest first (also for an archived design). `nextCursor` is the number to continue from; `archived` says the design can no longer be edited or submitted. */
+export const listSubmissions = (id: string, cursor?: string | null) =>
+  apiFetch<{ submissions: SubmissionEntry[]; nextCursor: string | null; archived: boolean }>(`${instancePath(id)}/submissions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+
+export interface SubmissionDetail extends SubmissionEntry {
+  baseRevision: { number: number };
+  /** The document as it was submitted, ready to draw read-only. */
+  document: CanvasDocument;
+}
+export const getSubmission = (id: string, number: number) => apiFetch<{ submission: SubmissionDetail }>(`${instancePath(id)}/submissions/${number}`);
+
+export interface ReviewQueueEntry {
+  id: string;
+  status: ReviewStatus;
+  createdAt: string;
+  decidedAt: string | null;
+  number: number;
+  name: string;
+  note: string | null;
+  baseRevisionNumber: number;
+  submitter: string | null;
+  /** The person archived the design after submitting. The review is still decided like any other. */
+  archivedBySubmitter: boolean;
+}
+export interface FieldChange {
+  nodeId: string;
+  name: string;
+  kind: "text" | "image";
+  before: string;
+  after: string;
+}
+export interface ReviewDetail {
+  review: { id: string; status: ReviewStatus; comment: string | null; createdAt: string; decidedAt: string | null; reviewer: string | null };
+  submission: { number: number; name: string; note: string | null; createdAt: string; submitter: string | null; baseRevision: { number: number }; document: CanvasDocument };
+  changes: FieldChange[];
+  /** The design was renamed since the previous submission (null: not, or this is the first). */
+  rename: { before: string; after: string } | null;
+  history: Array<{ number: number; name: string; createdAt: string; reviewId: string | null; status: ReviewStatus | null; decidedAt: string | null }>;
+  archivedBySubmitter: boolean;
+}
+
+/** The design team's side. `view` is what waits ("pending") or what was answered ("decided"). */
+export const reviewSummaryCount = () => apiFetch<{ pending: number; latestSubmittedAt: string | null }>("/canvas/reviews/summary");
+export const listReviews = (view: "pending" | "decided", cursor?: string | null) => {
+  const query = new URLSearchParams({ status: view });
+  if (cursor) query.set("cursor", cursor);
+  return apiFetch<{ reviews: ReviewQueueEntry[]; nextCursor: string | null }>(`/canvas/reviews?${query}`);
+};
+export const getReview = (id: string) => apiFetch<ReviewDetail>(`/canvas/reviews/${encodeURIComponent(id)}`);
+export const decideReview = (id: string, decision: "approve" | "request_changes", comment?: string) =>
+  apiFetch<{ ok: true; review: { id: string; status: ReviewStatus } }>(`/canvas/reviews/${encodeURIComponent(id)}/decision`, {
+    method: "POST",
+    body: JSON.stringify(comment ? { decision, comment } : { decision }),
+  });

@@ -9,13 +9,19 @@ const h = vi.hoisted(() => ({
   designer: false,
   editContent: true,
   id: "abc",
+  view: null as string | null, // the ?view= parameter
   getDesign: vi.fn(),
   getInstance: vi.fn(),
+  listSubmissions: vi.fn(),
   // What the engine hands back once it has loaded: a stand-in, because Konva needs a real browser.
   engine: { stand: "in" } as unknown,
 }));
 
-vi.mock("next/navigation", () => ({ useParams: () => ({ designId: h.id }) }));
+vi.mock("next/navigation", () => ({ useParams: () => ({ designId: h.id }), useSearchParams: () => ({ get: (k: string) => (k === "view" ? h.view : null) }) }));
+vi.mock("@/lib/canvas", () => ({ listSubmissions: (...a: unknown[]) => h.listSubmissions(...a) }));
+vi.mock("@/components/canvas/SubmissionHistory", () => ({
+  SubmissionHistory: ({ designId }: { designId: string }) => <p>HISTORY {designId}</p>,
+}));
 vi.mock("next/link", () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
 vi.mock("@/lib/usePermissions", () => ({ usePermissions: () => ({ canManageTemplates: h.designer, canEditContent: h.editContent, loading: false }) }));
 vi.mock("@/components/canvas/CanvasGate", () => ({ CanvasGate: ({ children }: { children: (d: boolean) => React.ReactNode }) => <>{children(h.designer)}</> }));
@@ -54,8 +60,10 @@ beforeEach(() => {
   h.designer = false;
   h.editContent = true;
   h.id = "abc";
+  h.view = null;
   h.getDesign.mockResolvedValue({ id: "abc" });
   h.getInstance.mockResolvedValue({ id: "abc" });
+  h.listSubmissions.mockRejectedValue(Object.assign(new Error("Design not found"), { status: 404 })); // no history: a design that never was submitted
 });
 afterEach(cleanup);
 
@@ -112,6 +120,52 @@ describe("/canvas/<id> chooses its screen by role", () => {
     h.getDesign.mockRejectedValue(Object.assign(new Error("Forbidden"), { status: 403 }));
     render(<CanvasDesignPage />);
     expect(await screen.findByText("Designs are for the design team")).toBeTruthy();
+  });
+
+  describe("a design that was submitted (phase 6)", () => {
+    it("?view=history opens the submission history and never loads the editor or the instance", async () => {
+      h.view = "history";
+      render(<CanvasDesignPage />);
+      expect(await screen.findByText("HISTORY abc")).toBeTruthy();
+      expect(h.getInstance).not.toHaveBeenCalled();
+      expect(screen.queryByText(/EDITOR/)).toBeNull();
+    });
+
+    it("an id the editor answers 404 for, that HAS a history, is an archived design: its history (which says so itself, from the server)", async () => {
+      h.getInstance.mockRejectedValue(Object.assign(new Error("This design was archived"), { status: 404 }));
+      h.listSubmissions.mockResolvedValue({ submissions: [{ number: 1 }], nextCursor: null });
+      render(<CanvasDesignPage />);
+      expect(await screen.findByText("HISTORY abc")).toBeTruthy();
+      expect(h.listSubmissions).toHaveBeenCalledWith("abc");
+      expect(screen.queryByText("This design doesn't exist")).toBeNull();
+    });
+
+    it("an id that has no history either is 'doesn't exist' (another person's, a template's, or one deleted before it was ever submitted)", async () => {
+      h.getInstance.mockRejectedValue(Object.assign(new Error("Design not found"), { status: 404 }));
+      render(<CanvasDesignPage />);
+      expect(await screen.findByText("This design doesn't exist")).toBeTruthy();
+      expect(screen.queryByText(/HISTORY/)).toBeNull();
+    });
+
+    it("if the history check itself fails (not a 404) it says Canvas didn't open and Try again asks again, instead of claiming the design is gone", async () => {
+      h.getInstance.mockRejectedValue(Object.assign(new Error("Design not found"), { status: 404 }));
+      h.listSubmissions.mockRejectedValueOnce(Object.assign(new Error("Server error"), { status: 500 }));
+      h.listSubmissions.mockResolvedValue({ submissions: [{ number: 1 }], nextCursor: null });
+      render(<CanvasDesignPage />);
+      expect(await screen.findByText("Canvas didn't open")).toBeTruthy();
+      expect(screen.queryByText("This design doesn't exist")).toBeNull();
+      screen.getByRole("button", { name: "Try again" }).click();
+      expect(await screen.findByText("HISTORY abc")).toBeTruthy();
+    });
+
+    it("the designer's screen never asks the Marketing history", async () => {
+      h.designer = true;
+      h.editContent = false;
+      h.view = "history";
+      render(<CanvasDesignPage />);
+      expect(await screen.findByText("DESIGNER EDITOR abc")).toBeTruthy();
+      expect(h.listSubmissions).not.toHaveBeenCalled();
+    });
   });
 
   it("moving to another id starts the screen afresh (it is keyed by the id)", async () => {

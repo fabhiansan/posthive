@@ -19,10 +19,10 @@ export interface Saved<D> extends Snapshot<D> {
   version: number;
 }
 
-export type SaveState = "saved" | "dirty" | "saving" | "retrying" | "failed" | "rejected" | "conflict" | "deleted" | "forbidden" | "session";
+export type SaveState = "saved" | "dirty" | "saving" | "retrying" | "failed" | "rejected" | "conflict" | "deleted" | "archived" | "forbidden" | "session";
 
 /** Why a dirty snapshot could not be saved after the editor was gone. */
-export type AbandonReason = "conflict" | "rejected" | "forbidden" | "deleted" | "session" | "network";
+export type AbandonReason = "conflict" | "rejected" | "forbidden" | "deleted" | "archived" | "session" | "network";
 
 export interface AutosaveInfo {
   state: SaveState;
@@ -79,12 +79,13 @@ export function sameJson(a: unknown, b: unknown): boolean {
   return keys.length === Object.keys(right).filter((k) => right[k] !== undefined).length && keys.every((k) => Object.hasOwn(right, k) && sameJson(left[k], right[k]));
 }
 
-type Halt = "conflict" | "deleted" | "forbidden" | "session";
-type Verdict = { kind: "conflict" | "deleted" | "forbidden" | "session" | "rejected" | "transient"; message: string };
+type Halt = "conflict" | "deleted" | "archived" | "forbidden" | "session";
+type Verdict = { kind: "conflict" | "deleted" | "archived" | "forbidden" | "session" | "rejected" | "transient"; message: string };
 
 const HALT_MESSAGE: Record<Halt, string> = {
   conflict: "This design was changed somewhere else.",
   deleted: "This design was deleted.",
+  archived: "This design was archived.",
   forbidden: "Designs are managed by the design team.",
   session: "Your session ended, so this could not be saved.",
 };
@@ -93,9 +94,11 @@ const HALT_MESSAGE: Record<Halt, string> = {
 function judge(err: unknown): Verdict {
   const status = (err as { status?: number } | null)?.status;
   const sent = (err as { data?: { error?: string } } | null)?.data?.error;
+  const code = (err as { data?: { code?: string } } | null)?.data?.code;
   if (status === undefined) return { kind: "transient", message: "Couldn't reach the server." };
   if (status === 409) return { kind: "conflict", message: HALT_MESSAGE.conflict };
-  if (status === 404) return { kind: "deleted", message: HALT_MESSAGE.deleted };
+  // A 404 is "gone" unless the server says it is archived: the design is still there, but frozen (phase 6).
+  if (status === 404) return code === "DESIGN_ARCHIVED" ? { kind: "archived", message: HALT_MESSAGE.archived } : { kind: "deleted", message: HALT_MESSAGE.deleted };
   if (status === 403) return { kind: "forbidden", message: HALT_MESSAGE.forbidden };
   if (status === 401) return { kind: "session", message: HALT_MESSAGE.session };
   // The global error handler words a 413 as {error: "FastifyError"}, so the message is written here.
@@ -259,7 +262,7 @@ export function createAutosave<D>(initial: Saved<D>, deps: AutosaveDeps<D>): Aut
       return;
     }
 
-    if (verdict.kind === "deleted" || verdict.kind === "forbidden" || verdict.kind === "session") {
+    if (verdict.kind === "deleted" || verdict.kind === "archived" || verdict.kind === "forbidden" || verdict.kind === "session") {
       halt(verdict.kind);
       return;
     }
