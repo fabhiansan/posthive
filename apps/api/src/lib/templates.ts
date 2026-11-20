@@ -20,21 +20,36 @@ export const TEMPLATE_SELECT = {
 /** The latest published Canvas revision of a template's design (none when it has no design or no revision yet). */
 const LATEST_REVISION = { select: { revisions: { orderBy: { number: "desc" }, take: 1, select: { number: true } } } } as const;
 
-/** What the Template Library page gets: the select above, the status, the format, who made it and its Canvas design. */
+/**
+ * What the Template Library page gets: the select above, the status, the format, the slide images, the caption guideline,
+ * who made it and its Canvas design. The slide images and the guideline are for the library only, never for the public API.
+ */
 export const LIBRARY_SELECT = {
   ...TEMPLATE_SELECT,
   published: true,
   format: true,
   slides: true,
   platforms: true,
+  slideUrls: true,
+  slideLabels: true,
+  captionGuideline: true,
   designId: true,
   design: LATEST_REVISION,
   user: { select: { name: true } },
 } as const;
 
-/** A library row as the page reads it: the author's name, not the user record; the Canvas design as its id and latest revision number. */
-export function toLibraryTemplate<T extends { user: { name: string | null } | null; design?: { revisions: { number: number }[] } | null }>({ user, design, ...rest }: T) {
-  return { ...rest, canvasRevision: design?.revisions[0]?.number ?? null, createdBy: user?.name ?? null };
+export type SlideImage = { url: string; label: string | null };
+
+/** The two stored lists as one list of slides, in order (a missing name is null). */
+export const slideImagesOf = (t: { slideUrls?: string[]; slideLabels?: string[] }): SlideImage[] =>
+  (t.slideUrls ?? []).map((url, i) => ({ url, label: t.slideLabels?.[i] || null }));
+
+/** One list of slides as the two columns it is stored in: the same length, "" for a slide with no name. */
+export const slideColumns = (images: SlideImage[]) => ({ slideUrls: images.map((s) => s.url), slideLabels: images.map((s) => s.label ?? "") });
+
+/** A library row as the page reads it: the author's name, not the user record; the Canvas design as its id and latest revision number; the slides as one list. */
+export function toLibraryTemplate<T extends { user: { name: string | null } | null; design?: { revisions: { number: number }[] } | null; slideUrls?: string[]; slideLabels?: string[] }>({ user, design, slideUrls, slideLabels, ...rest }: T) {
+  return { ...rest, slideImages: slideImagesOf({ slideUrls, slideLabels }), canvasRevision: design?.revisions[0]?.number ?? null, createdBy: user?.name ?? null };
 }
 
 // ── What counts as a source ─────────────────────────────────────────────────
@@ -131,15 +146,17 @@ export async function findExternalTemplate(id: string, workspaceId: string): Pro
 export async function withoutTemplateMedia(urls: string[]): Promise<string[]> {
   if (!urls.length) return urls;
   const [templates, legacy] = await Promise.all([
+    // a file is in use as a template's preview or as one of its slide images
     prisma.template.findMany({
-      where: { previewUrl: { in: urls } },
-      select: { previewUrl: true },
+      where: { OR: [{ previewUrl: { in: urls } }, { slideUrls: { hasSome: urls } }] },
+      select: { previewUrl: true, slideUrls: true },
     }),
     prisma.legacyTemplateMedia.findMany({ where: { url: { in: urls } }, select: { url: true } }),
   ]);
   const inUse = new Set(legacy.map((l) => l.url));
   for (const t of templates) {
     if (t.previewUrl) inUse.add(t.previewUrl);
+    for (const url of t.slideUrls ?? []) inUse.add(url);
   }
   return urls.filter((url) => !inUse.has(url));
 }

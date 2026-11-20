@@ -84,6 +84,48 @@ describe("templateBody", () => {
     expect(templateBody.parse({ ...base, published: true })).not.toHaveProperty("published");
   });
 
+  describe("slide images and the caption guideline", () => {
+    const carousel = { ...base, format: "carousel" };
+    const slides = (n: number, extra: Record<string, unknown> = {}) => Array.from({ length: n }, (_, i) => ({ url: `/uploads/s${i + 1}.png`, ...extra }));
+
+    it("a carousel keeps its slide images in order, and their number is the slide count (the typed number is ignored)", () => {
+      const r = templateBody.parse({ ...carousel, slides: 9, slideImages: [{ url: "/uploads/b.png", label: "Cover" }, { url: "/uploads/a.jpg" }, { url: "/uploads/c.webp", label: "  " }] });
+      expect(r.slideImages).toEqual([{ url: "/uploads/b.png", label: "Cover" }, { url: "/uploads/a.jpg", label: null }, { url: "/uploads/c.webp", label: null }]);
+      expect(r.slides).toBe(3);
+    });
+
+    it("with no images the typed slide count stays", () => {
+      expect(templateBody.parse({ ...carousel, slides: 5 })).toMatchObject({ slides: 5, slideImages: [] });
+    });
+
+    it("any other format drops the images, and a missing list is an empty one", () => {
+      expect(templateBody.parse({ ...base, format: "single", slideImages: slides(3) }).slideImages).toEqual([]);
+      expect(templateBody.parse({ ...base, slideImages: slides(3) }).slideImages).toEqual([]);
+      expect(templateBody.parse(carousel).slideImages).toEqual([]);
+    });
+
+    it("2 to 20 images: one is refused, 20 pass, 21 are refused", () => {
+      expect(issue({ ...carousel, slideImages: slides(1) })).toMatch(/2 to 20/);
+      expect(templateBody.safeParse({ ...carousel, slideImages: slides(2) }).success).toBe(true);
+      expect(templateBody.safeParse({ ...carousel, slideImages: slides(20) }).success).toBe(true);
+      expect(issue({ ...carousel, slideImages: slides(21) })).toMatch(/2 to 20/);
+    });
+
+    it("every slide is an image, used once, with a name of at most 40 characters", () => {
+      expect(issue({ ...carousel, slideImages: [{ url: "/uploads/a.png" }, { url: "/uploads/b.pdf" }] })).toBe("Every slide must be an image");
+      expect(issue({ ...carousel, slideImages: [{ url: "/uploads/a.png" }, { url: "/uploads/a.png" }] })).toBe("A slide image can be used once");
+      expect(issue({ ...carousel, slideImages: [{ url: "/uploads/a.png", label: "x".repeat(41) }, { url: "/uploads/b.png" }] })).toMatch(/40 characters/);
+      expect(templateBody.safeParse({ ...carousel, slideImages: [{ url: "/uploads/a.png", label: "x".repeat(40) }, { url: "/uploads/b.png" }] }).success).toBe(true);
+    });
+
+    it("the caption guideline is trimmed, a blank one is none, and it is at most 2000 characters", () => {
+      expect(templateBody.parse({ ...base, captionGuideline: "  Open with the problem.  " }).captionGuideline).toBe("Open with the problem.");
+      for (const v of [undefined, null, "", "   "]) expect(templateBody.parse({ ...base, captionGuideline: v }).captionGuideline).toBeNull();
+      expect(templateBody.safeParse({ ...base, captionGuideline: "x".repeat(2000) }).success).toBe(true);
+      expect(issue({ ...base, captionGuideline: "x".repeat(2001) })).toMatch(/2000/);
+    });
+  });
+
   it("ignores file fields: .fig can no longer be set", () => {
     const r = templateBody.safeParse({ ...base, fileUrl: "/uploads/x.fig", fileName: "x.fig", fileSize: 10 });
     expect(r.success).toBe(true);

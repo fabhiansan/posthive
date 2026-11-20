@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { withAuth, withAuthOrToken, getUser, getWorkspaceId, getWorkspaceRole, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
 import { pillarFor } from "../lib/contentTypes.js";
 import type { StorageAdapter } from "../lib/storage.js";
-import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, sourceOf, toLibraryTemplate, withoutTemplateMedia } from "../lib/templates.js";
+import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, slideColumns, sourceOf, toLibraryTemplate, withoutTemplateMedia } from "../lib/templates.js";
 import { templateBody, type TemplateBody } from "../lib/templateBody.js";
 
 function templateData(t: TemplateBody) {
@@ -18,12 +18,17 @@ function templateData(t: TemplateBody) {
     format: t.format,
     slides: t.slides,
     platforms: t.platforms,
+    ...slideColumns(t.slideImages),
+    captionGuideline: t.captionGuideline,
   };
 }
 
 const statusBody = z.object({ published: z.boolean() });
 
-const previewsOf = (t: { previewUrl: string | null }) => (t.previewUrl ? [t.previewUrl] : []);
+/** Every file a template holds: its preview and its slide images. */
+const filesOf = (t: { previewUrl: string | null; slideUrls?: string[] }) => [...(t.previewUrl ? [t.previewUrl] : []), ...(t.slideUrls ?? [])];
+/** The files a request body asks the template to hold. */
+const bodyFiles = (t: TemplateBody) => filesOf({ previewUrl: t.previewUrl, slideUrls: t.slideImages.map((s) => s.url) });
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
@@ -104,8 +109,8 @@ export async function templateRoutes(
     const existing = await prisma.template.findFirst({ where: { workspaceId, category: body.category }, select: { id: true } });
     if (existing) return reply.status(409).send(duplicate(body.category));
 
-    const files = previewsOf(body);
-    if (!(await ownsUploads(files, userId))) return reply.status(400).send({ error: "Upload the preview image again." });
+    const files = bodyFiles(body);
+    if (!(await ownsUploads(files, userId))) return reply.status(400).send({ error: "Upload the images again." });
 
     try {
       const template = await prisma.template.create({
@@ -135,7 +140,7 @@ export async function templateRoutes(
 
     const current = await prisma.template.findFirst({
       where: { id, workspaceId },
-      select: { id: true, category: true, previewUrl: true },
+      select: { id: true, category: true, previewUrl: true, slideUrls: true },
     });
     if (!current) return reply.status(404).send({ error: "Not found" });
 
@@ -148,9 +153,9 @@ export async function templateRoutes(
       if (clash) return reply.status(409).send(duplicate(body.category));
     }
 
-    const kept = new Set(previewsOf(current));
-    const added = previewsOf(body).filter((url) => !kept.has(url));
-    if (!(await ownsUploads(added, userId))) return reply.status(400).send({ error: "Upload the preview image again." });
+    const kept = new Set(filesOf(current));
+    const added = bodyFiles(body).filter((url) => !kept.has(url));
+    if (!(await ownsUploads(added, userId))) return reply.status(400).send({ error: "Upload the images again." });
 
     let template;
     try {
@@ -175,8 +180,8 @@ export async function templateRoutes(
       throw err;
     }
     await claimUploads(added);
-    const next = new Set(previewsOf(body));
-    await removeFiles(previewsOf(current).filter((url) => !next.has(url)));
+    const next = new Set(bodyFiles(body));
+    await removeFiles(filesOf(current).filter((url) => !next.has(url)));
     return reply.send({ template: toLibraryTemplate(template) });
   });
 
@@ -229,12 +234,42 @@ export async function templateRoutes(
 
     const template = await prisma.template.findFirst({
       where: { id, workspaceId },
-      select: { id: true, previewUrl: true },
+      select: { id: true, previewUrl: true, slideUrls: true },
     });
     if (!template) return reply.status(404).send({ error: "Not found" });
 
     await prisma.template.delete({ where: { id } });
-    await removeFiles(previewsOf(template));
+    await removeFiles(filesOf(template));
     return reply.send({ ok: true });
+  });
+
+  // How many posts the design team's dialogs can name before it unpublishes or deletes a template: the posts of the same
+  // category in the workspace, and the ones of them waiting for approval. These are counts, not the posts: the drafts of
+  // Marketing are not shown to the design team, but how many there are is what tells it what the action reaches. A post
+  // never points at a template (it only carries its category), so "uses this template" means "is of this category",
+  // including posts made before the template existed. Design team only, like every other action on a template.
+  // shortcut: the category is part of the post's stored JSON (the quarter plan reads it the same way), so this is a text
+  // match over the workspace's posts; a category column and an index are the upgrade when posts per workspace get large.
+  app.get("/templates/:id/usage", { preHandler: [withAuth] }, async (req, reply) => {
+    const { id: userId } = getUser(req);
+    const workspaceId = getWorkspaceId(req);
+    const { id } = req.params as { id: string };
+
+    const forbidden = await requireTemplateManagerRole(userId, workspaceId);
+    if (forbidden) return reply.status(403).send(forbidden);
+
+    const template = await prisma.template.findFirst({ where: { id, workspaceId }, select: { category: true } });
+    if (!template?.category) return reply.status(404).send({ error: "Not found" });
+
+    // the stored JSON is compact: `"category":"Case Study"`. An import may write it in other letters, and "AMA" is Ask Me Anything (normalizeCategory).
+    const spellings = template.category === "Ask Me Anything" ? [template.category, "AMA"] : [template.category];
+    const named = spellings.map((c) => ({ content: { contains: `"category":${JSON.stringify(c)}`, mode: "insensitive" as const } }));
+    const ofCategory = { workspaceId, OR: named };
+    const [created, inReview] = await Promise.all([
+      prisma.postJob.count({ where: ofCategory }),
+      // the same rule as the Posts page's "In review" filter (lib/jobFilters.ts)
+      prisma.postJob.count({ where: { AND: [ofCategory, { status: "draft", approvalStatus: "pending" }] } }),
+    ]);
+    return reply.send({ created, inReview });
   });
 }

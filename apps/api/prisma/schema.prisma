@@ -420,6 +420,11 @@ model Template {
   format      String? // carousel | single | reel_cover | story | video (lib/templateBody.ts)
   slides      Int? // number of slides, carousel only
   platforms   String[]   @default([]) // instagram | linkedin
+  // One image per slide of a carousel (an Upload row each), and its short name ("" when it has none): the same length.
+  // Read and written only through slideImages in lib/templates.ts.
+  slideUrls   String[]   @default([])
+  slideLabels String[]   @default([])
+  captionGuideline String? // what a caption for this kind of post should do; shown to Marketing, never copied into a post
   content     String     @default("{}") // DEPRECATED: legacy template-kit JSON, no longer written
   // The Canvas design this template is made in (a template may have this, a Figma link, or both). One design belongs to at
   // most one template (unique). NO ACTION, not SET NULL: a linked design cannot be deleted from under a published

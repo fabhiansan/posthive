@@ -11,6 +11,12 @@ const h = vi.hoisted(() => ({
   taken: false,
   // Changing what a template is made from runs in a transaction that first locks the template's row: the order is logged.
   inTx: false,
+  // Files the caller uploaded (every file asked about is theirs), and the template rows that still hold a file (what withoutTemplateMedia finds).
+  owned: false,
+  inUse: [] as Array<{ previewUrl: string | null; slideUrls: string[] }>,
+  storage: { delete: vi.fn(async (_url: string) => {}) },
+  // what postJob.count answers, in the order it is asked: every post of the category, then those in review
+  posts: [0, 0] as number[],
 }));
 
 const FORBIDDEN = { error: "Templates are managed by the design team only.", code: "FORBIDDEN" };
@@ -23,14 +29,16 @@ vi.mock("../lib/prisma.js", () => {
     });
   const client = {
       template: {
-        findMany: record("findMany", () => h.rows),
+        // withoutTemplateMedia asks which templates still hold a file (an OR on the preview and the slides); the library asks for its rows
+        findMany: record("findMany", (args) => (args.where?.OR ? h.inUse : h.rows)),
         findFirst: record("findFirst", (args) => (args.where.category && h.taken ? { id: "other" } : h.rows[0] ?? null)),
         create: record("create", (args) => ({ id: "t-new", published: false, user: { name: "Dewi Kusuma" }, createdAt: new Date("2026-11-12T03:00:00Z"), updatedAt: new Date("2026-11-12T03:00:00Z"), name: args.data.category, pillar: args.data.pillar, category: args.data.category, linkUrl: args.data.linkUrl, previewUrl: args.data.previewUrl, format: args.data.format, slides: args.data.slides, platforms: args.data.platforms })),
         update: record("update", () => h.rows[0]),
         updateMany: record("updateMany", (args) => ({ count: args.where.workspaceId === "ws-1" && h.rows.length ? 1 : 0 })),
         delete: record("delete", () => ({})),
       },
-      upload: { count: vi.fn(async () => 0), updateMany: vi.fn(async () => ({})), deleteMany: vi.fn(async () => ({})) },
+      upload: { count: vi.fn(async (args: { where: { url: { in: string[] } } }) => (h.owned ? new Set(args.where.url.in).size : 0)), updateMany: vi.fn(async (_args: unknown) => ({})), deleteMany: vi.fn(async (_args: unknown) => ({})) },
+      postJob: { count: record("count", () => h.posts.shift() ?? 0) },
       legacyTemplateMedia: { findMany: vi.fn(async () => []) },
       // SELECT ... FOR UPDATE on one template: its id when it exists, nothing when it does not.
       $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -63,12 +71,13 @@ vi.mock("../lib/auth/withAuth.js", () => ({
   requireTemplateManagerRole: async () => (h.role === "designer" ? null : FORBIDDEN),
 }));
 
+import { prisma } from "../lib/prisma.js";
 import { templateRoutes } from "./templates.js";
 
 let app: FastifyInstance;
 beforeAll(async () => {
   app = Fastify();
-  await app.register(templateRoutes, { storage: {} as StorageAdapter });
+  await app.register(templateRoutes, { storage: h.storage as unknown as StorageAdapter });
   await app.ready();
 });
 afterAll(async () => {
@@ -80,6 +89,12 @@ beforeEach(() => {
   h.calls = [];
   h.taken = false;
   h.inTx = false;
+  h.owned = false;
+  h.inUse = [];
+  h.posts = [0, 0];
+  h.storage.delete.mockClear();
+  vi.mocked(prisma.upload.updateMany).mockClear();
+  vi.mocked(prisma.upload.deleteMany).mockClear();
 });
 
 /** Calls by name, in or out of a transaction ("tx:" calls are counted with the plain ones, so existing checks keep meaning the same). */
@@ -506,5 +521,197 @@ describe("the library: a draft stays hidden, and a Canvas design shows only what
       h.rows = [made({ id: "a", linkUrl: null }), made({ id: "b", linkUrl: "https://example.com" }), made({ id: "c", linkUrl: "" })];
       expect(await ids("member")).toEqual(["a", "b", "c"]);
     });
+  });
+});
+
+// ── Slide images and the caption guideline ──────────────────────────────────────────────────────────────────────────
+
+const claimed = () => vi.mocked(prisma.upload.updateMany).mock.calls.flatMap(([a]) => (a as { where: { url: { in: string[] } } }).where.url.in);
+const unclaimedDeleted = () => vi.mocked(prisma.upload.deleteMany).mock.calls.flatMap(([a]) => (a as { where: { url: { in: string[] } } }).where.url.in);
+const slides = (...urls: string[]) => urls.map((url, i) => ({ url, label: i === 0 ? "Cover" : null }));
+
+describe("a carousel's slide images: POST", () => {
+  const carousel = (patch: Record<string, unknown> = {}) => body({ format: "carousel", previewUrl: "/uploads/p.png", slideImages: slides("/uploads/a.png", "/uploads/b.png"), captionGuideline: "  Open with the problem.  ", ...patch });
+
+  it("stores the urls and names as two lists, the count of images as the slide count, and the trimmed guideline", async () => {
+    h.owned = true;
+    const res = await app.inject({ method: "POST", url: "/templates", payload: carousel({ slides: 9 }) });
+    expect(res.statusCode).toBe(201);
+    expect(call("create")[0].args.data).toMatchObject({
+      slideUrls: ["/uploads/a.png", "/uploads/b.png"],
+      slideLabels: ["Cover", ""],
+      slides: 2,
+      captionGuideline: "Open with the problem.",
+    });
+  });
+
+  it("claims the preview AND every slide image, so the orphan sweep leaves them alone", async () => {
+    h.owned = true;
+    await app.inject({ method: "POST", url: "/templates", payload: carousel() });
+    expect(claimed().sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/p.png"]);
+  });
+
+  it("a slide image the caller did not upload is refused: 400, nothing is created or claimed", async () => {
+    h.owned = false;
+    const res = await app.inject({ method: "POST", url: "/templates", payload: carousel() });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Upload the images again.");
+    expect(call("create")).toHaveLength(0);
+    expect(claimed()).toEqual([]);
+  });
+
+  it("only a carousel keeps images: a single image template stores none, and claims none", async () => {
+    h.owned = true;
+    await app.inject({ method: "POST", url: "/templates", payload: carousel({ format: "single" }) });
+    expect(call("create")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: null });
+    expect(claimed()).toEqual(["/uploads/p.png"]);
+  });
+
+  it("a template with no guideline stores none", async () => {
+    await app.inject({ method: "POST", url: "/templates", payload: body({ captionGuideline: "   " }) });
+    expect(call("create")[0].args.data.captionGuideline).toBeNull();
+  });
+});
+
+describe("a carousel's slide images: PATCH", () => {
+  const stored = (patch: Record<string, unknown> = {}) => row({ format: "carousel", previewUrl: "/uploads/p.png", slideUrls: ["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"], slideLabels: ["Cover", "", ""], ...patch });
+  const edit = (slideImages: unknown[], patch: Record<string, unknown> = {}) =>
+    app.inject({ method: "PATCH", url: "/templates/t1", payload: body({ format: "carousel", previewUrl: "/uploads/p.png", slideImages, ...patch }) });
+
+  it("asks only about the images that are new, claims those, and removes the ones that were dropped", async () => {
+    h.rows = [stored()];
+    h.owned = true;
+    const res = await edit(slides("/uploads/b.png", "/uploads/a.png", "/uploads/d.png"));
+    expect(res.statusCode).toBe(200);
+    expect(vi.mocked(prisma.upload.count).mock.calls.at(-1)![0]).toMatchObject({ where: { url: { in: ["/uploads/d.png"] } } });
+    expect(claimed()).toEqual(["/uploads/d.png"]);
+    expect(h.storage.delete.mock.calls.map(([u]) => u)).toEqual(["/uploads/c.png"]);
+    expect(unclaimedDeleted()).toEqual(["/uploads/c.png"]);
+    expect(call("update")[0].args.data).toMatchObject({ slideUrls: ["/uploads/b.png", "/uploads/a.png", "/uploads/d.png"], slideLabels: ["Cover", "", ""], slides: 3 });
+  });
+
+  it("a dropped image that another template still holds is not deleted from storage", async () => {
+    h.rows = [stored()];
+    h.owned = true;
+    h.inUse = [{ previewUrl: null, slideUrls: ["/uploads/c.png"] }];
+    await edit(slides("/uploads/a.png", "/uploads/b.png"));
+    expect(h.storage.delete).not.toHaveBeenCalled();
+  });
+
+  it("changing the format away from carousel drops the images from the template and from storage", async () => {
+    h.rows = [stored()];
+    await edit([], { format: "single" });
+    expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: null });
+    expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
+  });
+
+  it("an image the caller did not upload is refused: 400 and nothing is written", async () => {
+    h.rows = [stored()];
+    h.owned = false;
+    const res = await edit(slides("/uploads/a.png", "/uploads/x.png"));
+    expect(res.statusCode).toBe(400);
+    expect(call("update")).toHaveLength(0);
+    expect(h.storage.delete).not.toHaveBeenCalled();
+  });
+
+  it("an edit that keeps every image asks about none and claims none", async () => {
+    h.rows = [stored()];
+    await edit(slides("/uploads/a.png", "/uploads/b.png", "/uploads/c.png"));
+    expect(claimed()).toEqual([]);
+    expect(h.storage.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /templates/:id removes the slide images with the preview", () => {
+  it("deletes the files nothing else holds, and keeps one another template still holds", async () => {
+    h.rows = [row({ previewUrl: "/uploads/p.png", slideUrls: ["/uploads/a.png", "/uploads/b.png"] })];
+    h.inUse = [{ previewUrl: null, slideUrls: ["/uploads/b.png"] }];
+    const res = await app.inject({ method: "DELETE", url: "/templates/t1" });
+    expect(res.statusCode).toBe(200);
+    expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/p.png"]);
+  });
+});
+
+describe("GET /templates carries the slide images and the guideline for the library", () => {
+  it("one list of slides and the guideline; the two stored lists do not leave", async () => {
+    h.rows = [row({ slideUrls: ["/uploads/a.png", "/uploads/b.png"], slideLabels: ["Cover", ""], captionGuideline: "Open with the problem." })];
+    const [t] = (await app.inject({ method: "GET", url: "/templates" })).json().templates;
+    expect(t.slideImages).toEqual([{ url: "/uploads/a.png", label: "Cover" }, { url: "/uploads/b.png", label: null }]);
+    expect(t.captionGuideline).toBe("Open with the problem.");
+    expect(t).not.toHaveProperty("slideUrls");
+    expect(t).not.toHaveProperty("slideLabels");
+  });
+
+  it("Marketing gets them too (a draft is still never listed to them)", async () => {
+    h.role = "member";
+    h.rows = [row({ slideUrls: ["/uploads/a.png"], slideLabels: [""], captionGuideline: "Be brief." })];
+    const [t] = (await app.inject({ method: "GET", url: "/templates" })).json().templates;
+    expect(t).toMatchObject({ slideImages: [{ url: "/uploads/a.png", label: null }], captionGuideline: "Be brief." });
+    expect(call("findMany")[0].args.where).toMatchObject({ published: true });
+  });
+
+  it("asks the library select for the slides and the guideline", async () => {
+    await app.inject({ method: "GET", url: "/templates" });
+    expect(call("findMany")[0].args.select).toMatchObject({ slideUrls: true, slideLabels: true, captionGuideline: true });
+  });
+});
+
+describe("GET /templates/:id/usage: the posts of the template's category", () => {
+  const usage = (id = "t1") => app.inject({ method: "GET", url: `/templates/${id}/usage` });
+  const counts = () => call("count").map((c) => c.args.where);
+
+  it("says how many posts are of the category and how many of them are in review", async () => {
+    h.rows = [row()];
+    h.posts = [12, 3];
+    const res = await usage();
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ created: 12, inReview: 3 });
+  });
+
+  it.each(["owner", "admin", "member", null])("a %s may not ask: 403 and no post is counted", async (role) => {
+    h.role = role as string | null;
+    h.rows = [row()];
+    expect((await usage()).statusCode).toBe(403);
+    expect(call("count")).toHaveLength(0);
+  });
+
+  it("a template of another workspace, or none, is a 404", async () => {
+    h.rows = [];
+    expect((await usage("elsewhere")).statusCode).toBe(404);
+    expect(call("count")).toHaveLength(0);
+  });
+
+  it("finds the template in this workspace, and counts the posts of this workspace only", async () => {
+    h.rows = [row()];
+    await usage();
+    expect(call("findFirst")[0].args.where).toEqual({ id: "t1", workspaceId: "ws-1" });
+    expect(counts()[0]).toMatchObject({ workspaceId: "ws-1" });
+  });
+
+  it("counts every post of the category, the drafts of Marketing included: the design team cannot open them, but must know they exist", async () => {
+    h.rows = [row()];
+    await usage();
+    // no visibility rule (jobVisibilityWhere) narrows the count: that would be 0 for a category of drafts and hide the warning
+    expect(JSON.stringify(counts()[0])).not.toMatch(/userId|approvalStatus|"status"/);
+  });
+
+  it("matches the category in the stored post, in any letters", async () => {
+    h.rows = [row({ category: "Case Study" })];
+    await usage();
+    expect(counts()[0].OR).toEqual([{ content: { contains: '"category":"Case Study"', mode: "insensitive" } }]);
+  });
+
+  it("Ask Me Anything is also written AMA", async () => {
+    h.rows = [row({ category: "Ask Me Anything" })];
+    await usage();
+    expect(counts()[0].OR.map((c: { content: { contains: string } }) => c.content.contains)).toEqual(['"category":"Ask Me Anything"', '"category":"AMA"']);
+  });
+
+  it("'in review' is the Posts page's rule on top of the same posts: a draft that waits for approval", async () => {
+    h.rows = [row()];
+    await usage();
+    const [all, review] = counts();
+    expect(review.AND[0]).toEqual(all);
+    expect(review.AND[1]).toEqual({ status: "draft", approvalStatus: "pending" });
   });
 });

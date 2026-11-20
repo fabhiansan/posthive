@@ -1,9 +1,26 @@
 // What counts as a template's source, and who may be shown a template. The same vectors are in
 // apps/web/src/lib/templates.test.ts: the two copies of these helpers must agree on every one of them.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 // A test is the one place the API may reach into apps/web (as the canvas tests reach into apps/canvas): the page's own copy of the helpers.
 import * as web from "../../../web/src/lib/templates";
-import { hasCanvasSource, hasFigmaSource, hasUsableSource, isExternallyVisible, isLibraryVisible, sourceOf, toLibraryTemplate } from "./templates.js";
+import { hasCanvasSource, hasFigmaSource, hasUsableSource, isExternallyVisible, isLibraryVisible, slideColumns, slideImagesOf, sourceOf, toLibraryTemplate, withoutTemplateMedia } from "./templates.js";
+
+// A database that holds a few template rows and legacy files and APPLIES the where of withoutTemplateMedia (`in`, `hasSome`, OR),
+// so a test can tell a file that is protected from one that is not.
+const db = vi.hoisted(() => ({
+  templates: [] as Array<{ previewUrl: string | null; slideUrls: string[] }>,
+  legacy: [] as string[],
+}));
+vi.mock("./prisma.js", () => ({
+  prisma: {
+    template: {
+      findMany: vi.fn(async ({ where }: { where: { OR: Array<{ previewUrl?: { in: string[] }; slideUrls?: { hasSome: string[] } }> } }) =>
+        db.templates.filter((t) => where.OR.some((c) => (c.previewUrl ? t.previewUrl !== null && c.previewUrl.in.includes(t.previewUrl) : t.slideUrls.some((u) => c.slideUrls!.hasSome.includes(u))))),
+      ),
+    },
+    legacyTemplateMedia: { findMany: vi.fn(async ({ where }: { where: { url: { in: string[] } } }) => db.legacy.filter((u) => where.url.in.includes(u)).map((url) => ({ url }))) },
+  },
+}));
 
 // [value, is it a Figma source?]
 const LINK_VECTORS: Array<[unknown, boolean]> = [
@@ -119,7 +136,7 @@ describe("isLibraryVisible (the internal Marketing library)", () => {
 describe("toLibraryTemplate", () => {
   it("replaces the nested design by its latest revision number and the user by a name", () => {
     const out = toLibraryTemplate({ id: "t1", designId: "d1", design: { revisions: [{ number: 3 }] }, user: { name: "Dewi" } });
-    expect(out).toEqual({ id: "t1", designId: "d1", canvasRevision: 3, createdBy: "Dewi" });
+    expect(out).toEqual({ id: "t1", designId: "d1", slideImages: [], canvasRevision: 3, createdBy: "Dewi" });
     expect(out).not.toHaveProperty("design");
     expect(out).not.toHaveProperty("user");
   });
@@ -127,5 +144,55 @@ describe("toLibraryTemplate", () => {
   it("no design, or a design with no revision, has no revision number", () => {
     expect(toLibraryTemplate({ id: "t", designId: null, design: null, user: null })).toMatchObject({ canvasRevision: null, createdBy: null });
     expect(toLibraryTemplate({ id: "t", designId: "d", design: { revisions: [] }, user: null })).toMatchObject({ canvasRevision: null });
+  });
+});
+
+describe("the slide images of a template: two stored lists, one list in the code", () => {
+  it("zips the urls with their names, in order; an empty name is none", () => {
+    expect(slideImagesOf({ slideUrls: ["/a.png", "/b.png", "/c.png"], slideLabels: ["Cover", "", "Close"] })).toEqual([
+      { url: "/a.png", label: "Cover" },
+      { url: "/b.png", label: null },
+      { url: "/c.png", label: "Close" },
+    ]);
+  });
+
+  it("a row from before the columns, or with fewer names than images, still reads", () => {
+    expect(slideImagesOf({})).toEqual([]);
+    expect(slideImagesOf({ slideUrls: ["/a.png", "/b.png"], slideLabels: ["Cover"] })).toEqual([{ url: "/a.png", label: "Cover" }, { url: "/b.png", label: null }]);
+  });
+
+  it("writes them back as two lists of the same length, an empty name as an empty string", () => {
+    const images = [{ url: "/a.png", label: "Cover" }, { url: "/b.png", label: null }];
+    expect(slideColumns(images)).toEqual({ slideUrls: ["/a.png", "/b.png"], slideLabels: ["Cover", ""] });
+    expect(slideImagesOf(slideColumns(images))).toEqual(images);
+  });
+
+  it("the library row carries one list of slides, and not the two columns", () => {
+    const out = toLibraryTemplate({ id: "t", user: null, slideUrls: ["/a.png"], slideLabels: ["Cover"] });
+    expect(out.slideImages).toEqual([{ url: "/a.png", label: "Cover" }]);
+    expect(out).not.toHaveProperty("slideUrls");
+    expect(out).not.toHaveProperty("slideLabels");
+  });
+});
+
+describe("withoutTemplateMedia: a file a template still holds is never deleted", () => {
+  beforeEach(() => {
+    db.templates = [];
+    db.legacy = [];
+  });
+
+  it("keeps a preview, a slide image and a legacy kit file, and frees the others", async () => {
+    db.templates = [{ previewUrl: "/p.png", slideUrls: [] }, { previewUrl: null, slideUrls: ["/s1.png", "/s2.png"] }];
+    db.legacy = ["/k.png"];
+    expect(await withoutTemplateMedia(["/p.png", "/s1.png", "/s2.png", "/k.png", "/free.png"])).toEqual(["/free.png"]);
+  });
+
+  it("a slide image that no template holds any more is free", async () => {
+    db.templates = [{ previewUrl: null, slideUrls: ["/s1.png"] }];
+    expect(await withoutTemplateMedia(["/s2.png"])).toEqual(["/s2.png"]);
+  });
+
+  it("no urls, no query", async () => {
+    expect(await withoutTemplateMedia([])).toEqual([]);
   });
 });
