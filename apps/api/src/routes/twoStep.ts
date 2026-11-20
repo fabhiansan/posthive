@@ -22,6 +22,8 @@ const loginBody = z.object({ challenge: z.string().min(32).max(128), code });
 const refuse = (code: string, error: string) => ({ error, code });
 const WRONG = refuse("WRONG_CODE", "That code isn't right. Check your app and try again.");
 const LOCKED = refuse("TOO_MANY_WRONG_CODES", "Too many wrong codes. Wait 15 minutes, then try again.");
+/** Where a recovery code exists (every place except setup, which has none yet), it gets the person in while the 6 digits are locked. */
+const LOCKED_RECOVERY = refuse("TOO_MANY_WRONG_CODES", "Too many wrong codes. Wait 15 minutes, or use a recovery code.");
 
 const firstIssue = (e: z.ZodError) => e.issues[0]?.message ?? "Invalid request";
 
@@ -82,7 +84,7 @@ export async function twoStepRoutes(app: FastifyInstance): Promise<void> {
     if (!user?.passwordHash || !user.totpEnabledAt) return { problem: refuse("NOT_ON", "Two-step verification isn't on."), status: 400 };
     if (!(await bcrypt.compare(body.data.password, user.passwordHash))) return { problem: refuse("WRONG_PASSWORD", "Your password isn't right."), status: 400 };
     const check = await verifySecondFactor(userId, body.data.code, req.headers["user-agent"] as string | undefined);
-    if (check === "locked") return { problem: LOCKED, status: 429 };
+    if (check === "locked") return { problem: LOCKED_RECOVERY, status: 429 };
     if (check !== "ok") return { problem: WRONG, status: 400 };
     return null;
   }
@@ -110,7 +112,7 @@ export async function twoStepRoutes(app: FastifyInstance): Promise<void> {
 
     const answer = await answerChallenge(body.data.challenge, body.data.code);
     if (answer.result !== "ok") {
-      if (answer.result === "locked") return reply.status(429).send(LOCKED);
+      if (answer.result === "locked") return reply.status(429).send(LOCKED_RECOVERY);
       if (answer.result === "wrong") return reply.status(401).send(WRONG);
       return reply.status(401).send(refuse("CHALLENGE_EXPIRED", "That sign-in took too long. Enter your email and password again."));
     }

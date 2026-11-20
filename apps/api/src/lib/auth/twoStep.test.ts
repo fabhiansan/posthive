@@ -265,13 +265,19 @@ describe("the code", () => {
     expect(results.slice(ACCOUNT_MAX_WRONG)).toEqual(["locked", "locked"]);
   });
 
-  it("50 wrong guesses sent at the same moment: no more than 10 of them are ever looked at", async () => {
-    const { secret } = await personWithTwoStep();
-    const results = await Promise.all(Array.from({ length: 50 }, (_, i) => verifySecondFactor("u1", String(100000 + i), "ua", NOW)));
-    expect(results.filter((r) => r === "wrong").length).toBeLessThanOrEqual(ACCOUNT_MAX_WRONG);
-    expect(results.filter((r) => r === "ok")).toHaveLength(0);
-    // and the right code is not let through while the lock holds
-    expect(await verifySecondFactor("u1", codeAt(secret, stepOf(NOW) + 1), "ua", NOW)).toBe("locked");
+  // A guess the lock refuses takes its own line back, so a burst that all counts the same total refuses every one of its guesses
+  // and leaves no lines. What must hold is that no more than ACCOUNT_MAX_WRONG guesses are LOOKED AT in the window, however many
+  // bursts are sent: the lines of the guesses that were looked at stay.
+  it("50 wrong guesses sent at the same moment, again and again: no more than 10 of them are ever looked at", async () => {
+    await personWithTwoStep();
+    let looked = 0;
+    for (let burst = 0; burst < 4; burst++) {
+      const results = await Promise.all(Array.from({ length: 50 }, (_, i) => verifySecondFactor("u1", String(100000 + burst * 100 + i), "ua", NOW)));
+      looked += results.filter((r) => r === "wrong").length;
+      expect(results.filter((r) => r === "ok")).toHaveLength(0);
+    }
+    expect(looked).toBeLessThanOrEqual(ACCOUNT_MAX_WRONG);
+    expect(db.events.length).toBeLessThanOrEqual(ACCOUNT_MAX_WRONG); // the lines left are those of the guesses that were looked at
   });
 
   it("a burst that includes the right code does not get it through once the lock is reached", async () => {
@@ -280,6 +286,39 @@ describe("the code", () => {
     const burst = [codeAt(secret, stepOf(NOW) + 1), ...Array.from({ length: 20 }, (_, i) => String(200000 + i))];
     const results = await Promise.all(burst.map((c) => verifySecondFactor("u1", c, "ua", NOW)));
     expect(results.every((r) => r === "locked")).toBe(true);
+  });
+
+  // The lock must end 15 minutes after the guesses that caused it. An attempt the lock refuses used to leave its own line, so a
+  // person (or a script) that kept trying while locked kept pushing the end of the lock forward, and the message said 15 minutes.
+  it("trying again while locked leaves no line behind: the lock still ends 15 minutes after the guesses that made it", async () => {
+    const { secret } = await personWithTwoStep();
+    for (let i = 0; i < ACCOUNT_MAX_WRONG; i++) await verifySecondFactor("u1", "000000", "ua", NOW);
+    expect(db.events).toHaveLength(ACCOUNT_MAX_WRONG);
+
+    const retry = new Date(NOW.getTime() + 5 * 60 * 1000);
+    vi.setSystemTime(retry);
+    for (let i = 0; i < 12; i++) expect(await verifySecondFactor("u1", "000000", "ua", retry)).toBe("locked");
+    expect(db.events).toHaveLength(ACCOUNT_MAX_WRONG); // the twelve refused attempts wrote nothing that stays
+
+    const later = new Date(NOW.getTime() + 16 * 60 * 1000);
+    vi.setSystemTime(later);
+    expect(await verifySecondFactor("u1", codeAt(secret, stepOf(later)), "ua", later)).toBe("ok");
+  });
+
+  // Somebody who knows the password can make a challenge and send 10 wrong codes. That must not shut the owner out: the lock is for
+  // the 6 digits, and a recovery code (about 49 bits, 8 of them) cannot be guessed.
+  it("while the 6 digits are locked a recovery code still gets the owner in, once", async () => {
+    const { secret, recoveryCodes } = await personWithTwoStep();
+    for (let i = 0; i < ACCOUNT_MAX_WRONG; i++) await verifySecondFactor("u1", "000000", "ua", NOW);
+    expect(await verifySecondFactor("u1", codeAt(secret, stepOf(NOW) + 1), "ua", NOW)).toBe("locked"); // the right 6 digits are still refused
+    expect(await verifySecondFactor("u1", recoveryCodes[0], "ua", NOW)).toBe("ok");
+    expect(await verifySecondFactor("u1", recoveryCodes[0], "ua", NOW)).toBe("wrong"); // spent
+  });
+
+  it("a wrong recovery code during the lock is just wrong, and is not a way to guess the 6 digits", async () => {
+    await personWithTwoStep();
+    for (let i = 0; i < ACCOUNT_MAX_WRONG; i++) await verifySecondFactor("u1", "000000", "ua", NOW);
+    expect(await verifySecondFactor("u1", "AAAAA-BBBBB", "ua", NOW)).toBe("wrong");
   });
 
   it("a right code does not use up the allowance: signing in 30 times in a row never locks the account", async () => {

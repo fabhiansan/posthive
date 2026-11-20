@@ -5,7 +5,9 @@
 //  - a login that needs a code waits in a TotpChallenge: 5 minutes, 5 wrong codes, and the 5 are counted BEFORE the code is
 //    looked at, in the same write, so many guesses sent at once still count as 5;
 //  - a code can be used once (the newest accepted 30-second step is kept, and moved forward in a conditional write);
-//  - more than 10 wrong codes on an account in 15 minutes locks the second step for everybody, whatever the challenge;
+//  - more than 10 wrong codes on an account in 15 minutes lock the 6-digit code, whatever the challenge. A recovery code is not
+//    locked (49 bits cannot be guessed), so somebody who only knows the password can never shut the owner out of the account;
+//    an attempt that is refused by the lock leaves no line behind, so trying again while locked does not push the 15 minutes forward;
 //  - the secret is encrypted at rest and shown only while setup is running; recovery codes are shown once and kept as hashes.
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "../prisma.js";
@@ -105,13 +107,21 @@ export async function verifySecondFactor(userId: string, typed: string, userAgen
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { totpSecret: true, totpEnabledAt: true, totpLastStep: true } });
   if (!user?.totpSecret || !user.totpEnabledAt) return "wrong";
 
-  // Every guess is written down first, counted (itself included), and taken back only if the code turns out to be right.
-  const guess = await writeGuess(userId, userAgent);
-  if (await locked(userId, now)) return "locked";
-
   const code = typed.trim();
+  const recovery = looksLikeRecoveryCode(code);
+
+  // Every guess is written down first, counted (itself included), and taken back if the code turns out to be right.
+  const guess = await writeGuess(userId, userAgent);
+  // The lock protects the 6 digits. A recovery code is long and random (about 49 bits), so it is never locked: whoever has only
+  // the password cannot use the lock to keep the owner out.
+  if (!recovery && (await locked(userId, now))) {
+    // a refused attempt leaves nothing behind: kept, its line would count again and push the end of the lock forward
+    await prisma.loginEvent.deleteMany({ where: { id: guess } });
+    return "locked";
+  }
+
   let accepted = false;
-  if (looksLikeRecoveryCode(code)) {
+  if (recovery) {
     const { count } = await prisma.recoveryCode.updateMany({ where: { userId, codeHash: hashRecoveryCode(code), usedAt: null }, data: { usedAt: now } });
     accepted = count === 1;
   } else {

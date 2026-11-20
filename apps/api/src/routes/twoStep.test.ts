@@ -269,6 +269,26 @@ describe("the second step of a login", () => {
     const results = await Promise.all([login(challenge, code), login(challenge, code), login(challenge, code)]);
     expect(results.filter((r) => r.statusCode === 200)).toHaveLength(1);
   });
+
+  // Somebody who has only the password: two logins, 5 wrong codes each, and the account is locked for the 6 digits. The owner is
+  // not shut out: the lock says so in words, and a recovery code opens the session.
+  it("after 10 wrong codes the owner's 6 digits are refused with the way out in the message, and a recovery code still signs in", async () => {
+    const { secret, recoveryCodes } = await turnedOn();
+    for (let round = 0; round < 2; round++) {
+      const attacker = await createChallenge("u1", "ua", true, NOW);
+      for (let i = 0; i < 5; i++) await login(attacker, "000000");
+    }
+    const owner = await createChallenge("u1", "ua", true, NOW);
+    const refused = await login(owner, freshCode(secret));
+    expect(refused.statusCode).toBe(429);
+    expect(refused.json()).toEqual({ error: "Too many wrong codes. Wait 15 minutes, or use a recovery code.", code: "TOO_MANY_WRONG_CODES" });
+    expect(refused.headers["x-test-session"]).toBeUndefined();
+
+    const ownerAgain = await createChallenge("u1", "ua", true, NOW);
+    const signedIn = await login(ownerAgain, recoveryCodes[0]);
+    expect(signedIn.statusCode).toBe(200);
+    expect(signedIn.headers["x-test-session"]).toContain("access-u1");
+  });
 });
 
 describe("turning it off and making new recovery codes need the password AND a code", () => {
