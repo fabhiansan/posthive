@@ -16,11 +16,6 @@ export function groupedKey(key: string): string {
   return key.replace(/\s+/g, "").replace(/(.{4})(?=.)/g, "$1 ");
 }
 
-/** What the six boxes or the one field hold, as the API wants it: an authenticator code is digits only, a recovery code keeps its letters. */
-export function cleanCode(typed: string): string {
-  return typed.trim();
-}
-
 /** Six digits, or a recovery code (ten letters and digits, dash or not): the two things the second step takes. */
 export function looksLikeCode(typed: string): boolean {
   const t = typed.trim().toUpperCase().replace(/[\s-]/g, "");

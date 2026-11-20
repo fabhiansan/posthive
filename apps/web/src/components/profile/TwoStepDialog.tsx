@@ -13,6 +13,7 @@ import { QrCode } from "@/components/profile/QrCode";
 import { useToast } from "@/components/Toast";
 import { apiFetch } from "@/lib/api";
 import { BRAND } from "@/lib/brand";
+import { saveFile } from "@/lib/save-file";
 import { groupedKey, looksLikeCode, recoveryCodesFile, type ApiTwoStep } from "@/lib/two-step";
 
 type Props = {
@@ -103,12 +104,7 @@ export function TwoStepDialog({ open, onOpenChange, enabled, email, onChanged, r
 
   function download() {
     const blob = new Blob([recoveryCodesFile(codes, BRAND.name, email, new Date())], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${BRAND.name.toLowerCase()}-recovery-codes.txt`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    saveFile(blob, `${BRAND.name.toLowerCase()}-recovery-codes.txt`);
   }
 
   async function enable(value: string) {

@@ -1,6 +1,6 @@
 // The small pure helpers of two-step verification on the web.
 import { describe, expect, it } from "vitest";
-import { cleanCode, groupedKey, looksLikeCode, recoveryCodesFile, twoStepDetail } from "./two-step";
+import { groupedKey, looksLikeCode, recoveryCodesFile, twoStepDetail } from "./two-step";
 
 describe("groupedKey", () => {
   it("writes the setup key in groups of four, as it is typed into an app", () => {
@@ -20,9 +20,6 @@ describe("looksLikeCode", () => {
   });
   it("refuses what cannot be either: short, long, or with letters in an authenticator code", () => {
     for (const bad of ["", "12345", "1234567", "12345a", "ABCDE-FGHJ", "ABCDE-FGHJ0", "ABCDE-FGHJKL"]) expect(looksLikeCode(bad)).toBe(false);
-  });
-  it("cleanCode only trims: a recovery code keeps its letters for the API to read", () => {
-    expect(cleanCode("  ABCDE-FGHJK ")).toBe("ABCDE-FGHJK");
   });
 });
 

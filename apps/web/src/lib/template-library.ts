@@ -3,6 +3,7 @@ import { wibDateKey } from "./datetime";
 import { shortName } from "./dashboard-format";
 import { formatPlanDate } from "./import-rows";
 import { platformLabel } from "./platforms";
+import { saveFile } from "./save-file";
 import { hasFigmaSource, hasUsableSource, type DesignTemplate, type TemplateFormat, type TemplatePlatform } from "./templates";
 
 // The Template Library page (docs/design/designer-template.png): what a card says, how the list is filtered, counted,
@@ -205,13 +206,7 @@ export function toCsv(list: readonly DesignTemplate[]): string {
   return [CSV_HEAD, ...rows].map((r) => r.map(cell).join(",")).join("\r\n") + "\r\n";
 }
 
-/** Gives the browser a file to save. */
+/** Gives the browser the CSV to save. The BOM in front makes Excel read it as UTF-8. */
 export function downloadCsv(name: string, csv: string): void {
-  const url = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  // not at once: Safari and Firefox may still be reading the file when the click returns
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  saveFile(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }), name);
 }
