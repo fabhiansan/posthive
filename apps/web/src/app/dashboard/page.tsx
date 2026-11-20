@@ -120,7 +120,7 @@ function MarketingDashboard() {
                   onOpen={actions.open}
                 />
               </div>
-              <SideColumn data={data} today={now} canImport={canAccess("/jobs/import")} />
+              <SideColumn data={data} today={now} canImport={canAccess("/jobs/import")} onOpen={actions.open} />
             </div>
 
             <ContentTable

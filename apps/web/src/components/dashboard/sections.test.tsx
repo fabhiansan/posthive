@@ -648,6 +648,48 @@ describe("SideColumn: today's posts and tasks", () => {
     expect(screen.getByText("12 posts planned across 1 connected channel this quarter.")).toBeTruthy();
   });
 
+  // A task is something to DO: a click opens the post in the drawer, which offers what this person may do with it (edit, review, retry).
+  describe("a post of either panel opens its drawer", () => {
+    const tasks = [row("t1", "Draft to finish", { production: "brief", publication: null, status: "draft" })];
+    const out = [row("p1", "Goes out today")];
+    const data = { ...empty, tasksToday: 1, taskRows: tasks, today: { count: 1, rows: out } };
+
+    it("a click on a task, and on a post of Today Publish, hands over that post's id", async () => {
+      const onOpen = vi.fn();
+      render(<SideColumn data={data} today={TODAY} onOpen={onOpen} />);
+      await userEvent.click(screen.getByRole("button", { name: "Open Draft to finish" }));
+      await userEvent.click(screen.getByRole("button", { name: "Open Goes out today" }));
+      expect(onOpen.mock.calls).toEqual([["t1"], ["p1"]]);
+    });
+
+    it("Enter and Space on the row open it too, as on the rows of the table", async () => {
+      const onOpen = vi.fn();
+      render(<SideColumn data={data} today={TODAY} onOpen={onOpen} />);
+      const task = screen.getByRole("button", { name: "Open Draft to finish" });
+      task.focus();
+      await userEvent.keyboard("{Enter}");
+      await userEvent.keyboard(" ");
+      expect(onOpen.mock.calls).toEqual([["t1"], ["t1"]]);
+    });
+
+    it("every row is reachable by Tab and named for what it opens", () => {
+      render(<SideColumn data={data} today={TODAY} onOpen={vi.fn()} />);
+      for (const name of ["Open Draft to finish", "Open Goes out today"]) expect(screen.getByRole("button", { name }).getAttribute("tabindex")).toBe("0");
+    });
+
+    it("without onOpen the rows are plain text: no button, nothing to Tab to", () => {
+      render(<SideColumn data={data} today={TODAY} />);
+      expect(screen.queryByRole("button", { name: /^Open / })).toBeNull();
+      expect(screen.getByText("Draft to finish")).toBeTruthy();
+    });
+
+    it("the title keeps its one line and tooltip when the row is a button", () => {
+      const long = "A very long title ".repeat(20).trim();
+      render(<SideColumn data={{ ...empty, tasksToday: 1, taskRows: [row("t9", long, { production: "brief", publication: null, status: "draft" })] }} today={TODAY} onOpen={vi.fn()} />);
+      expect(screen.getByTitle(long).className).toContain("truncate");
+    });
+  });
+
   it("with no tasks it explains what counts as one", () => {
     render(<SideColumn data={empty} today={TODAY} />);
     expect(screen.getByText("No tasks today")).toBeTruthy();

@@ -506,6 +506,37 @@ describe("dashboard page: the calendar", () => {
     expect(calls("/jobs/c1/detail")).toHaveLength(1);
   });
 
+  // Today's tasks and Today Publish are lists of work: a click opens the post in the same drawer as the calendar and the table, where the
+  // person does what it needs. The post is read by its id, so one that the table below does not list opens too.
+  describe("a post of the day's two panels", () => {
+    const detailOf = (id: string, title: string) => ({ id, status: "draft", approvalStatus: null, scheduledFor: "2026-11-09T02:00:00.000Z", title, caption: "", channels: ["instagram"], sourceRow: null, link: null, designCopy: "", category: null, pillar: null, owner: null, accounts: [], captionLength: 0, commentText: null, media: [], reviewNote: null, source: null, activity: [], mine: true, missing: [] });
+    const serveDetails = () =>
+      serve(dashboard(), undefined, (path) => {
+        if (path === "/accounts") return [];
+        if (path === "/templates") return { templates: [] };
+        if (path === "/jobs/m1/detail") return detailOf("m1", "A draft of the day");
+        if (path === "/jobs/t1/detail") return detailOf("t1", "Today post");
+        throw new Error(`unexpected ${path}`);
+      });
+
+    // (the drawer covers the page once it is open, so each panel is clicked in its own page)
+    it("a task of the day opens its drawer", async () => {
+      serveDetails();
+      render(<DashboardPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Open A draft of the day" }));
+      expect(await screen.findByRole("heading", { name: "A draft of the day" })).toBeTruthy();
+      expect(calls("/jobs/m1/detail")).toHaveLength(1);
+    });
+
+    it("a post of Today Publish opens its drawer", async () => {
+      serveDetails();
+      render(<DashboardPage />);
+      await userEvent.click(await screen.findByRole("button", { name: "Open Today post" }));
+      expect(await screen.findByRole("heading", { name: "Today post" })).toBeTruthy();
+      expect(calls("/jobs/t1/detail")).toHaveLength(1);
+    });
+  });
+
   it("the legend names the statuses the chips use", async () => {
     serve(dashboard());
     render(<DashboardPage />);

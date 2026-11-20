@@ -16,6 +16,8 @@ type Props = {
   today: Date;
   /** Whether the person's role opens the import page, which the empty milestones panel points to. */
   canImport?: boolean;
+  /** A post of either list was clicked: open it in the drawer. Without it the rows are plain text. */
+  onOpen?: (id: string) => void;
 };
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -27,7 +29,7 @@ const SIDE_ROWS = 3;
  * Today's publishing (posts a reviewer approved, or that were scheduled directly: out of draft), today's tasks (the drafts
  * dated today, still to be made, reviewed or fixed), the quarter's milestones and the channels: the right-hand column.
  */
-export function SideColumn({ data, today, canImport = true }: Props) {
+export function SideColumn({ data, today, canImport = true, onOpen }: Props) {
   const { plan, today: publishToday, milestones, channels, tasksToday, taskRows } = data;
   const anyDisconnected = channels.some((c) => !c.connected);
   const connected = channels.filter((c) => c.connected).length;
@@ -44,7 +46,7 @@ export function SideColumn({ data, today, canImport = true }: Props) {
         {publishRows.length > 0 && (
           <ItemGroup className="gap-4">
             {publishRows.map((row) => (
-              <PostLine key={row.id} row={row} kind="publish" />
+              <PostLine key={row.id} row={row} kind="publish" onOpen={onOpen} />
             ))}
           </ItemGroup>
         )}
@@ -88,7 +90,7 @@ export function SideColumn({ data, today, canImport = true }: Props) {
         {myRows.length > 0 && (
           <ItemGroup className="gap-4">
             {myRows.map((row) => (
-              <PostLine key={row.id} row={row} kind="task" />
+              <PostLine key={row.id} row={row} kind="task" onOpen={onOpen} />
             ))}
           </ItemGroup>
         )}
