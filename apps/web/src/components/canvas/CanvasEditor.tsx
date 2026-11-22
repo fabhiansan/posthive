@@ -5,7 +5,7 @@ import type { CanvasDocument, CanvasNode, CanvasStageHandle, ExportOptions, Hist
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import type { Saved } from "@/lib/autosave";
-import { editorFonts, getDesign, loadAsset, saveDesign, uploadCanvasAsset } from "@/lib/canvas";
+import { STORAGE_UNSUPPORTED_MESSAGE, canvasProblem, editorFonts, getDesign, loadAsset, saveDesign, uploadCanvasAsset } from "@/lib/canvas";
 import type { CanvasEngine, LoadedDesign } from "./useCanvasBootstrap";
 import { CanvasShell } from "./CanvasShell";
 import { ExportMenu } from "./ExportMenu";
@@ -38,8 +38,9 @@ export function download(blob: Blob, filename: string) {
 export const slugOf = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "design";
 
 /**
- * The Canvas editor. With a saved `design` (a designer's, opened at /canvas/<id>) it autosaves; without one it is
- * a local, unsaved design (everyone else, until the Marketing phase). It owns the document and its undo history,
+ * The Canvas editor. With a saved `design` (a designer's, opened at /canvas/<id>) it autosaves; without one it is a local, unsaved
+ * design. Nothing in the app opens it that way any more (Marketing has its own editor, InstanceEditor, and the page always passes a
+ * design); the no-design branches are kept for now and can be removed. It owns the document and its undo history,
  * the selection, the decoded images, and the keyboard. The Konva engine comes in as a prop because it loads in the
  * browser only; everything runtime is taken from it, never imported. Mount it once per design (key it by id).
  */
@@ -105,6 +106,7 @@ export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?
   // What the editor could not show when it opened.
   useEffect(() => {
     if (design?.badApiBase) toast.error("Images can't be loaded because the API address is not configured.");
+    else if (design?.noStorage) toast.warning(STORAGE_UNSUPPORTED_MESSAGE);
     else if (design && design.missing.length > 0) {
       toast.warning(`${design.missing.length === 1 ? "An image" : `${design.missing.length} images`} in this design could not be found and ${design.missing.length === 1 ? "is" : "are"} shown as grey boxes.`);
     }
@@ -162,7 +164,7 @@ export function CanvasEditor({ engine, design }: { engine: CanvasEngine; design?
       setImages((m) => new Map(m).set(asset.id, image));
       add(createImage(doc, { ...asset, name: file.name.replace(/\.[^.]+$/, "") }));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "The image could not be added.");
+      toast.error(canvasProblem(err, "The image could not be added."));
     } finally {
       setUploading(false);
     }

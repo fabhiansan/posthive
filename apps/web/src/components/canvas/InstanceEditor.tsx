@@ -5,7 +5,7 @@ import type { CanvasDocument, CanvasStageHandle, ExportOptions, History, Overrid
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import type { Saved } from "@/lib/autosave";
-import { editorFonts, getInstance, liveReview, loadAsset, saveInstance, uploadCanvasAsset, type InstanceDetail } from "@/lib/canvas";
+import { STORAGE_UNSUPPORTED_MESSAGE, canvasProblem, editorFonts, getInstance, liveReview, loadAsset, saveInstance, uploadCanvasAsset, type InstanceDetail } from "@/lib/canvas";
 import type { CanvasEngine, LoadedImages } from "./useCanvasBootstrap";
 import { download, isTyping, slugOf } from "./CanvasEditor";
 import { CanvasShell } from "./CanvasShell";
@@ -99,6 +99,7 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
   // What the editor could not show when it opened.
   useEffect(() => {
     if (instance.badApiBase) toast.error("Images can't be loaded because the API address is not configured.");
+    else if (instance.noStorage) toast.warning(STORAGE_UNSUPPORTED_MESSAGE);
     else if (instance.missing.length > 0) {
       toast.warning(`${instance.missing.length === 1 ? "An image" : `${instance.missing.length} images`} in this design could not be found and ${instance.missing.length === 1 ? "is" : "are"} shown as grey boxes.`);
     }
@@ -131,7 +132,7 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
       setImages((m) => new Map(m).set(asset.id, image));
       setHistory((h) => commit(h, setOverride(base, manifest, h.present, { nodeId, assetId: asset.id })));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "The image could not be replaced.");
+      toast.error(canvasProblem(err, "The image could not be replaced."));
     } finally {
       setUploading(false);
     }

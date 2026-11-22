@@ -183,7 +183,15 @@ describe("when the server refuses", () => {
     expect(submitProblem({ status: 400, data: { error: "version must be a whole number" } })).toBe("version must be a whole number");
     expect(submitProblem(new Error("boom"))).toBe("boom");
     expect(submitProblem(null)).toBe("The design could not be submitted.");
-    expect(submitProblem({ status: 500 })).toBe("The design could not be submitted.");
+    // Phase 7: a server error and a lost connection each get their own plain sentence instead of the generic one (canvasProblem)
+    expect(submitProblem({ status: 500 })).toMatch(/problem on its side/i);
+    expect(submitProblem({ status: 503 })).toMatch(/busy/i);
+    // ...and with the bodies the API really sends: the app's error handler answers `error: err.name` ("Error"), the auth gate "Service
+    // Unavailable". apiFetch keeps that body in `data`, and it must never reach the person as the toast text.
+    expect(submitProblem({ status: 500, message: "Error", data: { statusCode: 500, error: "Error", message: "Internal Server Error" } })).toMatch(/problem on its side/i);
+    expect(submitProblem({ status: 503, message: "Service Unavailable", data: { statusCode: 503, error: "Service Unavailable", message: "Sign-in is busy" } })).toMatch(/busy/i);
+    expect(submitProblem({ status: 429, data: { error: "Too Many Requests" } })).toBe("You are submitting too fast. Wait a moment and try again.");
+    expect(submitProblem(new TypeError("Failed to fetch"))).toMatch(/offline/i);
   });
 });
 

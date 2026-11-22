@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@prisma/client";
-import { withAuth, getUser, getWorkspaceId } from "../lib/auth/withAuth.js";
+import { getUser, getWorkspaceId } from "../lib/auth/withAuth.js";
+import { canvasWithAuth as withAuth } from "../lib/canvasAuthGate.js"; // the gated withAuth, see lib/canvasAuthGate.ts
 import { prisma } from "../lib/prisma.js";
 import { INSTANCE_PAGE, RevisionUnreadable, decodeCursor, encodeCursor, parseLimit, readOverrides, validateOverrides } from "../lib/canvas.js";
 import { ARCHIVED, YOURS, contentEditorOnly, designerOnly, errorCode, invalidBody, isRefusal, jsonOnly, lockInstance, notFound, refuse, wellFormedId } from "../lib/canvasHttp.js";
@@ -105,7 +106,7 @@ export async function canvasReviewRoutes(app: FastifyInstance): Promise<void> {
 
   // My submissions of one design, newest first, with the answers (no documents). Readable whether or not the design is archived:
   // they come from the snapshots, not from the instance.
-  app.get("/canvas/instances/:id/submissions", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")] }, async (req, reply) => {
+  app.get("/canvas/instances/:id/submissions", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")], config: userLimit(120) }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { limit: rawLimit, cursor: rawCursor } = req.query as { limit?: unknown; cursor?: unknown };
     const limit = parseLimit(rawLimit);
@@ -130,7 +131,7 @@ export async function canvasReviewRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // One of my submissions as it was submitted: the composed document, ready to draw read-only.
-  app.get("/canvas/instances/:id/submissions/:number", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")] }, async (req, reply) => {
+  app.get("/canvas/instances/:id/submissions/:number", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")], config: userLimit(120) }, async (req, reply) => {
     const { id, number } = req.params as { id: string; number: string };
     if (!WHOLE.test(number)) return reply.status(404).send({ error: "Submission not found" });
     if (!(await prisma.design.findFirst({ where: YOURS(id, getWorkspaceId(req), getUser(req).id), select: { id: true } }))) return notFound(reply);
@@ -149,7 +150,7 @@ export async function canvasReviewRoutes(app: FastifyInstance): Promise<void> {
   // ── The design team ───────────────────────────────────────────────────────
 
   // What the indicator in the top bar polls.
-  app.get("/canvas/reviews/summary", { preHandler: [withAuth, designerOnly] }, async (req, reply) => {
+  app.get("/canvas/reviews/summary", { preHandler: [withAuth, designerOnly], config: userLimit(120) }, async (req, reply) => {
     const where = { workspaceId: getWorkspaceId(req), status: "pending" };
     const [pending, newest] = await Promise.all([
       prisma.designReviewRequest.count({ where }),
@@ -159,7 +160,7 @@ export async function canvasReviewRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // The queue: waiting for review (default), or already answered. Newest submitted first, in pages like "my designs".
-  app.get("/canvas/reviews", { preHandler: [withAuth, designerOnly] }, async (req, reply) => {
+  app.get("/canvas/reviews", { preHandler: [withAuth, designerOnly], config: userLimit(120) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { status, limit: rawLimit, cursor: rawCursor } = req.query as { status?: unknown; limit?: unknown; cursor?: unknown };
     if (status !== undefined && status !== "pending" && status !== "decided") return reply.status(400).send({ error: "status must be pending or decided", code: "INVALID_STATUS" });
@@ -200,7 +201,7 @@ export async function canvasReviewRoutes(app: FastifyInstance): Promise<void> {
 
   // One submission to review: the document as submitted, what changed since the previous submission (or since the published
   // revision, for the first one), and the earlier submissions of the same design.
-  app.get("/canvas/reviews/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Review")] }, async (req, reply) => {
+  app.get("/canvas/reviews/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Review")], config: userLimit(120) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
     const review = await prisma.designReviewRequest.findFirst({

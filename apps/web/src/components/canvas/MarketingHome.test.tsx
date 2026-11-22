@@ -259,7 +259,9 @@ describe("Marketing home: my designs", () => {
       expect(h.toast.error).not.toHaveBeenCalled();
     });
 
-    it("any other failure says why and keeps the design", async () => {
+    // Phase 7: a server error (5xx) shows a plain sentence, not whatever text the server happened to send; a 4xx message, which says
+    // what to fix, is still shown as it is (canvasProblem in lib/canvas.ts).
+    it("a server error says so in plain words and keeps the design", async () => {
       const original = h.apiFetch.getMockImplementation()!;
       h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
         if (init?.method === "DELETE") throw Object.assign(new Error("Server error"), { status: 500 });
@@ -269,7 +271,36 @@ describe("Marketing home: my designs", () => {
       await screen.findByText("Design 1");
       await userEvent.click(screen.getByRole("button", { name: "Delete Design 1" }));
       await userEvent.click(await screen.findByRole("button", { name: "Delete design" }));
-      await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Server error"));
+      await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Posthive had a problem on its side. Try again in a moment."));
+      expect(screen.getByText("Design 1")).toBeTruthy();
+    });
+
+    it("a refusal the server worded on purpose (a 4xx) is shown as it is, and keeps the design", async () => {
+      const original = h.apiFetch.getMockImplementation()!;
+      h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+        if (init?.method === "DELETE") throw Object.assign(new Error("This design is in use."), { status: 409 });
+        return original(path, init);
+      });
+      render(<MarketingHome />);
+      await screen.findByText("Design 1");
+      await userEvent.click(screen.getByRole("button", { name: "Delete Design 1" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Delete design" }));
+      await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("This design is in use."));
+      expect(screen.getByText("Design 1")).toBeTruthy();
+    });
+
+    it("a lost connection says the person seems to be offline, not the browser's 'Failed to fetch'", async () => {
+      const original = h.apiFetch.getMockImplementation()!;
+      h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+        if (init?.method === "DELETE") throw new TypeError("Failed to fetch");
+        return original(path, init);
+      });
+      render(<MarketingHome />);
+      await screen.findByText("Design 1");
+      await userEvent.click(screen.getByRole("button", { name: "Delete Design 1" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Delete design" }));
+      await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith(expect.stringMatching(/offline/i)));
+      expect(h.toast.error).not.toHaveBeenCalledWith("Failed to fetch");
       expect(screen.getByText("Design 1")).toBeTruthy();
     });
   });
@@ -347,7 +378,8 @@ describe("Marketing home: review state (phase 6)", () => {
     pages = { "": { instances: [submitted(2, "pending")], nextCursor: null } };
     const original = h.apiFetch.getMockImplementation()!;
     h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
-      if (init?.method === "DELETE") throw Object.assign(new Error("The design could not be archived."), { status: 500 });
+      // a 4xx with no message of its own ("400 error" is apiFetch's placeholder) falls back to the archive wording, not the delete one
+      if (init?.method === "DELETE") throw Object.assign(new Error("400 error"), { status: 400 });
       return original(path, init);
     });
     render(<MarketingHome />);
@@ -460,5 +492,32 @@ describe("Marketing home: archived designs (phase 6)", () => {
     await screen.findByText("Design 3");
     await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
     expect(await screen.findByText(/Archived designs didn't load/)).toBeTruthy();
+  });
+
+  // Phase 7: the failed section has its own "Try again" (it used to say "close this section and open it again"). The effect that
+  // loads the list only reran when the section opened, so the button needs a counter of its own: this proves it really reads again.
+  it("'Try again' on a failed section reads the list again, and shows it when the second read works", async () => {
+    let down = true;
+    const original = h.apiFetch.getMockImplementation()!;
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      if (String(path).includes("archived=1")) {
+        if (down) throw new TypeError("Failed to fetch");
+        return { instances: [submitted(9, "approved", { archivedAt: "2026-11-19T10:00:00.000Z" })], nextCursor: null };
+      }
+      return original(path, init);
+    });
+    render(<MarketingHome />);
+    await screen.findByText("Design 3");
+    await userEvent.click(screen.getByRole("button", { name: /Archived designs/ }));
+    await screen.findByText(/Archived designs didn't load/);
+    const reads = () => h.apiFetch.mock.calls.filter(([p]) => String(p).includes("archived=1")).length;
+    const before = reads();
+    down = false;
+    await userEvent.click(within(screen.getByRole("heading", { name: /Archived designs/ }).closest("section") as HTMLElement).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(reads()).toBe(before + 1));
+    expect(await screen.findByText("Design 9")).toBeTruthy();
+    expect(screen.queryByText(/Archived designs didn't load/)).toBeNull();
+    // the button that was clicked is gone, and keyboard focus is on the section's own toggle, not dropped to the page
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /Archived designs/ }));
   });
 });

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import { Textarea } from "@/components/ui/textarea";
-import { canSubmitReview, getInstance, submitInstance, type ReviewSummary } from "@/lib/canvas";
+import { canSubmitReview, canvasProblem, getInstance, submitInstance, type ReviewSummary } from "@/lib/canvas";
 
 /** Mirrors the API's limit on a note. */
 export const NOTE_MAX = 500;
@@ -33,7 +33,9 @@ export function submitProblem(err: unknown): string {
   if (code === "UNKNOWN_ASSET") return "An image in this design is no longer available. Replace it and try again.";
   if (status === 429) return "You are submitting too fast. Wait a moment and try again.";
   if (status === 404) return "This design doesn't exist any more.";
-  return sent ?? (err instanceof Error ? err.message : "The design could not be submitted.");
+  // A 5xx body carries a technical `error` ("Error", "Service Unavailable"): canvasProblem says it in plain words. A 4xx says what to fix.
+  if (typeof status === "number" && status >= 500) return canvasProblem(err, "The design could not be submitted.");
+  return sent ?? canvasProblem(err, "The design could not be submitted.");
 }
 
 /** The same address without the review parameter, and everything else (a template, a hash) left exactly as it was. */

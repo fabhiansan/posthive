@@ -9,7 +9,7 @@ import { Spinner } from "@/components/Spinner";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { createDesign, deleteDesign, DESIGN_LIST_MAX, listDesigns, type DesignSummary } from "@/lib/canvas";
+import { canvasProblem, createDesign, deleteDesign, DESIGN_LIST_MAX, listDesigns, type DesignSummary } from "@/lib/canvas";
 import { useBootNone } from "./CanvasBoot";
 import { ReviewIndicator } from "./ReviewIndicator";
 
@@ -42,7 +42,7 @@ export function CanvasHome() {
       const { design } = await createDesign();
       router.push(`/canvas/${design.id}`);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "The design could not be created.");
+      toast.error(canvasProblem(err, "The design could not be created."));
       setCreating(false);
     }
   }
@@ -52,7 +52,7 @@ export function CanvasHome() {
       await deleteDesign(design.id);
     } catch (err) {
       if ((err as { status?: number }).status !== 404) {
-        toast.error(err instanceof Error ? err.message : "The design could not be deleted.");
+        toast.error(canvasProblem(err, "The design could not be deleted."));
         throw err; // keeps the dialog open for another try
       }
       // 404: it was already gone. The list should say so too.

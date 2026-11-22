@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Prisma } from "@prisma/client";
-import { withAuth, getUser, getWorkspaceId } from "../lib/auth/withAuth.js";
+import { getUser, getWorkspaceId } from "../lib/auth/withAuth.js";
+// `withAuth` here is the gated one: the same authentication, plus the Canvas auth gate's outcome recording (lib/canvasAuthGate.ts).
+import { canvasWithAuth as withAuth, registerCanvasAuthGate, type CanvasAuthGate } from "../lib/canvasAuthGate.js";
 import { prisma } from "../lib/prisma.js";
 import type { StorageAdapter } from "../lib/storage.js";
 import { AssetRejected, CANVAS_PRIVATE_DIR, MAX_ASSET_BYTES, isPrivateAssetStorage, processAsset } from "../lib/canvasAssets.js";
@@ -74,7 +76,17 @@ async function lockDesign(tx: Prisma.TransactionClient, id: string, workspaceId:
   return rows.length > 0;
 }
 
-export async function canvasRoutes(app: FastifyInstance, { storage }: { storage: StorageAdapter }): Promise<void> {
+/** Thrown inside a transaction to roll it back when the template changed under it; answered as a 409 outside. */
+class TemplateChanged extends Error {}
+
+/**
+ * Rate limits, all Canvas routes: every route carries `userLimit` (one allowance per person per workspace, decided by the server
+ * after authentication, never by a header or a token). What happens BEFORE authentication is the auth gate's job: it runs as
+ * scope hooks registered here, so it covers every route of this plugin (and the review routes, registered below on the same app).
+ * `gate: false` turns it off for a test that mocks authentication; production passes nothing and gets the default gate.
+ */
+export async function canvasRoutes(app: FastifyInstance, { storage, gate }: { storage: StorageAdapter; gate?: CanvasAuthGate | false }): Promise<void> {
+  if (gate !== false) registerCanvasAuthGate(app, gate);
   const local = isPrivateAssetStorage(storage);
   if (!local) app.log.warn("Canvas image assets are disabled: they need STORAGE_PROVIDER=local (private delivery is only built for local disk).");
 
@@ -86,7 +98,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // Any workspace member may import: Marketing replaces images and Designers build with them.
   app.post(
     "/canvas/assets",
-    { preHandler: [needsLocalStorage, withAuth], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    { preHandler: [needsLocalStorage, withAuth], config: userLimit(30) },
     async (req, reply) => {
       const { id: userId } = getUser(req);
       const workspaceId = getWorkspaceId(req);
@@ -129,7 +141,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
 
   app.get(
     "/canvas/assets/:id/content",
-    { preHandler: [needsLocalStorage, withAuth, wellFormedId("Asset")], config: { rateLimit: { max: 300, timeWindow: "1 minute" } } },
+    { preHandler: [needsLocalStorage, withAuth, wellFormedId("Asset")], config: userLimit(300) },
     async (req, reply) => {
       const workspaceId = getWorkspaceId(req);
       const { id } = req.params as { id: string };
@@ -163,7 +175,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // (designerOnly, notFound, jsonOnly and wellFormedId are in lib/canvasHttp.ts, shared with the review routes.) Creating
   // takes a JSON object: only `{}` (no name) means "Untitled design".
 
-  app.get("/canvas/designs", { preHandler: [withAuth, designerOnly] }, async (req, reply) => {
+  app.get("/canvas/designs", { preHandler: [withAuth, designerOnly], config: userLimit(120) }, async (req, reply) => {
     // shortcut: the newest 200 designs, no paging (the page says when it shows that many); add paging when a workspace gets there.
     const designs = await prisma.design.findMany({
       where: { workspaceId: getWorkspaceId(req), kind: KIND },
@@ -174,7 +186,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
     return reply.header("Cache-Control", "no-store").send({ designs: designs.map(withLatestRevision) });
   });
 
-  app.post("/canvas/designs", { preHandler: [withAuth, designerOnly, jsonOnly], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/canvas/designs", { preHandler: [withAuth, designerOnly, jsonOnly], config: userLimit(30) }, async (req, reply) => {
     const parsed = createBody.safeParse(req.body); // no `?? {}`: a missing or null body is refused, not defaulted
     if (!parsed.success) return reply.status(400).send(invalidBody(parsed.error));
     const design = await prisma.design.create({
@@ -184,7 +196,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
     return reply.status(201).send({ design: withLatestRevision(design) });
   });
 
-  app.get("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")] }, async (req, reply) => {
+  app.get("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")], config: userLimit(120) }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const design = await prisma.design.findFirst({ where: { id, workspaceId: getWorkspaceId(req), kind: KIND }, select: { ...SUMMARY, document: true } });
     if (!design) return notFound(reply);
@@ -193,7 +205,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
 
   // Autosave. The body names the version it was based on; the write only happens while that is still the stored
   // one, in a single UPDATE ... WHERE version = ?, so two designers (or two tabs) can never overwrite each other.
-  app.put("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")], config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.put("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design"), jsonOnly], config: userLimit(120) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
 
@@ -232,7 +244,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   const pinned = async (id: string, workspaceId: string) =>
     (await prisma.design.count({ where: { workspaceId, kind: INSTANCE, baseRevision: { designId: id } } })) ||
     (await prisma.designSubmission.count({ where: { workspaceId, baseRevision: { designId: id } } }));
-  app.delete("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")] }, async (req, reply) => {
+  app.delete("/canvas/designs/:id", { preHandler: [withAuth, designerOnly, wellFormedId("Design")], config: userLimit(30) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
     if (await prisma.template.findFirst({ where: { designId: id, workspaceId }, select: { id: true } })) return reply.status(DESIGN_LINKED.status).send(DESIGN_LINKED.body);
@@ -261,7 +273,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // anything visible to Marketing: that is the template's own Publish.
   app.post(
     "/canvas/designs/:id/publish",
-    { preHandler: [withAuth, designerOnly, wellFormedId("Design"), jsonOnly], config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    { preHandler: [withAuth, designerOnly, wellFormedId("Design"), jsonOnly], config: userLimit(10) },
     async (req, reply) => {
       const workspaceId = getWorkspaceId(req);
       const userId = getUser(req).id;
@@ -318,35 +330,43 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // "Create Canvas design" on the template page: the design is made and attached in ONE transaction, so a failure leaves
   // no unlinked design behind. A new design has no revision, so R4 applies to it exactly as to a design with none. The
   // body has no fields: the document is blank and the name is the template's category, both chosen here, never sent.
-  app.post("/canvas/templates/:id/design", { preHandler: [withAuth, designerOnly, wellFormedId("Template"), jsonOnly], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/canvas/templates/:id/design", { preHandler: [withAuth, designerOnly, wellFormedId("Template"), jsonOnly], config: userLimit(30) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const userId = getUser(req).id;
     const { id } = req.params as { id: string };
     const parsed = createForTemplateBody.safeParse(req.body);
     if (!parsed.success) return reply.status(400).send(invalidBody(parsed.error));
 
-    const outcome = await prisma.$transaction(async (tx) => {
-      if (!(await lockTemplate(tx, id, workspaceId))) return refuse(404, "Template not found");
-      const template = await tx.template.findFirst({ where: { id, workspaceId }, select: { ...SOURCE_SELECT, category: true } });
-      if (!template) return refuse(404, "Template not found");
-      if (template.designId) return refuse(409, "This template already has a Canvas design. Remove it first to attach another.", "TEMPLATE_HAS_DESIGN");
-      if (template.published && !hasUsableSource(sourceOf(template))) return refuse(409, CAN_STRAND, "DESIGN_NEEDS_REVISION");
+    // Thrown, never returned, once the design exists: a returned refusal would COMMIT the design that was just created. A throw rolls
+    // it back, and the 409 is answered below, outside the transaction.
+    let outcome;
+    try {
+      outcome = await prisma.$transaction(async (tx) => {
+        if (!(await lockTemplate(tx, id, workspaceId))) return refuse(404, "Template not found");
+        const template = await tx.template.findFirst({ where: { id, workspaceId }, select: { ...SOURCE_SELECT, category: true } });
+        if (!template) return refuse(404, "Template not found");
+        if (template.designId) return refuse(409, "This template already has a Canvas design. Remove it first to attach another.", "TEMPLATE_HAS_DESIGN");
+        if (template.published && !hasUsableSource(sourceOf(template))) return refuse(409, CAN_STRAND, "DESIGN_NEEDS_REVISION");
 
-      const name = designName.safeParse(template.category ?? "");
-      const design = await tx.design.create({
-        data: { workspaceId, kind: KIND, name: name.success ? name.data : DEFAULT_DESIGN_NAME, document: json(BLANK_DOCUMENT), createdByUserId: userId },
-        select: { id: true, name: true, version: true },
+        const name = designName.safeParse(template.category ?? "");
+        const design = await tx.design.create({
+          data: { workspaceId, kind: KIND, name: name.success ? name.data : DEFAULT_DESIGN_NAME, document: json(BLANK_DOCUMENT), createdByUserId: userId },
+          select: { id: true, name: true, version: true },
+        });
+        // Where the link is written (guarded by `designId: null`); if it matches nothing the template changed under the lock's feet.
+        const { count } = await tx.template.updateMany({ where: { id, workspaceId, designId: null }, data: { designId: design.id } });
+        if (count === 0) throw new TemplateChanged();
+        return { design };
       });
-      // Where the link is written (guarded by `designId: null`); if this throws, the design above is rolled back with it.
-      const { count } = await tx.template.updateMany({ where: { id, workspaceId, designId: null }, data: { designId: design.id } });
-      if (count === 0) throw new Error("The template changed while its design was being created.");
-      return { design };
-    });
+    } catch (err) {
+      if (err instanceof TemplateChanged) return reply.status(409).send({ error: "This template was changed while its design was being created. Reload the page and try again.", code: "TEMPLATE_CHANGED" });
+      throw err;
+    }
     if (isRefusal(outcome)) return reply.status(outcome.status).send(outcome.body);
     return reply.status(201).send(outcome);
   });
 
-  app.put("/canvas/templates/:id/design", { preHandler: [withAuth, designerOnly, wellFormedId("Template"), jsonOnly], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.put("/canvas/templates/:id/design", { preHandler: [withAuth, designerOnly, wellFormedId("Template"), jsonOnly], config: userLimit(30) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
     const parsed = attachBody.safeParse(req.body);
@@ -379,7 +399,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   });
 
   // Detaching keeps the design and its revisions. A published template cannot lose the Canvas revision that is its only source.
-  app.delete("/canvas/templates/:id/design", { preHandler: [withAuth, designerOnly, wellFormedId("Template")] }, async (req, reply) => {
+  app.delete("/canvas/templates/:id/design", { preHandler: [withAuth, designerOnly, wellFormedId("Template")], config: userLimit(30) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const { id } = req.params as { id: string };
     const outcome = await prisma.$transaction(async (tx) => {
@@ -419,7 +439,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   // then its Design), so that it cannot race an unpublish: whichever takes the Template lock first wins, and the other
   // waits and then re-reads. Creation first: valid, the unpublish waits. Unpublish first: creation re-reads it as unpublished
   // (404). The revision is read while the Design is locked, and is the one the instance is created pinned to.
-  app.post("/canvas/instances", { preHandler: [withAuth, contentEditorOnly, jsonOnly], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.post("/canvas/instances", { preHandler: [withAuth, contentEditorOnly, jsonOnly], config: userLimit(30) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const userId = getUser(req).id;
     const parsed = createInstanceBody.safeParse(req.body);
@@ -454,7 +474,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   });
 
   // My designs, newest first by CREATION time (an autosave changes updatedAt, so that could not be a stable order).
-  app.get("/canvas/instances", { preHandler: [withAuth, contentEditorOnly] }, async (req, reply) => {
+  app.get("/canvas/instances", { preHandler: [withAuth, contentEditorOnly], config: userLimit(120) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const userId = getUser(req).id;
     const { limit: rawLimit, cursor: rawCursor, archived: rawArchived } = req.query as { limit?: unknown; cursor?: unknown; archived?: unknown };
@@ -485,7 +505,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
   });
 
   // One of mine, ready to draw: its overrides, and the base revision's document and manifest.
-  app.get("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")] }, async (req, reply) => {
+  app.get("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")], config: userLimit(120) }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const row = await prisma.design.findFirst({
       where: YOURS(id, getWorkspaceId(req), getUser(req).id),
@@ -510,7 +530,7 @@ export async function canvasRoutes(app: FastifyInstance, { storage }: { storage:
 
   // Autosave of an instance. The body is the COMPLETE override set (not a patch): a field left out goes back to the base
   // revision's value. It is checked against the pinned revision's stored manifest and document, never against the client.
-  app.put("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design")], config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
+  app.put("/canvas/instances/:id", { preHandler: [withAuth, contentEditorOnly, wellFormedId("Design"), jsonOnly], config: userLimit(120) }, async (req, reply) => {
     const workspaceId = getWorkspaceId(req);
     const userId = getUser(req).id;
     const { id } = req.params as { id: string };

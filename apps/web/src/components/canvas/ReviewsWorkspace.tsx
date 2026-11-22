@@ -8,7 +8,7 @@ import { useToast } from "@/components/Toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { decideReview, formatWhen as when, getReview, listReviews, reviewSummaryCount, type ReviewDetail, type ReviewQueueEntry } from "@/lib/canvas";
+import { canvasProblem, decideReview, formatWhen as when, getReview, listReviews, reviewSummaryCount, type ReviewDetail, type ReviewQueueEntry } from "@/lib/canvas";
 import { ReadOnlyStage } from "./ReadOnlyStage";
 import { StatusChip } from "./ReviewChips";
 import { markReviewsSeen } from "./ReviewIndicator";
@@ -28,7 +28,8 @@ export function decisionProblem(err: unknown): string {
   if (code === "NOT_PENDING") return "This review was already answered, or a newer submission replaced it. The list was refreshed.";
   if (status === 404) return "This review no longer exists.";
   if (status === 429) return "You are answering too fast. Wait a moment and try again.";
-  return sent ?? (err instanceof Error ? err.message : "The answer could not be saved.");
+  if (typeof status === "number" && status >= 500) return canvasProblem(err, "The answer could not be saved."); // see submitProblem
+  return sent ?? canvasProblem(err, "The answer could not be saved.");
 }
 
 /**

@@ -37,7 +37,7 @@ export function ReviewAction({ designId, review, flush }: { designId: string; re
         <ReviewComment review={review} />
       </div>
       <Button size="sm" onClick={() => void go()} disabled={!can || going} title={can ? undefined : "Nothing has changed since you last submitted this design."}>
-        <SendIcon /> Review
+        <SendIcon /> <span className="max-sm:sr-only">Review</span>
       </Button>
     </div>
   );

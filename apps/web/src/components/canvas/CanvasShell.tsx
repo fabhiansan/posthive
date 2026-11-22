@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/cn";
 import { AiChatPanel } from "./AiChatPanel";
 
 interface CanvasShellProps {
@@ -36,7 +37,7 @@ interface CanvasShellProps {
   children: React.ReactNode;
 }
 
-function NameField({ value, maxLength, onCommit }: { value: string; maxLength?: number; onCommit(name: string): void }) {
+function NameField({ value, maxLength, onCommit, fill = false }: { value: string; maxLength?: number; onCommit(name: string): void; fill?: boolean }) {
   // The text typed is kept apart from the title until it is committed, so a refused name can simply fall back.
   const [draft, setDraft] = useState<string | null>(null);
   const cancelled = useRef(false);
@@ -45,7 +46,7 @@ function NameField({ value, maxLength, onCommit }: { value: string; maxLength?: 
       aria-label="Design name"
       value={draft ?? value}
       maxLength={maxLength}
-      className="h-8 w-40 rounded-lg px-2 py-0 type-body-sb-s lg:w-56"
+      className={cn("h-8 rounded-lg px-2 py-0 type-body-sb-s", fill ? "w-full" : "w-40 lg:w-56")}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         if (draft !== null && !cancelled.current) onCommit(draft);
@@ -150,6 +151,12 @@ export function CanvasShell({ title, onRename, nameMaxLength, status, banner, on
           {actions}
         </div>
       </header>
+      {/* Below sm the top bar has no room for the name, so it sits here, still renamable, with the note that the editor is built for
+          a larger screen (it stays usable). */}
+      <div data-testid="small-screen-bar" className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-surface px-3 py-2 sm:hidden">
+        {onRename ? <NameField value={title} maxLength={nameMaxLength} onCommit={onRename} fill /> : <p className="truncate type-body-sb-s text-fg">{title}</p>}
+        <p className="type-body-r-xs text-muted">Canvas works best on a larger screen. You can still edit here.</p>
+      </div>
       {banner && <div className="shrink-0 border-b border-border bg-surface px-3 py-2">{banner}</div>}
 
       <div className="flex min-h-0 flex-1">

@@ -646,7 +646,9 @@ function upload(file: Buffer, filename = "a.png", type = "image/png") {
 async function build(s: LocalDiskStorage | object): Promise<FastifyInstance> {
   const a = Fastify();
   await a.register(multipart);
-  await a.register(canvasRoutes, { storage: s } as never);
+  // `gate: false`: these route tests mock authentication, and their ~300 cookie-less requests would otherwise be counted by the
+  // Canvas auth gate (lib/canvasAuthGate.ts), which has its own test file and is exercised with the real guard there.
+  await a.register(canvasRoutes, { storage: s, gate: false } as never);
   await a.ready();
   return a;
 }
@@ -1377,12 +1379,36 @@ describe("PUT /canvas/designs/:id", () => {
 
   it("never lets the client choose the kind or the workspace, and needs a whole version", async () => {
     seedDesign({ id: "d1" });
-    for (const body of [{ version: 1, document: edited, kind: "instance" }, { version: 1, document: edited, workspaceId: "ws-2" }, { document: edited }, { version: "1", document: edited }, { version: 0, document: edited }, undefined]) {
+    for (const body of [{ version: 1, document: edited, kind: "instance" }, { version: 1, document: edited, workspaceId: "ws-2" }, { document: edited }, { version: "1", document: edited }, { version: 0, document: edited }]) {
       const res = await put("d1", body);
       expect(res.statusCode, JSON.stringify(body)).toBe(400);
       expect(res.json()).toMatchObject({ code: "INVALID_REQUEST" });
     }
     expect(writes()).toBe(0);
+  });
+
+  // Phase 7: the PUT takes only JSON, like its POST sibling (it was the one design write that did not). A request with no body, a
+  // form or multipart post, or plain text is refused by the JSON guard (a preHandler, so the body is already parsed) and writes nothing: nothing can be saved by a cross-site form post.
+  // (The "no body at all" case used to be a 400 INVALID_REQUEST above; it is now this stronger refusal.)
+  it.each([
+    ["no body and no content type", undefined, {}],
+    ["plain text", "{}", { "content-type": "text/plain" }],
+    ["a form post", "version=1", { "content-type": "application/x-www-form-urlencoded" }],
+    ["multipart", "--x--", { "content-type": "multipart/form-data; boundary=x" }],
+  ])("refuses %s with 415 and writes nothing (the same guard as POST /canvas/designs)", async (label, payload, headers) => {
+    seedDesign({ id: "d1" });
+    const res = await app.inject({ method: "PUT", url: "/canvas/designs/d1", ...(payload ? { payload } : {}), headers });
+    expect(res.statusCode).toBe(415);
+    // a form post has no parser in this app, so Fastify itself refuses it (its own body); every other case is our guard
+    if (label !== "a form post") expect(res.json()).toMatchObject({ code: "UNSUPPORTED_MEDIA_TYPE" });
+    expect(writes()).toBe(0);
+  });
+
+  it("a JSON body is still read exactly as before (the guard changes nothing for the editor, which always sends JSON)", async () => {
+    seedDesign({ id: "d1" });
+    const res = await put("d1", { version: 1, document: edited });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ version: 2 });
   });
 
   it("checks on every save that each image is an asset of this workspace", async () => {
@@ -1920,11 +1946,25 @@ describe("POST /canvas/templates/:id/design (create a design for a template, in 
     expect(h.log).toContain("tx:rollback");
   });
 
-  it("a link that finds the template already taken in between rolls the new design back too", async () => {
+  // Phase 7: this used to be a plain Error and so a 500. It is a conflict (the template changed under the request), so a 409 the
+  // page can show; the rollback is unchanged and is the point: a refusal RETURNED from the transaction would have committed the design.
+  it("a link that finds the template already taken in between is a 409 TEMPLATE_CHANGED, and rolls the new design back too", async () => {
     seedTemplate({ id: "t1" });
     db.template.updateMany.mockImplementationOnce(async () => ({ count: 0 })); // someone linked it after the check
     const res = await createFor("t1");
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "TEMPLATE_CHANGED" });
+    expect(h.designs).toHaveLength(0); // rolled back, not committed
+    expect(h.templates[0].designId).toBeNull();
+    expect(h.log).toContain("tx:rollback");
+  });
+
+  it("a real failure (not the race) is still a 500 and still rolls back", async () => {
+    seedTemplate({ id: "t1" });
+    db.template.updateMany.mockRejectedValueOnce(new Error("db down"));
+    const res = await createFor("t1");
     expect(res.statusCode).toBe(500);
+    expect(res.json()).not.toMatchObject({ code: "TEMPLATE_CHANGED" });
     expect(h.designs).toHaveLength(0);
   });
 
@@ -2475,6 +2515,20 @@ describe("PUT /canvas/instances/:id: the complete override set, checked against 
     h.log = [];
   });
   const row = () => h.designs.find((d) => d.id === id)!;
+
+  // Phase 7: like the designer's PUT, this takes only JSON; the rest are refused by the JSON guard and write nothing.
+  it.each([
+    ["no body and no content type", undefined, {}],
+    ["plain text", "{}", { "content-type": "text/plain" }],
+    ["a form post", "version=1", { "content-type": "application/x-www-form-urlencoded" }],
+    ["multipart", "--x--", { "content-type": "multipart/form-data; boundary=x" }],
+  ])("refuses %s with 415 and writes nothing", async (label, payload, headers) => {
+    const res = await app.inject({ method: "PUT", url: `/canvas/instances/${id}`, ...(payload ? { payload } : {}), headers });
+    expect(res.statusCode).toBe(415);
+    if (label !== "a form post") expect(res.json()).toMatchObject({ code: "UNSUPPORTED_MEDIA_TYPE" }); // (Fastify refuses a form post itself)
+    expect(db.design.updateMany).not.toHaveBeenCalled();
+    expect(row().version).toBe(1);
+  });
 
   it("saves, bumps the version once, and answers with the new version only", async () => {
     const res = await putInstance(id, { version: 1, overrides: [{ nodeId: "head", text: "Mine" }] });
@@ -3824,7 +3878,7 @@ describe("the double's own rules for the new tables (so the routes are tested ag
   });
 });
 
-describe("rate limiting of the phase 6 write routes", () => {
+describe("rate limiting of the Canvas routes", () => {
   // The real @fastify/rate-limit with the real helper on a tiny app. The route tests above mock auth, so the ORDER of auth and
   // limiter, and the key, are proven here against the actual plugin.
   async function limited(max: number) {
@@ -3877,25 +3931,81 @@ describe("rate limiting of the phase 6 write routes", () => {
     expect(userKey({ ip: "1.2.3.4", user: { id: "u" }, workspaceId: "w" } as never)).toBe("w:u");
   });
 
-  it("the routes use the approved numbers: submit 10, decision 30, archive/delete 30 a minute, per person, after auth; the existing limits are unchanged", async () => {
-    const routes = new Map<string, { max: number; hook?: string; keyed: boolean }>();
+  /** Every route `canvasRoutes` registers (the review routes included), with its limiter and its hooks, read as Fastify builds them. */
+  async function describeRoutes(withGate: boolean) {
+    const routes = new Map<string, { max?: number; hook?: string; keyed: boolean; pre: string[]; onRequest: number }>();
     const probe = Fastify();
     probe.addHook("onRoute", (r) => {
       const rl = (r.config as { rateLimit?: { max: number; hook?: string; keyGenerator?: unknown } } | undefined)?.rateLimit;
-      if (rl) routes.set(`${String(r.method)} ${r.url}`, { max: rl.max, hook: rl.hook, keyed: typeof rl.keyGenerator === "function" });
+      const pre = ([] as unknown[]).concat(r.preHandler ?? []).map((f) => (f as { name?: string }).name ?? "");
+      routes.set(`${String(r.method)} ${r.url}`, { max: rl?.max, hook: rl?.hook, keyed: typeof rl?.keyGenerator === "function", pre, onRequest: ([] as unknown[]).concat(r.onRequest ?? []).length });
     });
     await probe.register(multipart);
-    await probe.register(canvasRoutes, { storage } as never);
+    await probe.register(canvasRoutes, { storage, ...(withGate ? {} : { gate: false }) } as never);
     await probe.ready();
     await probe.close();
-    expect(routes.get("POST /canvas/instances/:id/submit")).toEqual({ max: 10, hook: "preHandler", keyed: true });
-    expect(routes.get("POST /canvas/reviews/:id/decision")).toEqual({ max: 30, hook: "preHandler", keyed: true });
-    expect(routes.get("DELETE /canvas/instances/:id")).toEqual({ max: 30, hook: "preHandler", keyed: true });
-    // the phase 3 to 5 limits are exactly what they were: plain per-route numbers on the global hook and key
-    expect(routes.get("PUT /canvas/instances/:id")).toEqual({ max: 120, hook: undefined, keyed: false });
-    expect(routes.get("POST /canvas/instances")).toEqual({ max: 30, hook: undefined, keyed: false });
-    expect(routes.get("PUT /canvas/designs/:id")).toEqual({ max: 120, hook: undefined, keyed: false });
-    // the phase 6 read routes carry no route limit of their own: they are on the global limiter, like the other reads
-    for (const read of ["GET /canvas/reviews", "GET /canvas/reviews/summary", "GET /canvas/reviews/:id", "GET /canvas/instances/:id/submissions", "GET /canvas/instances/:id/submissions/:number"]) expect(routes.get(read), read).toBeUndefined();
+    return routes;
+  }
+
+  it("EVERY Canvas route is limited per person after authentication (found by enumerating, not by a list), with the approved numbers", async () => {
+    const routes = await describeRoutes(false);
+    expect(routes.size).toBeGreaterThanOrEqual(23); // a floor, so an empty enumeration cannot pass
+    for (const [name, r] of routes) {
+      expect(r.keyed, `${name} is keyed by the signed-in person`).toBe(true);
+      expect(r.hook, `${name} runs after authentication`).toBe("preHandler");
+      expect(r.max, `${name} has a number`).toBeGreaterThan(0);
+      expect(r.pre.includes("canvasWithAuth"), `${name} authenticates through the gated withAuth`).toBe(true);
+    }
+    // the numbers: the ones that existed are unchanged; reads are 120 a minute, the two deletes of designs 30
+    const max = (k: string) => routes.get(k)?.max;
+    expect(max("POST /canvas/instances/:id/submit")).toBe(10);
+    expect(max("POST /canvas/reviews/:id/decision")).toBe(30);
+    expect(max("DELETE /canvas/instances/:id")).toBe(30);
+    expect(max("PUT /canvas/instances/:id")).toBe(120);
+    expect(max("PUT /canvas/designs/:id")).toBe(120);
+    expect(max("POST /canvas/instances")).toBe(30);
+    expect(max("POST /canvas/designs")).toBe(30);
+    expect(max("POST /canvas/designs/:id/publish")).toBe(10);
+    expect(max("POST /canvas/assets")).toBe(30);
+    expect(max("GET /canvas/assets/:id/content")).toBe(300);
+    for (const read of ["GET /canvas/designs", "GET /canvas/designs/:id", "GET /canvas/instances", "GET /canvas/instances/:id", "GET /canvas/reviews", "GET /canvas/reviews/summary", "GET /canvas/reviews/:id", "GET /canvas/instances/:id/submissions", "GET /canvas/instances/:id/submissions/:number"]) expect(max(read), read).toBe(120);
+    for (const del of ["DELETE /canvas/designs/:id", "DELETE /canvas/templates/:id/design"]) expect(max(del), del).toBe(30);
+  });
+
+  it("the auth gate covers EVERY Canvas route: a cookie-less flood beyond the budget is a 429 from the gate on each one, and the same flood is untouched when the gate is off", async () => {
+    // Scope hooks are merged into a route only when Fastify is ready, so they are not visible in onRoute: prove it by behavior.
+    // The auth double and the handlers are never reached by a refused request, so every route can be probed with no data.
+    const routes = [...(await describeRoutes(true)).keys()];
+    expect(routes.length).toBeGreaterThanOrEqual(23);
+    const { createCanvasAuthGate } = await import("../lib/canvasAuthGate.js");
+    const gated = Fastify();
+    await gated.register(multipart);
+    await gated.register(canvasRoutes, { storage, gate: createCanvasAuthGate({ params: { anon: 2 } }) } as never);
+    await gated.ready();
+    const open2 = Fastify();
+    await open2.register(multipart);
+    await open2.register(canvasRoutes, { storage, gate: false } as never);
+    await open2.ready();
+    h.authed = false; // the mocked authentication answers 401 to a request that reaches it
+    let ip = 0;
+    for (const key of routes) {
+      const [method, pattern] = key.split(" ");
+      const url = pattern.replace(":id", "abcdefghij").replace(":number", "1");
+      const remoteAddress = `10.9.${Math.floor(ip / 250)}.${(ip++ % 250) + 1}`; // one address per route: the budget is per address
+      const send = (a: FastifyInstance) => a.inject({ method: method as "GET", url, remoteAddress });
+      const first = [(await send(gated)).statusCode, (await send(gated)).statusCode];
+      const third = await send(gated);
+      expect(first, `${key}: within the budget it reaches authentication and is refused there`).not.toContain(429);
+      expect(third.statusCode, `${key}: beyond the budget the gate answers`).toBe(429);
+      expect(third.headers["retry-after"], key).toBeTruthy();
+      for (let i = 0; i < 4; i++) expect((await send(open2)).statusCode, `${key}: with the gate off nothing is counted`).not.toBe(429);
+    }
+    await gated.close();
+    await open2.close();
+  });
+
+  it("both PUTs go through the JSON-only guard (before they read a body)", async () => {
+    const routes = await describeRoutes(false);
+    for (const put of ["PUT /canvas/designs/:id", "PUT /canvas/instances/:id"]) expect(routes.get(put)?.pre, put).toContain("jsonOnly");
   });
 });

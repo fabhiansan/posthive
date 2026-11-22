@@ -11,7 +11,9 @@ social-scheduler/
 ├── apps/
 │   ├── api/          Fastify v4 backend (Node.js, TypeScript, ESM)
 │   ├── web/          Next.js 16 frontend (App Router, TypeScript)
-│   └── mcp/          MCP stdio server (Claude Code / Cursor / local agents)
+│   ├── mcp/          MCP stdio server (Claude Code / Cursor / local agents)
+│   ├── canvas/       Posthive Canvas engine (Konva, document model, undo history; consumed as source by web)
+│   └── cli/          Command-line client (login / logout, stored credentials)
 ├── .claude/
 │   └── TASKS.md      Feature backlog and completed work
 └── CLAUDE.md         This file
@@ -60,6 +62,7 @@ pnpm db:seed-dev <password>   # Local dev only: workspace with admin@/marketing@
 | `routes/mcp.ts` | `/mcp` | MCP Streamable HTTP server (Bearer + key-in-URL) |
 | `routes/oauth.ts` | `/oauth`, `/.well-known` | OAuth 2.0 + PKCE server for Claude.ai MCP connector |
 | `routes/templates.ts` | `/templates` | Design templates: one per content category (Figma link, optional preview, format, platforms); write = designer only; a new one is a Draft, `PATCH /templates/:id/status` publishes it, and only the designer's `GET /templates` lists drafts (the public API and MCP list published only). A carousel template keeps one image per slide with an optional short name (`slideUrls`/`slideLabels`, two same-length columns read as one `slideImages` list by `lib/templates.ts`; they are claimed, owned and protected like the preview, and `withoutTemplateMedia` checks them) and a `captionGuideline` for Marketing (shown on the detail page and in `DesignReferenceCard`; never copied into a post, not in the public API or MCP: those use `TEMPLATE_SELECT`, which must not grow). `GET /templates/:id/usage` (designer only) counts the posts of the template's category and those in review, for the Unpublish and Delete dialogs; a post has no link to a template, so "of this category" is a text match on the post's JSON, and only the app's own category names count (the same rule as `normalizeCategory`; an import's unknown category is "uncategorized" everywhere). An edit that sends no `slideImages` / `captionGuideline` (an editor from before them, open across a deploy) keeps both: a missing field is "keep", an empty one is "clear". Never copied into posts |
+| `routes/canvas.ts`, `routes/canvasReview.ts` | `/canvas/*` | Posthive Canvas. Designer only: designs, immutable published revisions (with a server-derived manifest of what Marketing may change), the link to a template, the review queue and decision. Owner/admin/member: personal design instances of a published template (only the text and image fields its manifest allows), submit for design review (an immutable snapshot composed on the server), read-only submission history, archive instead of delete once submitted. Every route has a per-person rate limit and authenticates through `lib/canvasAuthGate.ts`, which bounds the authentication work failed or revoked credentials can cause (it is not a flood protection; its address-based budgets are per visitor only where `req.ip` is the visitor, see the header of that file). Image assets are private (`GET /canvas/assets/:id/content`) and work only with `STORAGE_PROVIDER=local`: on R2 or Supabase they answer 501 `CANVAS_STORAGE_UNSUPPORTED` and everything else (shapes, text, save, publish, review, export) still works. A PNG or SVG import becomes one raster image layer: an SVG is parsed against an allowlist and rasterized (3072px long edge), so its shapes and text are not editable and SVGs that use `<style>` or `style=""` are rejected. Design review is separate from the PostJob approval flow |
 
 ### Platform Adapters — `src/adapters/`
 Each adapter implements `PlatformAdapter` from `types.ts`:
@@ -130,6 +133,9 @@ All 10 tools mirror the HTTP MCP server: `list_accounts`, `create_post`, `get_po
 | `/mcp-connect` | `app/mcp-connect/page.tsx` | OAuth approve page for Claude.ai connector (no sidebar) |
 | `/login` | `app/login/page.tsx` | Login |
 | `/register` | `app/register/page.tsx` | Register |
+| `/canvas` | `app/canvas/page.tsx` | Posthive Canvas home (standalone layout, no sidebar): the designer's designs, or for Marketing the templates it can customize and its own designs |
+| `/canvas/[designId]` | `app/canvas/[designId]/page.tsx` | The editor: the designer's full editor for a template design, Marketing's editor (text and image fields only) for its own design; `?view=history` shows what Marketing submitted. Opened from a template card, the template page or the Canvas home; there is no sidebar link |
+| `/canvas/reviews` | `app/canvas/reviews/page.tsx` | The design team's review queue and detail (read-only render of the exact submitted snapshot, changed fields, Approve / Request changes). Designer only: owner and admin see an explanation |
 
 ### Key Components
 - `components/app-sidebar/AppSidebar.tsx` — the app sidebar (shadcn `Sidebar`, collapses to icons, drawer on mobile): workspace switcher, links per role from `nav-config.ts`, trial banner, feedback and new-workspace dialogs
@@ -307,6 +313,11 @@ Schema at `apps/api/prisma/schema.prisma`. Migrations use Postgres SQL.
 | `PostJobTarget` | One per platform per PostJob. Tracks per-platform status + errors. Cascades on PostJob delete. |
 | `Template` | Design template: one per workspace + category (Figma link / preview). Legacy `content` JSON is deprecated. |
 | `LegacyTemplateMedia` | Files of old template kits that posts still share — never deleted by post cleanup (`withoutTemplateMedia`). |
+| `DesignAsset` | A Canvas image (PNG, or an SVG rasterized to PNG). `storageRef` is private and never sent to the client; delivery is authenticated and `no-store`. Local storage only. |
+| `Design` | A Canvas design: `kind` `template` (the designer's working copy, `document`) or `instance` (Marketing's, no document: it pins one `DesignRevision` and stores only `overrides`). `version` is the optimistic lock. A template may link one design (`Template.designId`); it needs a Figma link or a linked design with a revision to be published. An archived instance is frozen by a trigger. |
+| `DesignRevision` | A published, immutable revision of a template design (`document` + the server-derived `manifest`). Triggers refuse an update and a direct delete. |
+| `DesignSubmission` | What one Marketing person submitted for review: an immutable snapshot composed on the server (insert-only, triggers refuse an update and a direct delete). User ids carry no foreign key. |
+| `DesignReviewRequest` | The designer's answer to one submission (pending, approved, changes_requested or superseded); it leaves `pending` exactly once. |
 
 ---
 

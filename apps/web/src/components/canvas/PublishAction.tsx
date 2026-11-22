@@ -6,7 +6,7 @@ import type { CanvasDocument, EditableField, HiddenEditable } from "posthive-can
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
-import { publishDesign, type DesignSummary, type RevisionInfo } from "@/lib/canvas";
+import { canvasProblem, publishDesign, type DesignSummary, type RevisionInfo } from "@/lib/canvas";
 
 interface PublishActionProps {
   designId: string;
@@ -55,7 +55,7 @@ export function PublishAction({ designId, template, revision, version, dirty, do
       onPublished(next);
       toast.success(`Revision ${next.number} published.`);
     } catch (err) {
-      toast.error(err instanceof Error && err.message ? err.message : "The revision could not be published. Try again.");
+      toast.error(canvasProblem(err, "The revision could not be published. Try again."));
       throw err;
     }
   }
@@ -67,7 +67,7 @@ export function PublishAction({ designId, template, revision, version, dirty, do
         {revision && unpublished ? " · Unpublished changes" : ""}
       </span>
       <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
-        <UploadIcon /> Publish
+        <UploadIcon /> <span className="max-sm:sr-only">Publish</span>
       </Button>
 
       <ConfirmDialog

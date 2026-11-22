@@ -73,6 +73,30 @@ describe("auth guard", () => {
     expect(res.cookies.find((c) => c.name === "ss-refresh-token")).toBeUndefined();
   });
 
+  // authVia says which cookie authenticated, for both providers: the Canvas auth gate relies on it (lib/canvasAuthGate.ts).
+  it("exposes which cookie authenticated: access, refresh (rotate and grace), and nothing when it fails", async () => {
+    const seen: (string | undefined)[] = [];
+    const sentWith: (string | undefined)[] = []; // what req.authVia was when the reply went out, handler or not
+    const build2 = async (provider: AuthProvider) => {
+      const app = Fastify();
+      await app.register(cookie);
+      app.addHook("onSend", async (req, _reply, payload) => { sentWith.push(req.authVia); return payload; });
+      const guard = createAuthGuard({ provider, resolveWorkspace: async (req) => { req.workspaceId = "w1"; } });
+      app.get("/v", { preHandler: [guard.withAuth] }, async (req) => { seen.push(req.authVia); return { ok: true }; });
+      return app;
+    };
+    const rotating = await build2(makeProvider());
+    await rotating.inject({ method: "GET", url: "/v", cookies: { "ss-access-token": "good" } });
+    await rotating.inject({ method: "GET", url: "/v", cookies: { "ss-access-token": "stale", "ss-refresh-token": "refresh-ok" } });
+    const grace = await build2(makeProvider({ refreshTokens: async () => ({ accessToken: "good", refreshToken: null }) }));
+    await grace.inject({ method: "GET", url: "/v", cookies: { "ss-refresh-token": "old" } });
+    expect(seen).toEqual(["access", "refresh", "refresh"]);
+    const failed = await rotating.inject({ method: "GET", url: "/v", cookies: { "ss-access-token": "stale", "ss-refresh-token": "dead" } });
+    expect(failed.statusCode).toBe(401);
+    expect(seen).toHaveLength(3); // the handler never ran
+    expect(sentWith).toEqual(["access", "refresh", "refresh", undefined]); // and nothing was recorded for the failure either
+  });
+
   it("clears both cookies on 401", async () => {
     const app = await build(makeProvider());
     const res = await app.inject({ method: "GET", url: "/p", cookies: { "ss-access-token": "stale", "ss-refresh-token": "dead" } });

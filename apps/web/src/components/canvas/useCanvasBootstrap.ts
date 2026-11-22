@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CanvasDocument } from "posthive-canvas";
-import { AssetLoadError, getDesign, getInstance, loadAsset, loadEditorFonts, type Design, type InstanceDetail } from "@/lib/canvas";
+import { AssetLoadError, canvasProblem, getDesign, getInstance, loadAsset, loadEditorFonts, type Design, type InstanceDetail } from "@/lib/canvas";
 import { useBootReport } from "./CanvasBoot";
 
 export type CanvasEngine = typeof import("posthive-canvas");
@@ -25,6 +25,8 @@ export interface LoadedImages {
   missing: string[];
   /** The API address is not configured, which is why the images are missing. Not the design's fault. */
   badApiBase: boolean;
+  /** The server's storage cannot serve images (501), which is why they are missing. Not the design's fault; a retry cannot fix it. */
+  noStorage?: boolean;
 }
 
 /** A saved design, opened: its document and the decoded images it draws. */
@@ -68,6 +70,7 @@ interface Images {
   images: Map<string, HTMLImageElement>;
   missing: string[];
   badBase: boolean;
+  noStorage: boolean;
   /** At least one image failed in a way that a retry may fix (a lost connection, a server error). */
   failed: boolean;
 }
@@ -77,8 +80,8 @@ const isDocument = (d: unknown): d is CanvasDocument => typeof d === "object" &&
 export const assetIdsOf = (doc: CanvasDocument): string[] => [...new Set(doc.nodes.flatMap((n) => (n.type === "image" ? [n.assetId] : [])))];
 
 /** Never rejects: each image ends as loaded, missing (it will not come back) or failed (it may, on a retry). */
-async function loadImages(ids: string[]): Promise<Images> {
-  const out: Images = { images: new Map(), missing: [], badBase: false, failed: false };
+export async function loadImages(ids: string[]): Promise<Images> {
+  const out: Images = { images: new Map(), missing: [], badBase: false, noStorage: false, failed: false };
   await Promise.all(
     ids.map(async (id) => {
       try {
@@ -86,8 +89,9 @@ async function loadImages(ids: string[]): Promise<Images> {
       } catch (err) {
         const code = err instanceof AssetLoadError ? err.code : "FAILED";
         if (code === "FAILED") out.failed = true;
-        else out.missing.push(id);
+        else out.missing.push(id); // UNSUPPORTED is missing for good too: the editor opens with grey boxes instead of a retry that cannot work
         if (code === "BAD_API_BASE") out.badBase = true;
+        if (code === "UNSUPPORTED") out.noStorage = true;
       }
     }),
   );
@@ -191,7 +195,8 @@ export function useOpenedDesign<R extends Openable>(designId: string | undefined
           report("assets", { state: "na" });
           return;
         }
-        fail("document", "The design could not be loaded. Check your connection.", () => setDesignTry((n) => n + 1));
+        // A lost connection, a busy server (429, 503) and a server error each get their own plain sentence, not one "check your connection".
+        fail("document", canvasProblem(err, "The design could not be loaded. Try again."), () => setDesignTry((n) => n + 1));
       },
     );
     return () => { live = false; };
@@ -207,7 +212,7 @@ export function useOpenedDesign<R extends Openable>(designId: string | undefined
     Promise.all([loadEditorFonts().then(() => true, () => false), loadImages(design ? sourceRef.current.imageIds(design) : [])]).then(([fontsOk, images]) => {
       if (!live) return;
       if (!fontsOk) return fail("assets", "The editor fonts could not be loaded.", () => setAssetsTry((n) => n + 1));
-      if (images.failed) return fail("assets", "Some images could not be loaded. Check your connection.", () => setAssetsTry((n) => n + 1));
+      if (images.failed) return fail("assets", "Some images could not be loaded. Try again.", () => setAssetsTry((n) => n + 1));
       setLoaded(images);
       report("assets", { state: "done" });
     });
@@ -217,7 +222,7 @@ export function useOpenedDesign<R extends Openable>(designId: string | undefined
 
   const ready = engine !== null && loaded !== null && (!designId || design !== null);
   const loadedDesign = useMemo<(R & LoadedImages) | null>(
-    () => (design && loaded ? { ...design, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase } : null),
+    () => (design && loaded ? { ...design, images: loaded.images, missing: loaded.missing, badApiBase: loaded.badBase, noStorage: loaded.noStorage } : null),
     [design, loaded],
   );
 

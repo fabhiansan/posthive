@@ -62,7 +62,44 @@ export interface CanvasAsset {
 /** Same pattern as LIMITS.id in apps/canvas/src/limits.ts (the web reads the engine only through a dynamic import). lib/canvas.test.ts checks they match. */
 export const ASSET_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-export type AssetErrorCode = "INVALID_ID" | "BAD_API_BASE" | "NOT_FOUND" | "FAILED";
+// UNSUPPORTED: the server's storage cannot serve private images (501 CANVAS_STORAGE_UNSUPPORTED). A retry cannot change that.
+export type AssetErrorCode = "INVALID_ID" | "BAD_API_BASE" | "NOT_FOUND" | "UNSUPPORTED" | "FAILED";
+
+/**
+ * Said when the images of a design cannot be shown because of how the server stores files (not a connection problem). The one
+ * sentence a person ever sees about this: the technical reason (the storage setting) stays in the server's log, never in the UI.
+ */
+export const STORAGE_UNSUPPORTED_MESSAGE = "Image previews are unavailable in this environment. You can continue editing, but image layers may appear as placeholders.";
+
+// What fetch() rejects with when nothing answered: Chrome "Failed to fetch", Safari "Load failed" (or "The network connection was lost."),
+// Firefox "NetworkError when attempting to fetch resource.", Node "fetch failed". Matched at the START, so a bug that merely mentions
+// "fetch" ("... reading 'fetch'") is not "offline".
+const OFFLINE_TYPE_ERROR = /^(failed to fetch|load failed|networkerror|fetch failed|the network connection)/i;
+
+/**
+ * A short, plain sentence for a failed Canvas call. `apiFetch` rethrows what the server said (with a `status`), but a lost
+ * connection arrives as the browser's own "Failed to fetch" TypeError with no status, and a 429 or 503 (from the limits
+ * and the sign-in gate, with a Retry-After) was shown as the server's raw text or as "check your connection". The server's own
+ * message is kept for anything it sent on purpose (a 400 or 409 says what to fix).
+ */
+export function canvasProblem(err: unknown, fallback = "Something went wrong. Try again."): string {
+  const status = typeof err === "object" && err !== null ? (err as { status?: unknown }).status : undefined;
+  const message = err instanceof Error ? err.message : "";
+  if (typeof status !== "number") {
+    // fetch() rejects with a TypeError when there is no answer at all (OFFLINE_TYPE_ERROR lists the wordings). A TypeError that is not
+    // one of those is a bug in the page, not the person's connection, so it gets the generic sentence rather than a false "offline". Any
+    // other error without a status is ours (for example "The file is larger than 10 MB.") and says what it means.
+    if (err instanceof TypeError) return OFFLINE_TYPE_ERROR.test(message) ? "You seem to be offline. Check your connection and try again." : fallback;
+    return message || fallback;
+  }
+  if (status === 429) return "You are doing that too fast. Wait a moment and try again.";
+  if (status === 503) return "Posthive is busy right now. Try again in a moment.";
+  // 501 is not a fault: it is the server saying on purpose that it cannot do this (Canvas images need local storage), and a retry
+  // cannot help. Its own text names the server setting, which is for the log, not for a person: they get the one plain sentence.
+  if (status === 501) return STORAGE_UNSUPPORTED_MESSAGE;
+  if (status >= 500) return "Posthive had a problem on its side. Try again in a moment.";
+  return message && !/^\d{3} error$/.test(message) ? message : fallback; // apiFetch's own "400 error" says nothing
+}
 
 /** Why an image could not be loaded. `code` lets the editor tell a missing image from a broken setup or a bad connection. */
 export class AssetLoadError extends Error {
@@ -124,6 +161,7 @@ async function fetchAssetBlob(assetId: string): Promise<Blob> {
     throw new AssetLoadError("FAILED", "The image could not be loaded.");
   }
   if (res.status === 404) throw new AssetLoadError("NOT_FOUND", "This image no longer exists.");
+  if (res.status === 501) throw new AssetLoadError("UNSUPPORTED", STORAGE_UNSUPPORTED_MESSAGE); // not worth a retry: nothing about it changes
   if (!res.ok) throw new AssetLoadError("FAILED", "The image could not be loaded.");
   try {
     return await res.blob();

@@ -24,7 +24,7 @@ export function ExportMenu({ width, height, busy, onExport }: ExportMenuProps) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="secondary" size="sm" disabled={busy} aria-busy={busy}>
-          {busy ? <Spinner size="sm" label="Exporting" /> : <DownloadIcon />} Export
+          {busy ? <Spinner size="sm" label="Exporting" /> : <DownloadIcon />} <span className="max-sm:sr-only">Export</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-56">

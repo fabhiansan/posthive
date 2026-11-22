@@ -9,7 +9,7 @@ import { useToast } from "@/components/Toast";
 import { CustomizeButton } from "@/components/templates/CustomizeButton";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { deleteInstance, formatWhen as when, listInstances, type InstanceSummary } from "@/lib/canvas";
+import { canvasProblem, deleteInstance, formatWhen as when, listInstances, type InstanceSummary } from "@/lib/canvas";
 import { useTemplates } from "@/lib/useTemplates";
 import { useBootNone } from "./CanvasBoot";
 import { ReviewChips, ReviewComment } from "./ReviewChips";
@@ -70,7 +70,7 @@ export function MarketingHome() {
       archived = (await deleteInstance(design.id)).archived === true;
     } catch (err) {
       if ((err as { status?: number }).status !== 404) {
-        toast.error(err instanceof Error ? err.message : hasSubmissions(design) ? "The design could not be archived." : "The design could not be deleted.");
+        toast.error(canvasProblem(err, hasSubmissions(design) ? "The design could not be archived." : "The design could not be deleted."));
         throw err; // keeps the dialog open for another try
       }
       // 404: it was already gone. The list should say so too.
@@ -258,8 +258,10 @@ type ArchivedListing = { status: "closed" } | { status: "loading" } | { status: 
  */
 function ArchivedSection({ reload }: { reload: number }) {
   const [listing, setListing] = useState<ArchivedListing>({ status: "closed" });
+  const [attempt, setAttempt] = useState(0); // "Try again" reads the list again (open does not change, so the effect needs this)
   const open = listing.status !== "closed";
   const generation = useRef(0); // which load the list on screen belongs to: a late "Load more" from an older one is dropped
+  const toggle = useRef<HTMLButtonElement>(null); // "Try again" unmounts itself while the list loads: focus goes here instead of to the page
 
   useEffect(() => {
     if (listing.status === "closed") return;
@@ -272,8 +274,8 @@ function ArchivedSection({ reload }: { reload: number }) {
     return () => {
       live = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on open and when a design was just archived, not on every state change
-  }, [open, reload]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on open, when a design was just archived and on "Try again", not on every state change
+  }, [open, reload, attempt]);
 
   async function more() {
     if (listing.status !== "ready" || !listing.next || listing.more === "loading") return;
@@ -296,7 +298,7 @@ function ArchivedSection({ reload }: { reload: number }) {
   return (
     <section aria-labelledby="archived-heading" className="flex flex-col gap-3">
       <h2 id="archived-heading" className="type-body-sb-m text-fg">
-        <button type="button" aria-expanded={open} onClick={() => setListing((l) => (l.status === "closed" ? { status: "loading" } : { status: "closed" }))} className="flex cursor-pointer items-center gap-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
+        <button ref={toggle} type="button" aria-expanded={open} onClick={() => setListing((l) => (l.status === "closed" ? { status: "loading" } : { status: "closed" }))} className="flex cursor-pointer items-center gap-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
           <ArchiveIcon aria-hidden className="size-4 text-muted" /> Archived designs
         </button>
       </h2>
@@ -305,7 +307,22 @@ function ArchivedSection({ reload }: { reload: number }) {
           <Spinner label="Loading archived designs" className="text-brand-800" /> Loading
         </p>
       )}
-      {listing.status === "error" && <p className="type-body-r-s text-red-600">Archived designs didn&apos;t load. Close this section and open it again to retry.</p>}
+      {listing.status === "error" && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="type-body-r-s text-red-600">Archived designs didn&apos;t load.</p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              toggle.current?.focus();
+              setListing({ status: "loading" });
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </Button>
+        </div>
+      )}
       {listing.status === "ready" && listing.items.length === 0 && <p className="type-body-r-s text-muted">You have not archived any design.</p>}
       {listing.status === "ready" && listing.items.length > 0 && (
         <>

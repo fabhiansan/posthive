@@ -17,7 +17,7 @@ export const SCHEMA_VERSION = 1;
 export const MIN_ZOOM = 0.05;
 export const MAX_ZOOM = 8;
 
-/** Who may change a layer when Marketing edits a published design. Phase 2 always creates "protected". */
+/** Who may change a layer when Marketing edits a published design. A new layer is "protected"; the designer sets the rest in the Inspector ("Marketing access"). */
 export type Permission = "protected" | "text" | "image";
 
 export interface Shadow {
@@ -71,7 +71,8 @@ export interface TextNode extends NodeBase {
 export interface ImageNode extends NodeBase {
   type: "image";
   assetId: string;
-  // shortcut: "contain" is drawn like "cover" until Phase 5 (image replacement); nothing in Phase 2 creates it.
+  // "contain" shows the whole image inside the layer's box (containCrop); "cover" fills the box and crops (coverCrop). The designer picks it
+  // in the Inspector ("Fit"); Marketing cannot change it, so a replacement image keeps the fit the designer chose.
   fit: "cover" | "contain";
 }
 
@@ -446,7 +447,7 @@ export function limitPatch(node: CanvasNode, patch: NodePatch, textMax: number =
     if (key === "text") {
       if (node.type === "text" && typeof raw === "string") value = cleanText(raw, textMax);
     } else if (key === "permission") {
-      // "text" only on a text layer and "image" only on an image layer; Phase 3 never sets them, the designer UI will.
+      // "text" only on a text layer and "image" only on an image layer (the Inspector's "Marketing access" sets it, and offers only what fits).
       if (raw === "protected" || (raw === "text" && node.type === "text") || (raw === "image" && node.type === "image")) value = raw;
     } else {
       const rule = COMMON.get(key) ?? own?.get(key);

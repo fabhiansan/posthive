@@ -81,20 +81,32 @@ export const localAuthProvider: AuthProvider = {
   },
 
   async validateAccessToken(token) {
+    // A missing signing secret is a CONFIGURATION error, not a bad token: verify would reject every token with a JsonWebTokenError,
+    // the catch below would call that "no user", and everyone would get a 401 and cleared cookies. Thrown here, outside that catch, it
+    // is a 500 that is logged and reported, and (for the Canvas auth gate) an ERROR that counts against nobody.
+    if (!ACCESS_SECRET) throw new Error("JWT_ACCESS_SECRET is not set: the local auth provider cannot verify sessions");
+    let payload: { sub: string; sid?: string; type: string };
     try {
-      const payload = jwt.verify(token, ACCESS_SECRET) as { sub: string; sid?: string; type: string };
-      // Tokens without `sid` predate server-side sessions — reject so they die at deploy.
-      if (payload.type !== "access" || !payload.sid) return null;
-
-      const session = await sessions.authenticate(payload.sid);
-      if (!session || session.userId !== payload.sub) return null;
-
-      const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-      if (!user) return null;
-      return { ...toAuthUser(user), sessionId: payload.sid };
+      payload = jwt.verify(token, ACCESS_SECRET) as typeof payload;
     } catch {
+      // Whatever verify throws is a REJECTED token, so "no user": malformed, wrong signature or algorithm, expired, not yet valid, or a
+      // "typ: JWT" token whose payload is not JSON (jws parses it before any signature check and it escapes as a raw SyntaxError, so
+      // anyone can send one). verify does no I/O and the secret was checked above, so what it throws is about the token:
+      // "authentication could not run" is only the database work below, which is deliberately NOT caught.
       return null;
     }
+    // Tokens without `sid` predate server-side sessions — reject so they die at deploy.
+    if (payload.type !== "access" || !payload.sid) return null;
+
+    // From here a failure is the database's (or a bug), never the credential's, and it PROPAGATES: a 500 from the app's error handler
+    // (and for the Canvas auth gate an ERROR, which counts against nobody). It must not become "no user": the guard answers that with a
+    // 401 and cleared cookies, which would sign people out during an outage.
+    const session = await sessions.authenticate(payload.sid);
+    if (!session || session.userId !== payload.sub) return null;
+
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user) return null;
+    return { ...toAuthUser(user), sessionId: payload.sid };
   },
 
   async refreshTokens(refreshToken) {

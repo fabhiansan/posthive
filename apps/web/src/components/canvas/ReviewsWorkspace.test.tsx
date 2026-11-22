@@ -317,11 +317,11 @@ describe("answering", () => {
   });
 
   it("any other failure is told in words and the person can try again (the buttons come back)", async () => {
-    decideFails = Object.assign(new Error("boom"), { status: 500, data: { error: "The server could not save the answer" } });
+    decideFails = Object.assign(new Error("Error"), { status: 500, data: { statusCode: 500, error: "Error", message: "Internal Server Error" } });
     render(<ReviewsWorkspace />);
     await screen.findByTestId("stage");
     await userEvent.click(screen.getByRole("button", { name: /Approve/ }));
-    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("The server could not save the answer"));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("Posthive had a problem on its side. Try again in a moment."));
     await waitFor(() => expect((screen.getByRole("button", { name: /Approve/ }) as HTMLButtonElement).disabled).toBe(false));
     expect(asks().filter((p) => p === "/canvas/reviews/r1").length).toBe(1); // not reloaded: nothing changed
   });
@@ -353,5 +353,8 @@ describe("answering", () => {
     expect(decisionProblem({ status: 400, data: { error: "Say what needs to change." } })).toBe("Say what needs to change.");
     expect(decisionProblem(new Error("boom"))).toBe("boom");
     expect(decisionProblem(null)).toBe("The answer could not be saved.");
+    // the bodies the API really sends for a fault: never shown as they are (see submitProblem)
+    expect(decisionProblem({ status: 500, data: { statusCode: 500, error: "Error", message: "Internal Server Error" } })).toMatch(/problem on its side/i);
+    expect(decisionProblem({ status: 503, data: { statusCode: 503, error: "Service Unavailable", message: "Sign-in is busy" } })).toMatch(/busy/i);
   });
 });

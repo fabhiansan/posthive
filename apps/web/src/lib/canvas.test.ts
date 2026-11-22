@@ -3,7 +3,7 @@
 // refused before anything is sent. Node environment, a stubbed fetch, no DOM.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "../../../canvas/src/limits";
-import { ASSET_ID, AssetLoadError, assetContentUrl, createDesign, deleteDesign, getDesign, listDesigns, loadAsset, saveDesign } from "./canvas";
+import { ASSET_ID, AssetLoadError, STORAGE_UNSUPPORTED_MESSAGE, assetContentUrl, canvasProblem, createDesign, deleteDesign, getDesign, listDesigns, loadAsset, saveDesign } from "./canvas";
 
 const png = () => new Response(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" }), { status: 200 });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -212,6 +212,65 @@ describe("answers", () => {
     decodeFails = true;
     const unreadable = await loadAsset("abc").catch((e: AssetLoadError) => e);
     expect(unreadable).toMatchObject({ code: "FAILED", message: "The image could not be read." });
+  });
+
+  // Phase 7: a server whose storage cannot serve private images answers 501 CANVAS_STORAGE_UNSUPPORTED. That was a retryable
+  // "FAILED" ("check your connection", with a Try again that could never work); it is its own, final code now.
+  it("501 (the server's storage cannot serve images) is UNSUPPORTED: not a connection problem, and asked for once, not retried", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ code: "CANVAS_STORAGE_UNSUPPORTED" }), { status: 501 }));
+    const err = await loadAsset("abc").catch((e: AssetLoadError) => e);
+    expect(err).toMatchObject({ code: "UNSUPPORTED", message: STORAGE_UNSUPPORTED_MESSAGE });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no refresh, no second attempt
+    expect(STORAGE_UNSUPPORTED_MESSAGE).not.toMatch(/connection/i);
+    // the wording the user chose, and nothing technical in it
+    expect(STORAGE_UNSUPPORTED_MESSAGE).toBe("Image previews are unavailable in this environment. You can continue editing, but image layers may appear as placeholders.");
+  });
+});
+
+describe("canvasProblem: a plain sentence for a failed Canvas call", () => {
+  const apiError = (status: number, message: string) => Object.assign(new Error(message), { status });
+
+  it("a lost connection (fetch's own TypeError, no status) says the person seems to be offline", () => {
+    expect(canvasProblem(new TypeError("Failed to fetch"))).toMatch(/offline/i);
+    expect(canvasProblem(new TypeError("Load failed"))).toMatch(/offline/i); // Safari's wording
+    expect(canvasProblem(new TypeError("NetworkError when attempting to fetch resource."))).toMatch(/offline/i); // Firefox's
+    expect(canvasProblem(new TypeError("fetch failed"))).toMatch(/offline/i); // Node's (server-side rendering)
+    expect(canvasProblem(new TypeError("The network connection was lost."))).toMatch(/offline/i); // Safari's other wording
+  });
+
+  it("429 and 503 (the limits and the sign-in gate, which send Retry-After) and 5xx each have their own sentence, never the raw text", () => {
+    expect(canvasProblem(apiError(429, "Rate limit exceeded — slow down and try again shortly"))).toMatch(/too fast/i);
+    expect(canvasProblem(apiError(503, "Sign-in is busy — try again in a moment"))).toMatch(/busy/i);
+    expect(canvasProblem(apiError(500, "Internal Server Error"))).toMatch(/problem on its side/i);
+    expect(canvasProblem(apiError(502, "Bad Gateway"))).toMatch(/problem on its side/i);
+  });
+
+  it("a 501 is the server saying on purpose that it cannot do this (an upload on storage that is not local): the person gets the one plain sentence, never the server's text and never 'a problem on its side'", () => {
+    const sent = "Canvas image assets need local storage (STORAGE_PROVIDER=local). R2 and Supabase private storage is not supported yet.";
+    const shown = canvasProblem(apiError(501, sent), "The image could not be added.");
+    expect(shown).toBe(STORAGE_UNSUPPORTED_MESSAGE); // the fixed sentence, so neither the setting's name nor "a problem on its side" can appear
+    expect(canvasProblem(apiError(501, "501 error"))).toBe(STORAGE_UNSUPPORTED_MESSAGE); // whatever the body said, or did not
+    expect(canvasProblem(apiError(500, "Internal Server Error"))).toMatch(/problem on its side/i); // only 501 is special
+  });
+
+  it("a TypeError that is not a network failure is a bug in the page, not 'offline': it gets the generic sentence", () => {
+    expect(canvasProblem(new TypeError("Cannot read properties of undefined (reading 'name')"), "The image could not be added.")).toBe("The image could not be added.");
+    expect(canvasProblem(new TypeError("x is not a function"))).toBe("Something went wrong. Try again.");
+    // a bug that merely MENTIONS fetch or network is still a bug, not a lost connection
+    expect(canvasProblem(new TypeError("Cannot read properties of undefined (reading 'fetch')"))).toBe("Something went wrong. Try again.");
+    expect(canvasProblem(new TypeError("network.connect is not a function"))).toBe("Something went wrong. Try again.");
+  });
+
+  it("what the server says on purpose (a 400 or 409) is kept: it says what to fix", () => {
+    expect(canvasProblem(apiError(409, "This design was changed somewhere else."))).toBe("This design was changed somewhere else.");
+    expect(canvasProblem(apiError(400, "The name is too long."))).toBe("The name is too long.");
+  });
+
+  it("apiFetch's own empty '404 error' text is replaced by the caller's fallback, and a plain Error without a status keeps its words", () => {
+    expect(canvasProblem(apiError(404, "404 error"), "The design could not be deleted.")).toBe("The design could not be deleted.");
+    expect(canvasProblem(new Error("The file is larger than 10 MB."), "x")).toBe("The file is larger than 10 MB."); // ours, says what it means
+    expect(canvasProblem("a string", "fallback")).toBe("fallback");
+    expect(canvasProblem(undefined)).toBe("Something went wrong. Try again.");
   });
 });
 

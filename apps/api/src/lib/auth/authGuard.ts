@@ -36,6 +36,8 @@ declare module "fastify" {
     user?: AuthUser;
     sessionId?: string;
     workspaceId?: string | null;
+    /** Which cookie authenticated this request. Set by `withAuth` for both providers; read by the Canvas auth gate (lib/canvasAuthGate.ts). */
+    authVia?: "access" | "refresh";
   }
 }
 
@@ -101,6 +103,7 @@ export function createAuthGuard(deps: AuthGuardDeps) {
     if (accessToken) {
       const result = await provider.validateAccessToken(accessToken);
       if (result) {
+        req.authVia = "access";
         await accept(req, result);
         return true;
       }
@@ -113,6 +116,7 @@ export function createAuthGuard(deps: AuthGuardDeps) {
         const result = await provider.validateAccessToken(tokens.accessToken);
         if (result) {
           setAuthCookies(reply, tokens.accessToken, tokens.refreshToken, { persistent: isPersistent(req) });
+          req.authVia = "refresh";
           await accept(req, result);
           return true;
         }
