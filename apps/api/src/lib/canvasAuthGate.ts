@@ -8,7 +8,7 @@ import { byIp } from "./ipRateLimit.js";
  * The Canvas authentication gate. It BOUNDS THE AUTHENTICATION WORK (database reads, or remote calls under Supabase) that failed,
  * revoked or replayed credentials can cause on the Canvas routes. It does NOT prevent request floods, connection exhaustion, floods
  * from many source addresses, or the authentication cost of valid sessions, and it gives no per-client protection unless `req.ip`
- * is the visitor (that depends on the app's `trustProxy` setting, which this file never reads or changes).
+ * is the visitor (that depends on the app's `trustProxy` setting, which this file never reads or changes; see the blocker below).
  *
  * Why it exists: `withAuth` runs as a route preHandler, after the global limiter, and a route-level limiter cannot be stacked on
  * the global one (@fastify/rate-limit runs ONE limiter per request). So a request that auth refuses (401) was never counted by
@@ -34,10 +34,13 @@ import { byIp } from "./ipRateLimit.js";
  * more than `cohort` simultaneous requests on one credential get a 429 for the excess; counters are per process.
  *
  * PRODUCTION DEPLOYMENT BLOCKER (open, do not deploy the gate behind the production proxy until it is decided): see the failure
- * mode below. Closing it needs a proxy-aware `trustProxy` setting, which needs verified Caddy network details and its own approved
- * change; this file neither enables it nor works around it, and no Stage B change belongs in the Canvas gate.
+ * mode below. `index.ts` now sets `trustProxy: TRUSTED_PROXIES` (lib/ipRateLimit.ts: loopback, link-local, private and 100.64.0.0/10
+ * peers only), which makes `req.ip` the visitor IF the production proxy is such a peer and puts the visitor's address in
+ * X-Forwarded-For. That has NOT been verified against the real Caddy and network, so the blocker stays open until it is. This file
+ * neither reads nor changes that setting, and no Stage B change belongs in the Canvas gate.
  *
- * THE FAILURE MODE TO KNOW ABOUT, where `req.ip` is shared by every visitor (behind a proxy the app does not trust): the anonymous
+ * THE FAILURE MODE TO KNOW ABOUT, where `req.ip` is shared by every visitor (behind a proxy the app does not trust, or one whose
+ * address is outside TRUSTED_PROXIES): the anonymous
  * and new-failing-handle budgets are then site-wide. A client that sends garbage credentials fast enough (about 5 a second) can make
  * every credential the server has not recently seen succeed (a new session, one idle for more than `goodTtlMs`, anyone after a
  * restart) get a 429 for up to a minute, and 61 cookie-less requests make cookie-less visitors get 429 instead of 401, which the web

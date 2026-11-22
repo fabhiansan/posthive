@@ -1170,7 +1170,7 @@ describe("hygiene: nothing secret is kept, logged or trusted", () => {
     expect(b.gate.handleOf("a", secretA)).toMatch(/^a:[0-9a-f]{32}$/);
   });
 
-  it("it ignores a spoofed X-Forwarded-For: the bucket is the address the app reports (no trustProxy in this app)", async () => {
+  it("it ignores a spoofed X-Forwarded-For when the app trusts no proxy: the bucket is the address the app reports (this test app sets no trustProxy)", async () => {
     const { hit } = await build({ params: { anon: 2 } });
     const codes: number[] = [];
     for (let i = 0; i < 4; i++) codes.push((await hit(undefined, "10.0.0.1", "/p", { "x-forwarded-for": `1.2.3.${i}` })).statusCode);

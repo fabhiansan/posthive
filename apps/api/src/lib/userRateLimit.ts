@@ -4,8 +4,8 @@ import type { FastifyRequest } from "fastify";
  * A per-minute limit for ONE PERSON IN ONE WORKSPACE, used by every Canvas route.
  *
  * The app-wide limiter keys on a header the client chooses, or on req.ip, which behind the production proxy is the proxy's
- * address shared by everybody (no trustProxy; see deploy/prod/README.md), so a per-route limit declared the usual way is
- * really one bucket for every user. This one is keyed on the signed-in person, which the server decides.
+ * address shared by everybody (unless `trustProxy` makes it the visitor's, see TRUSTED_PROXIES in ipRateLimit.ts), so a per-route limit
+ * declared the usual way is really one bucket for every user. This one is keyed on the signed-in person, which the server decides.
  *
  * It must run AFTER the auth hook, because it reads req.user and req.workspaceId: the plugin's default hook is onRequest,
  * which is before auth, so `hook: "preHandler"` is required. The plugin appends its handler to the route's own preHandler
