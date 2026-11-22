@@ -73,6 +73,25 @@ describe("CustomizeButton", () => {
     expect((screen.getByRole("button") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it.each([
+    [500, "Posthive had a problem on its side. Try again in a moment."],
+    [503, "Posthive is busy right now. Try again in a moment."],
+    [429, "You are doing that too fast. Wait a moment and try again."],
+  ])("a %i is told in a plain sentence, not as the server's class name or status text", async (status, shown) => {
+    h.apiFetch.mockRejectedValue(Object.assign(new Error("PrismaClientInitializationError"), { status }));
+    render(<CustomizeButton template={TEMPLATE} />);
+    await userEvent.click(screen.getByRole("button"));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith(shown));
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it("a lost connection says so", async () => {
+    h.apiFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+    render(<CustomizeButton template={TEMPLATE} />);
+    await userEvent.click(screen.getByRole("button"));
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("You seem to be offline. Check your connection and try again."));
+  });
+
   it("a failure with no message says what to do", async () => {
     h.apiFetch.mockRejectedValue(new Error(""));
     render(<CustomizeButton template={TEMPLATE} />);

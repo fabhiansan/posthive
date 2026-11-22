@@ -664,6 +664,25 @@ describe("Template page: the Canvas design of a template (the design team)", () 
     expect((screen.getByRole("button", { name: /Create Canvas design/ }) as HTMLButtonElement).disabled).toBe(false); // can try again
   });
 
+  it("a server fault or a busy server is told in a plain sentence, never as the server's class name", async () => {
+    for (const [status, shown] of [
+      [500, "Posthive had a problem on its side. Try again in a moment."],
+      [503, "Posthive is busy right now. Try again in a moment."],
+    ] as const) {
+      h.toast.error.mockClear();
+      h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+        if (path === "/templates" && !init) return { templates: list };
+        if (path === "/canvas/templates/case/design") throw Object.assign(new Error("PrismaClientInitializationError"), { status });
+        return { ok: true };
+      });
+      const view = render(<TemplateDetailPage />);
+      await userEvent.click(await screen.findByRole("button", { name: /Create Canvas design/ }));
+      await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith(shown));
+      expect(h.toast.error).not.toHaveBeenCalledWith("PrismaClientInitializationError");
+      view.unmount();
+    }
+  });
+
   it("Create Canvas design is off for a published template that has no source, and says why", async () => {
     list = [{ ...CASE, linkUrl: null, published: true }];
     render(<TemplateDetailPage />);

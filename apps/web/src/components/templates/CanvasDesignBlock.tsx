@@ -7,7 +7,7 @@ import { ExternalLinkIcon, LinkIcon, PaletteIcon, PlusIcon, Unlink2Icon } from "
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
-import { attachDesign, createDesignForTemplate, detachDesign, listDesigns, type DesignSummary } from "@/lib/canvas";
+import { attachDesign, canvasProblem, createDesignForTemplate, detachDesign, listDesigns, type DesignSummary } from "@/lib/canvas";
 import { attachBlockedReason, attachNotice } from "@/lib/template-library";
 import type { DesignTemplate } from "@/lib/templates";
 
@@ -41,7 +41,7 @@ export function CanvasDesignBlock({ template, onChanged }: { template: DesignTem
     };
   }, [template.designId, template.canvasRevision]);
 
-  const fail = (err: unknown, fallback: string) => toast.error(err instanceof Error && err.message ? err.message : fallback);
+  const fail = (err: unknown, fallback: string) => toast.error(canvasProblem(err, fallback));
 
   async function createAndOpen() {
     setBusy(true);

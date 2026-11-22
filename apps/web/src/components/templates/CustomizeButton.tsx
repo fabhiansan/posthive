@@ -6,7 +6,7 @@ import { PaletteIcon } from "lucide-react";
 import { Spinner } from "@/components/Spinner";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
-import { createInstance } from "@/lib/canvas";
+import { canvasProblem, createInstance } from "@/lib/canvas";
 
 /**
  * Starts a Marketing design from a published template and opens it in Canvas. The server decides everything (it is only
@@ -34,7 +34,7 @@ export function CustomizeButton({
       const { instance } = await createInstance(template.id);
       router.push(`/canvas/${instance.id}`); // the page stays disabled until the editor takes over
     } catch (err) {
-      toast.error(err instanceof Error && err.message ? err.message : "The design could not be created. Try again.");
+      toast.error(canvasProblem(err, "The design could not be created. Try again."));
       setBusy(false);
     }
   }
