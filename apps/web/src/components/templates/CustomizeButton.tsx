@@ -11,7 +11,8 @@ import { canvasProblem, createInstance } from "@/lib/canvas";
 /**
  * Starts a Marketing design from a published template and opens it in Canvas. The server decides everything (it is only
  * given the template): which revision the design is made from, its name and its owner. When it refuses (the template was
- * unpublished a moment ago, or has no Canvas design) its own message is shown and nothing is created.
+ * unpublished a moment ago, or has no Canvas design) its own message is shown and nothing is created; a lost connection or a
+ * server fault gets a plain sentence from canvasProblem instead.
  */
 export function CustomizeButton({
   template,

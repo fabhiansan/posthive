@@ -1094,7 +1094,7 @@ describe("the work bound (asserted, with the measured maximum printed)", () => {
       expect(r.refused).toBeGreaterThanOrEqual(2 * Lu + 10); // the burst's excess and every late credential were refused
     }
     expect(big.calls).toBeGreaterThan(600); // above what 300 two-call requests could ever cost: the defaults' bound is exercised
-  });
+  }, 60_000); // two adversary runs, the second at the defaults: about 1.5 s alone, 7.3 s once in a loaded full-suite run (the default limit is 5 s)
 
   it("a session revoked mid-cohort costs at most 1 + Wc attempts (Wc = 5 here: 6)", async () => {
     const b = await build({ params: { waiters: 20, cohort: 5 } });

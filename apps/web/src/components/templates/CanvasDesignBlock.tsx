@@ -16,7 +16,8 @@ const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateS
 /**
  * The Canvas design of a template, on the template's own page (the design team only). The page creates or links the
  * design; the Canvas editor only publishes revisions; the template's own Publish stays a separate action on the page.
- * The API decides every case (this only says it first), and its message is shown when it refuses.
+ * The API decides every case (this only says it first), and its message is shown when it refuses; a lost connection or a server
+ * fault gets a plain sentence from canvasProblem instead.
  */
 export function CanvasDesignBlock({ template, onChanged }: { template: DesignTemplate; onChanged(): void }) {
   const toast = useToast("top-right");

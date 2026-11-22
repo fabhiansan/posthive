@@ -20,7 +20,9 @@ import { byIp } from "./ipRateLimit.js";
  * preHandler) never takes one.
  *
  * What it reads: the two auth cookies (exactly what `withAuth` reads), `req.ip`, the guard's `authVia`, and the cookies the reply
- * issues. Never `Authorization`, `?token=`, `X-Forwarded-*` or any other header. No JWT is parsed or verified here. A credential
+ * issues. It reads no header itself (not `Authorization`, not `?token=`, not `X-Forwarded-*`), BUT `req.ip` is where Fastify puts
+ * the visitor's address taken from X-Forwarded-For when the connecting peer is in `trustProxy`, so every address budget below rests
+ * on that setting. No JWT is parsed or verified here. A credential
  * is represented by a handle: a keyed hash (HMAC with a random per-process key), so a raw cookie value is never a map key, a
  * counter, a log field or stored anywhere, and a restart changes every handle.
  *
@@ -40,17 +42,22 @@ import { byIp } from "./ipRateLimit.js";
  * neither reads nor changes that setting, and no Stage B change belongs in the Canvas gate.
  *
  * THE FAILURE MODE TO KNOW ABOUT, where `req.ip` is shared by every visitor (behind a proxy the app does not trust, or one whose
- * address is outside TRUSTED_PROXIES): the anonymous
- * and new-failing-handle budgets are then site-wide. A client that sends garbage credentials fast enough (about 5 a second) can make
+ * address is outside TRUSTED_PROXIES): the anonymous and new-failing-handle budgets are then site-wide. A client that sends garbage credentials fast enough (about 5 a second) can make
  * every credential the server has not recently seen succeed (a new session, one idle for more than `goodTtlMs`, anyone after a
  * restart) get a 429 for up to a minute, and 61 cookie-less requests make cookie-less visitors get 429 instead of 401, which the web
  * client does not treat as "sign in again". This is the price of counting by address without trusting a forwarded one. It goes away
- * when `req.ip` is the visitor (a proxy-aware `trustProxy` setting, a deployment decision outside this file), EXCEPT: (1) addresses
+ * when `req.ip` is the visitor (whether the production proxy is a trusted peer is a deployment fact this file cannot check), EXCEPT: (1) addresses
  * that really are shared (an office, a campus, carrier-grade NAT) still share the budgets, so one neighbour sending about 150
  * two-cookie garbage requests a minute stops every not-recently-seen credential behind that address for up to a minute; (2) a
  * crowd of honest sessions that all idle-expire and come back within a minute does the same to the next logins (a failure of a
  * known-good credential also counts toward F); (3) IPv6: the budgets are keyed by the full address, so a client that owns a /64
- * has a fresh one for every request and only T (3 per credential) is left to bound it.
+ * has a fresh one for every request and only T (3 per credential) is left to bound it; (4) THE REVERSE MODE: a client whose TCP peer is
+ * itself inside TRUSTED_PROXIES (a container or VPN peer on a private address; possibly also a connection that reaches the API through
+ * the Docker bridge, whose gateway is a private address: NOT tested; port 3001 is published on 0.0.0.0) chooses its own `req.ip` with X-Forwarded-For
+ * and gets a fresh budget on every request, so only T and single-flight are left; and a public CDN in front of the proxy would make
+ * `req.ip` the CDN edge address, which is shared but cannot be chosen. Which of these the real deployment shows (how a direct
+ * connection to :3001 over IPv4 and IPv6 appears as the peer, and what the proxy does with X-Forwarded-For) is what the verification
+ * that closes the blocker has to establish.
  *
  * PROVIDER FAULTS. A provider that THROWS on a fault is an ERROR: it counts toward neither T nor F, clears no known-good mark and
  * does not close a cohort. The request that hit it gets the app's 500; same-credential parked waiters get 503 + Retry-After; a
