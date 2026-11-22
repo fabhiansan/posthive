@@ -66,6 +66,7 @@ import { accountGroupRoutes } from "./routes/accountGroups.js";
 import { canvasRoutes } from "./routes/canvas.js";
 import { publicUploadsStatic } from "./lib/canvasAssets.js";
 import { withAuth } from "./lib/auth/withAuth.js";
+import { validateAuthConfig } from "./lib/auth/config.js";
 import type { StorageAdapter } from "./lib/storage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -75,6 +76,7 @@ const UPLOADS_DIR = path.join(__dirname, "..", "uploads");
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB — covers video
 
 async function main() {
+  validateAuthConfig(); // first, so a bad configuration stops the process before it starts anything or listens (lib/auth/config.ts)
   const storage = process.env.STORAGE_PROVIDER === "r2"
     ? new R2Storage()
     : process.env.STORAGE_PROVIDER === "supabase"

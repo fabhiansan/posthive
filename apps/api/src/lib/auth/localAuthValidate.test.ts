@@ -1,7 +1,7 @@
 // What localAuthProvider.validateAccessToken answers, and what it lets through. The point of this file: a token the JWT library
 // REJECTS is "no user" (null), and a database or unexpected failure is NOT: it propagates, so a caller (the guard, the Canvas
 // auth gate) can tell "this credential is refused" from "authentication could not run". The database is faked; the JWT library,
-// the session service, the guard and the gate are the real ones.
+// the session service, the guard and the gate are the real ones. It also covers a missing signing secret: nothing may be written.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
@@ -14,6 +14,9 @@ const h = vi.hoisted(() => ({
   user: null as null | { id: string; email: string; name: string; avatarUrl: null; timezone: string },
   down: {} as Record<"session" | "user" | "touch" | "delete", boolean>,
   calls: { session: 0, user: 0, touch: 0, delete: 0, refreshLookup: 0 },
+  refreshRow: null as null | { id: string; userId: string; tokenHash: string; prevTokenHash: null; rotatedAt: null; lastActiveAt: Date; expiresAt: Date; createdAt: Date },
+  password: true,
+  writes: [] as string[], // every write the fake database took, in order: an account, a workspace, a session, a sign-in line, a rotation
 }));
 
 const outage = () => Object.assign(new Error("Can't reach database server at `localhost:5433`"), { name: "PrismaClientInitializationError" });
@@ -21,9 +24,13 @@ const outage = () => Object.assign(new Error("Can't reach database server at `lo
 vi.mock("../prisma.js", () => ({
   prisma: {
     authSession: {
+      create: vi.fn(async (a: { data: Record<string, unknown> }) => {
+        h.writes.push("session.create");
+        return { id: "s-new", ...a.data };
+      }),
       findFirst: vi.fn(async () => {
         h.calls.refreshLookup++;
-        return null;
+        return h.refreshRow;
       }),
       findUnique: vi.fn(async () => {
         h.calls.session++;
@@ -32,6 +39,7 @@ vi.mock("../prisma.js", () => ({
       }),
       updateMany: vi.fn(async () => {
         h.calls.touch++;
+        h.writes.push("session.update");
         if (h.down.touch) throw outage();
         return { count: 1 };
       }),
@@ -47,14 +55,36 @@ vi.mock("../prisma.js", () => ({
         if (h.down.user) throw outage();
         return h.user;
       }),
+      create: vi.fn(async (a: { data: Record<string, unknown> }) => {
+        h.writes.push("user.create");
+        return { id: "u-new", avatarUrl: null, timezone: "UTC", ...a.data };
+      }),
+      update: vi.fn(async () => {
+        h.writes.push("user.update");
+        return {};
+      }),
+    },
+    workspace: {
+      create: vi.fn(async () => {
+        h.writes.push("workspace.create");
+        return { id: "w-new" };
+      }),
+    },
+    loginEvent: {
+      create: vi.fn(async () => {
+        h.writes.push("loginEvent.create");
+        return {};
+      }),
     },
   },
 }));
+vi.mock("bcryptjs", () => ({ default: { compare: vi.fn(async () => h.password), hash: vi.fn(async () => "hash") } }));
 // the gate module imports the real withAuth (which loads the real provider and prisma); this file builds its own guard
 vi.mock("./withAuth.js", () => ({ withAuth: async () => {} }));
 
 import { localAuthProvider } from "./localAuth.js";
 import { createAuthGuard, SESSION_EXPIRED_BODY } from "./authGuard.js";
+import { hashToken } from "./sessionService.js";
 import { createCanvasAuthGate, makeCanvasWithAuth, registerCanvasAuthGate } from "../canvasAuthGate.js";
 
 const SECRET = h.secret;
@@ -70,6 +100,9 @@ beforeEach(() => {
   h.user = { id: "u1", email: "a@b.co", name: "A", avatarUrl: null, timezone: "UTC" };
   h.down = { session: false, user: false, touch: false, delete: false };
   h.calls = { session: 0, user: 0, touch: 0, delete: 0, refreshLookup: 0 };
+  h.refreshRow = null;
+  h.password = true;
+  h.writes = [];
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -144,17 +177,18 @@ describe("localAuthProvider.validateAccessToken: a database or unexpected failur
 describe("a missing JWT_ACCESS_SECRET is a configuration error, never 'no user' and never a failed credential", () => {
   // localAuth reads the secret when it is loaded, so a provider with no secret is a freshly loaded module. Unset, or empty: deploy/prod/env.example
   // ships `JWT_ACCESS_SECRET=`, which a forgetful operator leaves as it is.
-  async function withoutSecret(value?: string) {
+  async function freshLocalAuth(value?: string) {
     const saved = process.env.JWT_ACCESS_SECRET;
     if (value === undefined) delete process.env.JWT_ACCESS_SECRET;
     else process.env.JWT_ACCESS_SECRET = value;
     vi.resetModules();
     try {
-      return (await import("./localAuth.js")).localAuthProvider;
+      return await import("./localAuth.js");
     } finally {
       process.env.JWT_ACCESS_SECRET = saved;
     }
   }
+  const withoutSecret = async (value?: string) => (await freshLocalAuth(value)).localAuthProvider;
   const open: FastifyInstance[] = [];
   afterEach(async () => {
     while (open.length) await open.pop()!.close();
@@ -192,6 +226,134 @@ describe("a missing JWT_ACCESS_SECRET is a configuration error, never 'no user' 
     }
     expect(gate.stats().failures).toEqual({});
     expect(gate.stats().newFailingHandles).toEqual({});
+  });
+
+  // Every way localAuth.ts opens or renews a session. (The routes that call createLocalTokens after writing something of their own, a reset link, the
+  // second step of a two-step login, the OAuth callbacks, are protected by the startup check, not by anything here; the two-step login test below
+  // covers only the first step: no challenge is written by such a process.) With no secret the access token cannot be signed, so anything written BEFORE that point is a
+  // half-finished sign-in: an account whose retry says "Email already in use", a session and a "signed in" line nobody got a token for, a
+  // refresh token already rotated (the old one dies, the new one never reaches the browser, and the 30 s grace later reads as reuse).
+  const GOOD_SECRET = "0123456789abcdef".repeat(4);
+  const NO_SECRET: [string, string | undefined][] = [["unset", undefined], ["empty", ""]];
+  const freshRefreshRow = (raw: string) => {
+    const now = new Date();
+    return { id: "s1", userId: "u1", tokenHash: hashToken(raw), prevTokenHash: null, rotatedAt: null, lastActiveAt: now, expiresAt: new Date(now.getTime() + 3_600_000), createdAt: now };
+  };
+  const knownPerson = () => {
+    h.user = { ...h.user!, passwordHash: "x" } as never; // login needs an account that has a password
+  };
+
+  describe.each(NO_SECRET)("with the secret %s, no sign-in or refresh path opens a session or writes anything but a failed-attempt line", (_name, secret) => {
+    it("login with the RIGHT password", async () => {
+      knownPerson();
+      const { localAuthProvider: provider } = await freshLocalAuth(secret);
+      await expect(provider.login("a@b.co", "pw", "ua")).rejects.toThrow(/JWT_ACCESS_SECRET is not set/);
+      expect(h.writes).toEqual([]); // no session, no sign-in line
+    });
+
+    it("login with the right password to an account that has TWO-STEP on: refused before any challenge could be written, nothing spent", async () => {
+      h.user = { ...h.user!, passwordHash: "x", totpEnabledAt: new Date() } as never;
+      const { localAuthProvider: provider } = await freshLocalAuth(secret);
+      await expect(provider.login("a@b.co", "pw", "ua")).rejects.toThrow(/JWT_ACCESS_SECRET is not set/); // before the check this answered "twoStepRequired" and the route wrote a challenge
+      expect(h.writes).toEqual([]);
+    });
+
+    it("login with a WRONG password: the ordinary refusal, the configuration error is not shown to someone guessing, and the failed attempt is still recorded", async () => {
+      knownPerson();
+      h.password = false;
+      const { localAuthProvider: provider } = await freshLocalAuth(secret);
+      await expect(provider.login("a@b.co", "bad", "ua")).rejects.toThrow("Invalid email or password");
+      expect(h.writes).toEqual(["loginEvent.create"]);
+    });
+
+    it("register: before the account exists, so the person can simply try again once the server is fixed", async () => {
+      h.user = null; // nobody has this email yet
+      const { localAuthProvider: provider } = await freshLocalAuth(secret);
+      await expect(provider.register("new@b.co", "Passw0rd!x", "New", "ua")).rejects.toThrow(/JWT_ACCESS_SECRET is not set/);
+      expect(h.writes).toEqual([]); // no user, no workspace, no session
+      expect(h.calls.user).toBe(0); // not even the lookup: the first thing register does is the check
+    });
+
+    it("createLocalTokens itself (what Google and LinkedIn sign-in, a password-reset link and the second step of a two-step login call)", async () => {
+      const { createLocalTokens } = await freshLocalAuth(secret);
+      await expect(createLocalTokens("u1", "ua")).rejects.toThrow(/JWT_ACCESS_SECRET is not set/);
+      expect(h.writes).toEqual([]);
+    });
+
+    it("refreshTokens with a refresh token that is valid: nothing is looked up and nothing is rotated", async () => {
+      h.refreshRow = freshRefreshRow("refresh-1");
+      const { localAuthProvider: provider } = await freshLocalAuth(secret);
+      await expect(provider.refreshTokens("refresh-1")).rejects.toThrow(/JWT_ACCESS_SECRET is not set/);
+      expect(h.calls.refreshLookup).toBe(0);
+      expect(h.writes).toEqual([]);
+    });
+
+    it("a refresh-only request through the real guard: a 500 with no cookie set or cleared, the old refresh token still valid", async () => {
+      h.refreshRow = freshRefreshRow("refresh-1");
+      const provider = await withoutSecret(secret);
+      const app = Fastify();
+      open.push(app);
+      await app.register(cookie);
+      const guard = createAuthGuard({ provider, resolveWorkspace: async (req) => { req.workspaceId = "w1"; } });
+      app.get("/p", { preHandler: [guard.withAuth] }, async () => ({ ok: true }));
+      await app.ready();
+      const r = await app.inject({ method: "GET", url: "/p", cookies: { "ss-refresh-token": "refresh-1" } });
+      expect(r.statusCode).toBe(500);
+      expect(r.cookies).toEqual([]); // not the new tokens, and not the three cleared cookies of a "session expired" answer
+      expect(h.calls.refreshLookup).toBe(0);
+      expect(h.writes).toEqual([]); // before the check this rotated the session and THEN threw
+    });
+  });
+
+  describe("the same calls with a valid secret still do their work (so the tests above fail for the right reason)", () => {
+    it("login writes a session and a sign-in line, in that order", async () => {
+      knownPerson();
+      const { localAuthProvider: provider } = await freshLocalAuth(GOOD_SECRET);
+      expect(await provider.login("a@b.co", "pw", "ua")).toHaveProperty("accessToken");
+      expect(h.writes).toEqual(["session.create", "loginEvent.create"]);
+    });
+
+    it("login to a two-step account answers 'a code is needed' and writes nothing (the route writes the challenge)", async () => {
+      h.user = { ...h.user!, passwordHash: "x", totpEnabledAt: new Date() } as never;
+      const { localAuthProvider: provider } = await freshLocalAuth(GOOD_SECRET);
+      expect(await provider.login("a@b.co", "pw", "ua")).toEqual({ twoStepRequired: true, userId: "u1" });
+      expect(h.writes).toEqual([]);
+    });
+
+    it("register writes the account, the workspace, the active-workspace link, a session and a sign-in line", async () => {
+      h.user = null;
+      const { localAuthProvider: provider } = await freshLocalAuth(GOOD_SECRET);
+      expect(await provider.register("new@b.co", "Passw0rd!x", "New", "ua")).toHaveProperty("accessToken");
+      expect(h.writes).toEqual(["user.create", "workspace.create", "user.update", "session.create", "loginEvent.create"]);
+    });
+
+    it("createLocalTokens writes a session and a sign-in line", async () => {
+      const { createLocalTokens } = await freshLocalAuth(GOOD_SECRET);
+      expect(await createLocalTokens("u1", "ua")).toHaveProperty("accessToken");
+      expect(h.writes).toEqual(["session.create", "loginEvent.create"]);
+    });
+
+    it("refreshTokens rotates the session and hands back both tokens", async () => {
+      h.refreshRow = freshRefreshRow("refresh-1");
+      const { localAuthProvider: provider } = await freshLocalAuth(GOOD_SECRET);
+      expect(await provider.refreshTokens("refresh-1")).toMatchObject({ accessToken: expect.any(String), refreshToken: expect.any(String) });
+      expect(h.writes).toEqual(["session.update"]);
+    });
+
+    it("a refresh-only request through the real guard is a 200 that sets both cookies", async () => {
+      h.refreshRow = freshRefreshRow("refresh-1");
+      const provider = await withoutSecret(GOOD_SECRET);
+      const app = Fastify();
+      open.push(app);
+      await app.register(cookie);
+      const guard = createAuthGuard({ provider, resolveWorkspace: async (req) => { req.workspaceId = "w1"; } });
+      app.get("/p", { preHandler: [guard.withAuth] }, async () => ({ ok: true }));
+      await app.ready();
+      const r = await app.inject({ method: "GET", url: "/p", cookies: { "ss-refresh-token": "refresh-1" } });
+      expect(r.statusCode).toBe(200);
+      expect(r.cookies.map((c) => c.name).sort()).toEqual(["ss-access-token", "ss-refresh-token", "ss-session-only"]);
+      expect(h.writes).toEqual(["session.update"]);
+    });
   });
 });
 

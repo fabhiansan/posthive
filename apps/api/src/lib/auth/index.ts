@@ -1,6 +1,7 @@
 import type { AuthProvider } from "./types.js";
+import { authProviderName } from "./config.js";
 
-const provider = process.env.AUTH_PROVIDER ?? "local";
+const provider = authProviderName();
 
 // Dynamic import so @supabase/supabase-js is never loaded when AUTH_PROVIDER=local.
 // @supabase/realtime-js v2.10+ throws on Node <22 if WebSocket is absent — even

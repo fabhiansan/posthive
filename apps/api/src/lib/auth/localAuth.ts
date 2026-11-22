@@ -8,7 +8,14 @@ import { ACCESS_TTL_MS } from "./sessionPolicy.js";
 import { cleanUserAgent } from "../deviceLabel.js";
 import { WRONG_PASSWORD, recordLoginEvent } from "../loginHistory.js";
 
-const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET!;
+// Read once, when the module loads. index.ts's main() refuses to start without a valid one (validateAuthConfig in config.ts); secret()
+// below is the request-time check, defense in depth for a process that got here anyway.
+const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET;
+
+function secret(): string {
+  if (!ACCESS_SECRET) throw new Error("JWT_ACCESS_SECRET is not set: the local auth provider cannot sign or verify sessions");
+  return ACCESS_SECRET;
+}
 
 // Access JWT is short-lived and carries the server-side session id (`sid`).
 // Refresh tokens are opaque, hashed in the DB and rotated on every use.
@@ -16,13 +23,14 @@ const ACCESS_SECRET = process.env.JWT_ACCESS_SECRET!;
 export const sessions = createSessionService({ store: prismaSessionStore });
 
 function signAccess(userId: string, sessionId: string): string {
-  return jwt.sign({ sub: userId, sid: sessionId, type: "access" }, ACCESS_SECRET, {
+  return jwt.sign({ sub: userId, sid: sessionId, type: "access" }, secret(), {
     expiresIn: Math.floor(ACCESS_TTL_MS / 1000),
   });
 }
 
 /** Every sign-in opens a session and leaves a line in the person's history, whichever way they came in. */
 async function startSession(userId: string, userAgent?: string | null) {
+  secret(); // before anything is written: with no secret signAccess throws afterwards, leaving a session and a "signed in" line nobody got a token for
   const created = await sessions.create(userId, cleanUserAgent(userAgent));
   await recordLoginEvent({ userId, userAgent });
   return created;
@@ -34,6 +42,7 @@ function toAuthUser(user: { id: string; email: string; name: string; avatarUrl: 
 
 export const localAuthProvider: AuthProvider = {
   async register(email, password, name, userAgent) {
+    secret(); // before the account exists: a retry after a failure here would say "Email already in use"
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) throw new Error("Email already in use");
 
@@ -71,6 +80,10 @@ export const localAuthProvider: AuthProvider = {
       throw new Error("Invalid email or password");
     }
 
+    // After the password check, so a wrong password never sees a configuration error. Before the two-step return below, which skips
+    // startSession: the route would write a challenge that this process could never complete.
+    secret();
+
     // The right password is not the whole login when the account has two-step verification: no session until the code is
     // right (routes/twoStep.ts). Nothing is written to the sign-in history yet: that happens when a session opens.
     if (user.totpEnabledAt) return { twoStepRequired: true, userId: user.id };
@@ -84,10 +97,10 @@ export const localAuthProvider: AuthProvider = {
     // A missing signing secret is a CONFIGURATION error, not a bad token: verify would reject every token with a JsonWebTokenError,
     // the catch below would call that "no user", and everyone would get a 401 and cleared cookies. Thrown here, outside that catch, it
     // is a 500 that is logged and reported, and (for the Canvas auth gate) an ERROR that counts against nobody.
-    if (!ACCESS_SECRET) throw new Error("JWT_ACCESS_SECRET is not set: the local auth provider cannot verify sessions");
+    const key = secret();
     let payload: { sub: string; sid?: string; type: string };
     try {
-      payload = jwt.verify(token, ACCESS_SECRET) as typeof payload;
+      payload = jwt.verify(token, key) as typeof payload;
     } catch {
       // Whatever verify throws is a REJECTED token, so "no user": malformed, wrong signature or algorithm, expired, not yet valid, or a
       // "typ: JWT" token whose payload is not JSON (jws parses it before any signature check and it escapes as a raw SyntaxError, so
@@ -110,6 +123,7 @@ export const localAuthProvider: AuthProvider = {
   },
 
   async refreshTokens(refreshToken) {
+    secret(); // before the refresh token is rotated: signAccess would throw after it, and the browser would never receive the new one
     const res = await sessions.refresh(refreshToken);
     if (!res) return null;
     return { accessToken: signAccess(res.userId, res.sessionId), refreshToken: res.refreshToken };
