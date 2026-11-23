@@ -10,7 +10,10 @@ import { isBlockedAddress } from "./ssrf.js";
 // default, which is exactly what the default-predicate tests rely on).
 
 let server: http.Server;
+let other: http.Server; // a second origin (another port), to see what a cross-origin redirect carries
 let port: number;
+let otherPort: number;
+const otherSeen: Array<Record<string, string | string[] | undefined>> = [];
 const hits: string[] = []; // every request path the server really received
 let sockets = 0;
 
@@ -18,6 +21,25 @@ beforeAll(async () => {
   server = http.createServer((req, res) => {
     hits.push(req.url ?? "");
     const url = req.url ?? "";
+    if (url === "/echo") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString("latin1") })));
+      return;
+    }
+    if (url === "/slow-read") {
+      // reads the request slowly (a slow uplink): the sender is blocked in req.write for longer than the connect timeout, then the answer is quick
+      let n = 0;
+      req.on("data", (c) => {
+        n += c.length;
+        req.pause();
+        setTimeout(() => req.resume(), 15); // ~64 KB per 15 ms: a 12 MB body takes about 3 s
+      });
+      req.on("end", () => res.writeHead(200, { "content-type": "text/plain" }).end(`read ${n}`));
+      return;
+    }
+    if (url === "/post-redirect") return void res.writeHead(307, { location: "/echo" }).end();
+    if (url === "/to-other") return void res.writeHead(302, { location: `http://b.example.test:${otherPort}/echo` }).end();
     if (url === "/ok") return void res.writeHead(200, { "content-type": "image/png" }).end("hello");
     if (url === "/big") return void res.writeHead(200, { "content-type": "image/png", "content-length": "5000" }).end(Buffer.alloc(5000));
     if (url === "/big-chunked") {
@@ -49,9 +71,15 @@ beforeAll(async () => {
   server.on("connection", () => sockets++);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   port = (server.address() as AddressInfo).port;
+  other = http.createServer((req, res) => {
+    otherSeen.push(req.headers);
+    res.writeHead(200, { "content-type": "text/plain" }).end("other");
+  });
+  await new Promise<void>((r) => other.listen(0, "127.0.0.1", r));
+  otherPort = (other.address() as AddressInfo).port;
 });
 
-afterAll(() => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }));
+afterAll(() => new Promise<void>((r) => { other.closeAllConnections(); other.close(); server.closeAllConnections(); server.close(() => r()); }));
 
 const lo = (ip: string) => ip === "127.0.0.1";
 const toLocal = async () => [{ address: "127.0.0.1", family: 4 }];
@@ -222,6 +250,74 @@ describe("safeFetch: size, type and time limits", () => {
     const res = await f(url("/ok"), { allowHttp: true, method: "HEAD" });
     expect(res.status).toBe(200);
     expect(res.body).toBeNull();
+  });
+});
+
+describe("safeFetch: POST (the instance and webhook callers)", () => {
+  const f = createSafeFetch({ resolve: toLocal, isAllowedAddress: lo });
+  const url = (p: string) => `http://a.example.test:${port}${p}`;
+  const echo = async (r: Response) => (await r.json()) as { method: string; headers: Record<string, string>; body: string };
+
+  it("sends a JSON body with its length, and the caller's headers (any case)", async () => {
+    const out = await echo(await f(url("/echo"), { allowHttp: true, method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer t0k" }, body: JSON.stringify({ a: 1 }) }));
+    expect(out.method).toBe("POST");
+    expect(out.body).toBe('{"a":1}');
+    expect(out.headers["content-type"]).toBe("application/json");
+    expect(out.headers.authorization).toBe("Bearer t0k");
+    expect(out.headers["content-length"]).toBe("7");
+  });
+
+  it("sends FormData as multipart with the boundary in the content type (the media uploads)", async () => {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }), "media");
+    form.append("description", "alt text");
+    const out = await echo(await f(url("/echo"), { allowHttp: true, method: "POST", headers: { Authorization: "Bearer t" }, body: form }));
+    expect(out.headers["content-type"]).toMatch(/^multipart\/form-data; boundary=/);
+    expect(out.body).toContain('name="description"');
+    expect(out.body).toContain("alt text");
+    expect(out.body).toContain('filename="media"');
+    expect(Number(out.headers["content-length"])).toBeGreaterThan(20);
+  });
+
+  it("a body that takes longer to send than the connect timeout is NOT cut off (a slow upload is bounded by the total timeout)", { timeout: 20_000 }, async () => {
+    const big = Buffer.alloc(8 * 1024 * 1024, 1);
+    const t = Date.now();
+    const res = await f(url("/slow-read"), { allowHttp: true, method: "POST", body: big, connectTimeoutMs: 400, totalTimeoutMs: 30_000 });
+    expect(Date.now() - t).toBeGreaterThan(1000); // the send really took much longer than the 400 ms connect timeout
+    expect(res.status).toBe(200);
+    expect(await text(res)).toBe(`read ${big.length}`);
+  });
+
+  it("a POST to a server that never answers is stopped by the TOTAL timeout; a GET by the connect timeout", async () => {
+    await expect(f(url("/slow-headers"), { allowHttp: true, method: "POST", body: "x", connectTimeoutMs: 200, totalTimeoutMs: 700 })).rejects.toMatchObject({ code: "TIMEOUT" });
+    await expect(f(url("/slow-headers"), { allowHttp: true, connectTimeoutMs: 200 })).rejects.toMatchObject({ code: "TIMEOUT" });
+  });
+
+  it("a POST whose connection never completes (here: the name never resolves) is stopped by the connect timeout, not the total one", async () => {
+    const hang = createSafeFetch({ resolve: () => new Promise(() => {}), isAllowedAddress: () => true }); // no network involved
+    const t = Date.now();
+    await expect(hang("http://black.hole.test/x", { allowHttp: true, method: "POST", body: "x", connectTimeoutMs: 400, totalTimeoutMs: 5000 })).rejects.toMatchObject({ code: "TIMEOUT" });
+    expect(Date.now() - t).toBeLessThan(2500);
+  });
+
+  it("a POST is never redirected: the body and the token stay with the address that was checked", async () => {
+    await expect(f(url("/post-redirect"), { allowHttp: true, method: "POST", body: "x" })).rejects.toMatchObject({ code: "REDIRECTS" });
+  });
+
+  it("a GET that is redirected to ANOTHER origin does not carry the Authorization header; to the same origin it does", async () => {
+    otherSeen.length = 0;
+    const res = await f(url("/to-other"), { allowHttp: true, headers: { Authorization: "Bearer secret" } });
+    expect(await text(res)).toBe("other");
+    expect(otherSeen).toHaveLength(1);
+    expect(otherSeen[0].authorization).toBeUndefined();
+  });
+
+  it("a POST to a name that resolves to a private address, or to a redirect-free blocked literal, opens no connection", async () => {
+    const before = sockets;
+    const priv = createSafeFetch({ resolve: async () => [{ address: "10.0.0.8", family: 4 }] });
+    await expect(priv(url("/echo"), { allowHttp: true, method: "POST", body: "secret" })).rejects.toMatchObject({ code: "BLOCKED" });
+    await expect(createSafeFetch()("http://169.254.169.254/latest", { allowHttp: true, method: "POST", body: "x" })).rejects.toMatchObject({ code: "BLOCKED" });
+    expect(sockets).toBe(before);
   });
 });
 

@@ -31,8 +31,10 @@ export class SafeFetchError extends Error {
 }
 
 export interface SafeFetchOptions {
-  method?: "GET" | "HEAD";
+  method?: "GET" | "HEAD" | "POST";
   headers?: Record<string, string>;
+  /** POST only: a string, bytes or FormData. A POST is never redirected (the body and any credentials stay with the address that was checked). */
+  body?: string | Uint8Array | FormData;
   /** Also allow http:// (and a redirect to it). Default: https only. */
   allowHttp?: boolean;
   /** Default 3. */
@@ -84,7 +86,7 @@ export function createSafeFetch(deps: SafeFetchDeps = {}) {
     );
   }) as unknown as net.LookupFunction;
 
-  function hop(url: URL, o: Required<Pick<SafeFetchOptions, "method" | "connectTimeoutMs" | "idleTimeoutMs">> & { headers: Record<string, string>; signal: AbortSignal }): Promise<IncomingMessage> {
+  function hop(url: URL, o: Required<Pick<SafeFetchOptions, "method" | "connectTimeoutMs" | "idleTimeoutMs">> & { headers: Record<string, string>; payload?: Buffer; signal: AbortSignal }): Promise<IncomingMessage> {
     return new Promise((resolveHop, reject) => {
       const secure = url.protocol === "https:";
       let firstByte: NodeJS.Timeout | undefined;
@@ -105,13 +107,19 @@ export function createSafeFetch(deps: SafeFetchDeps = {}) {
           resolveHop(res);
         },
       );
-      // our own timer, not req.setTimeout: that one only starts once a socket is connected, and a connect can hang
+      // Our own timer, not req.setTimeout (that one only starts once a socket is connected, and a connect can hang).
+      //  - GET/HEAD: connect plus time to the response headers, `connectTimeoutMs`.
+      //  - POST: only the connection (until the socket is connected, TLS included). After that the request body is being sent and then
+      //    processed by the server (a media upload is read slowly and answered after it is processed): that wait is bounded by the total
+      //    timeout, not by this one. "finish" cannot mark the end of the send: it fires when the body is handed to the kernel, long before a
+      //    slow server has read it.
       firstByte = setTimeout(() => req.destroy(new SafeFetchError("The server did not answer in time.", "TIMEOUT")), o.connectTimeoutMs);
+      if (o.method === "POST") req.once("socket", (s) => s.once(secure ? "secureConnect" : "connect", () => clearTimeout(firstByte)));
       req.on("error", (err) => {
         clearTimeout(firstByte);
         reject(o.signal.aborted ? new SafeFetchError("The request took too long.", "TIMEOUT") : err);
       });
-      req.end();
+      req.end(o.payload);
     });
   }
 
@@ -127,7 +135,18 @@ export function createSafeFetch(deps: SafeFetchDeps = {}) {
     };
     const signal = AbortSignal.timeout(o.totalTimeoutMs);
     // identity: this layer does not decompress, so a gzip answer would hand the caller compressed bytes
-    const headers = { "accept-encoding": "identity", "user-agent": "Posthive/1.0", ...options.headers };
+    const headers: Record<string, string> = { "accept-encoding": "identity", "user-agent": "Posthive/1.0", ...Object.fromEntries(Object.entries(options.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v])) };
+    let payload: Buffer | undefined;
+    if (o.method === "POST" && options.body !== undefined) {
+      if (typeof options.body === "string") payload = Buffer.from(options.body);
+      else if (options.body instanceof Uint8Array) payload = Buffer.from(options.body);
+      else {
+        const encoded = new Response(options.body); // FormData: gives the bytes and the multipart content-type with its boundary
+        payload = Buffer.from(await encoded.arrayBuffer());
+        headers["content-type"] = encoded.headers.get("content-type") ?? "";
+      }
+      headers["content-length"] = String(payload.length);
+    }
 
     let current: URL;
     try {
@@ -136,19 +155,23 @@ export function createSafeFetch(deps: SafeFetchDeps = {}) {
       throw new SafeFetchError("That is not a valid address.", "PROTOCOL");
     }
 
+    let previous = current;
     for (let redirects = 0; ; redirects++) {
       checkUrl(current, o.allowHttp);
-      const res = await hop(current, { method: o.method, connectTimeoutMs: o.connectTimeoutMs, idleTimeoutMs: o.idleTimeoutMs, headers, signal });
+      const res = await hop(current, { method: o.method, connectTimeoutMs: o.connectTimeoutMs, idleTimeoutMs: o.idleTimeoutMs, headers, payload, signal });
       const status = res.statusCode ?? 0;
       const location = res.headers.location;
       if (REDIRECTS.has(status) && location) {
         res.resume(); // drop the redirect's own body
+        if (o.method === "POST") throw new SafeFetchError("The server answered with a redirect, which is not followed for a POST.", "REDIRECTS");
         if (redirects >= o.maxRedirects) throw new SafeFetchError("Too many redirects.", "REDIRECTS");
         try {
+          previous = current;
           current = new URL(location, current);
         } catch {
           throw new SafeFetchError("The redirect points to an invalid address.", "PROTOCOL");
         }
+        if (current.origin !== previous.origin) for (const h of ["authorization", "cookie", "proxy-authorization", "x-api-key"]) delete headers[h]; // credentials go only to the address they were issued for
         continue; // checkUrl runs again at the top: every hop is validated on its own
       }
 

@@ -15,6 +15,25 @@ import { downloadAndStoreAvatar } from "../lib/avatarStore.js";
 import { listGBPLocations } from "../adapters/googlebusiness.js";
 import { encryptTikTokCredentials } from "../adapters/tiktok.js";
 import { isSsrfBlocked } from "../lib/ssrf.js";
+import { safeFetch, SafeFetchError, type SafeFetchOptions } from "../lib/safeFetch.js";
+
+/**
+ * A call to the Pixelfed instance a person typed (the address also arrives back in the unsigned OAuth state). It goes through
+ * safeFetch, so a private, loopback or rebinding destination is refused and a POST is never redirected (a GET follows at most 3 hops, each
+ * checked, without the token across origins). A refusal or a network failure is null, and each caller answers with its own error, as it already does for a non-2xx answer.
+ */
+async function instanceFetch(url: string, options: SafeFetchOptions): Promise<Response | null> {
+  try {
+    return await safeFetch(url, { totalTimeoutMs: 15_000, maxBytes: 5 * 1024 * 1024, ...options });
+  } catch (err) {
+    // a refusal, or a network/TLS failure (Node errors carry a code); anything without one is a bug and is rethrown
+    if (err instanceof SafeFetchError || typeof (err as NodeJS.ErrnoException)?.code === "string") {
+      console.warn(`[instance-fetch] ${(err as NodeJS.ErrnoException).code ?? "refused"}: ${(err as Error).message}`); // never the url or a header: a swallowed bug stays visible
+      return null;
+    }
+    throw err;
+  }
+}
 
 async function getUserWorkspaceId(userId: string): Promise<string | null> {
   const u = await prisma.user.findUnique({
@@ -59,7 +78,7 @@ const PIXELFED_SCOPES = "read write";
 
 // Server-side store for Pixelfed dynamic client credentials (keyed by nonce)
 // Avoids placing client_secret in the unsigned state URL parameter
-const pixelfedClientStore = new Map<string, { clientId: string; clientSecret: string }>();
+const pixelfedClientStore = new Map<string, { clientId: string; clientSecret: string; instanceUrl: string }>();
 
 
 const YT_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID!;
@@ -710,7 +729,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     // Dynamically register app on the instance
     console.log(`[pixelfed] registering app on ${instanceUrl} with redirect_uri=${PF_REDIRECT_URI}`);
-    const appRes = await fetch(`${instanceUrl}/api/v1/apps`, {
+    const appRes = await instanceFetch(`${instanceUrl}/api/v1/apps`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -719,8 +738,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         scopes: PIXELFED_SCOPES,
         website: process.env.WEB_URL ?? "https://posthive.co",
       }),
-      signal: AbortSignal.timeout(10_000),
+      totalTimeoutMs: 10_000, maxBytes: 5 * 1024 * 1024,
     });
+    if (!appRes) return reply.redirect(`${WEB_URL}/accounts?error=pixelfed_registration_failed`);
     if (!appRes.ok) {
       const body = await appRes.text();
       console.error(`[pixelfed] app registration failed: ${appRes.status} ${body}`);
@@ -734,7 +754,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       data: { userId, nonce, expiresAt: new Date(Date.now() + 10 * 60 * 1000) },
     });
     // Store client credentials server-side — never put client_secret in the state URL
-    pixelfedClientStore.set(nonce, { clientId: pfApp.client_id, clientSecret: pfApp.client_secret });
+    pixelfedClientStore.set(nonce, { clientId: pfApp.client_id, clientSecret: pfApp.client_secret, instanceUrl });
     const state = Buffer.from(JSON.stringify({ userId, nonce, instanceUrl })).toString("base64url");
 
     const url = new URL(`${instanceUrl}/oauth/authorize`);
@@ -775,12 +795,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     // Retrieve client credentials stored server-side during initiation
     const pfCreds = pixelfedClientStore.get(nonce);
     pixelfedClientStore.delete(nonce);
-    if (!pfCreds) {
+    // the secret belongs to the instance it was registered on; the unsigned state must not point it anywhere else
+    if (!pfCreds || pfCreds.instanceUrl !== instanceUrl) {
       return reply.redirect(`${WEB_URL}/accounts?error=state_expired`);
     }
     const { clientId, clientSecret } = pfCreds;
 
-    const tokenRes = await fetch(`${instanceUrl}/oauth/token`, {
+    const tokenRes = await instanceFetch(`${instanceUrl}/oauth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -792,13 +813,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         scope: PIXELFED_SCOPES,
       }),
     });
-    if (!tokenRes.ok) return reply.redirect(`${WEB_URL}/accounts?error=token_exchange_failed`);
+    if (!tokenRes?.ok) return reply.redirect(`${WEB_URL}/accounts?error=token_exchange_failed`);
     const { access_token: accessToken } = await tokenRes.json() as { access_token: string };
 
     console.log(`[pixelfed] fetching profile from ${instanceUrl}`);
-    const profileRes = await fetch(`${instanceUrl}/api/v1/accounts/verify_credentials`, {
+    const profileRes = await instanceFetch(`${instanceUrl}/api/v1/accounts/verify_credentials`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    if (!profileRes) return reply.redirect(`${WEB_URL}/accounts?error=profile_fetch_failed`);
     if (!profileRes.ok) {
       const body = await profileRes.text();
       console.error(`[pixelfed] profile fetch failed: ${profileRes.status} ${body}`);

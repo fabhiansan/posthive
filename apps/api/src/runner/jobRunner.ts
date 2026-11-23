@@ -19,6 +19,7 @@ import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
 import { firstSubmission } from "../lib/submitStamp.js";
 import { isSsrfBlocked } from "../lib/ssrf.js";
+import { safeFetch } from "../lib/safeFetch.js";
 import { MediaUnavailable, lockForCopy, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls } from "../lib/mediaUrl.js";
 import { getPlan } from "../lib/plans.js";
@@ -248,7 +249,7 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
       : null;
     if (wsRow?.webhookUrl && !isSsrfBlocked(wsRow.webhookUrl)) {
       const platforms = job.targets.map(t => t.account.platform);
-      fetch(wsRow.webhookUrl, {
+      safeFetch(wsRow.webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -259,8 +260,8 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
           platforms,
           text: content.text,
         }),
-        signal: AbortSignal.timeout(10_000),
-      }).catch((err) => {
+        totalTimeoutMs: 10_000, maxBytes: 5 * 1024 * 1024,
+      }).then((r) => r.body?.cancel()).catch((err) => { // the answer is not read: close it so the socket is not held
         console.warn(`[runner] webhook delivery failed for job ${job.id}:`, err.message);
       });
     }

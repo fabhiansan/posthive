@@ -1,6 +1,7 @@
 import type { Account } from "@prisma/client";
 import { decrypt } from "../lib/encryption.js";
 import type { StorageAdapter } from "../lib/storage.js";
+import { safeFetch } from "../lib/safeFetch.js";
 import type { AnalyticsResult, CommentResult, PlatformAdapter, PostResult } from "./types.js";
 
 let storageAdapter: StorageAdapter | null = null;
@@ -19,11 +20,11 @@ function getCredentials(account: Account): PixelfedCredentials {
 const TIMEOUT_MS = 30_000;
 
 async function apiPost<T>(instanceUrl: string, token: string, path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${instanceUrl}/api/v1${path}`, {
+  const res = await safeFetch(`${instanceUrl}/api/v1${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    totalTimeoutMs: TIMEOUT_MS, maxBytes: 5 * 1024 * 1024,
   });
   const text = await res.text();
   let json: T & { error?: string };
@@ -41,11 +42,11 @@ async function uploadMedia(instanceUrl: string, token: string, buffer: Buffer, m
   form.append("file", new Blob([new Uint8Array(buffer)], { type: mimeType }), "media");
   if (altText) form.append("description", altText);
 
-  const res = await fetch(`${instanceUrl}/api/v1/media`, {
+  const res = await safeFetch(`${instanceUrl}/api/v1/media`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    totalTimeoutMs: TIMEOUT_MS, maxBytes: 5 * 1024 * 1024,
   });
   const rawText = await res.text();
   let json: { id?: string; error?: string };
@@ -112,9 +113,9 @@ export const pixelfedAdapter: PlatformAdapter = {
 
   async getAnalytics(account: Account, platformPostId: string): Promise<AnalyticsResult> {
     const { accessToken, instanceUrl } = getCredentials(account);
-    const res = await fetch(`${instanceUrl}/api/v1/statuses/${platformPostId}`, {
+    const res = await safeFetch(`${instanceUrl}/api/v1/statuses/${platformPostId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10_000),
+      totalTimeoutMs: 10_000, maxBytes: 5 * 1024 * 1024,
     });
     const json = await res.json() as { favourites_count?: number; reblogs_count?: number; replies_count?: number };
     return {

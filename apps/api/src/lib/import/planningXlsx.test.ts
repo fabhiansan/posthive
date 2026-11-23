@@ -14,7 +14,8 @@ async function workbook(sheets: Record<string, Array<Array<string | number | Dat
 }
 
 describe("parsePlanningXlsx", () => {
-  it("reads the template that ships with the app, and nothing is missing", async () => {
+  // 1.5 s alone, but it parses a real workbook and the suite runs ~66 files in parallel: the 5 s default was too thin under load
+  it("reads the template that ships with the app, and nothing is missing", { timeout: 30_000 }, async () => {
     const buffer = readFileSync(new URL("../../../../web/public/import-plan-template.xlsx", import.meta.url));
     const parsed = await parsePlanningXlsx(buffer);
     expect(parsed.missingFields).toEqual([]);
