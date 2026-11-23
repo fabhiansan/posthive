@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
   inTx: false,
   // Files the caller uploaded (every file asked about is theirs), and the template rows that still hold a file (what withoutTemplateMedia finds).
   owned: false,
+  /** the Upload table the lock protocol reads (lib/fakeUploads.ts); rebuilt for every test so that "owned" decides whose the files are */
+  uploads: null as null | ReturnType<typeof import("../lib/fakeUploads.js").fakeUploads>,
   inUse: [] as Array<{ previewUrl: string | null; slideUrls: string[] }>,
   storage: { delete: vi.fn(async (_url: string) => {}) },
   // what postJob.count answers, in the order it is asked: every post of the category, then those in review
@@ -37,11 +39,19 @@ vi.mock("../lib/prisma.js", () => {
         updateMany: record("updateMany", (args) => ({ count: args.where.workspaceId === "ws-1" && h.rows.length ? 1 : 0 })),
         delete: record("delete", () => ({})),
       },
-      upload: { count: vi.fn(async (args: { where: { url: { in: string[] } } }) => (h.owned ? new Set(args.where.url.in).size : 0)), updateMany: vi.fn(async (_args: unknown) => ({})), deleteMany: vi.fn(async (_args: unknown) => ({})) },
+      upload: {
+        count: vi.fn(async (args: { where: { url: { in: string[] } } }) => (h.owned ? new Set(args.where.url.in).size : 0)),
+        updateMany: vi.fn(async (args: any) => h.uploads!.upload.updateMany(args)),
+        deleteMany: vi.fn(async (args: any) => h.uploads!.upload.deleteMany(args)),
+      },
       postJob: { count: record("count", () => h.posts.shift() ?? 0) },
       legacyTemplateMedia: { findMany: vi.fn(async () => []) },
-      // SELECT ... FOR UPDATE on one template: its id when it exists, nothing when it does not.
-      $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      workspaceMember: { findMany: vi.fn(async () => [{ userId: "dewi" }]) },
+      // Two raw queries share this: the template row lock (SELECT ... FOR UPDATE on one template) and the Upload lock / reference scan of the
+      // media protocol. The Upload ones are recognised by their text and answered by the fake Upload table.
+      $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join("?");
+        if (text.includes('"Upload"') || text.includes("unnest")) return h.uploads!.$queryRaw(strings, ...values);
         h.calls.push({ fn: "lock", args: { id: values[0], workspaceId: values[1] } });
         return h.rows.length > 0 && values[1] === "ws-1" ? [{ id: values[0] }] : [];
       }),
@@ -73,6 +83,7 @@ vi.mock("../lib/auth/withAuth.js", () => ({
 
 import { prisma } from "../lib/prisma.js";
 import { templateRoutes } from "./templates.js";
+import { fakeUploads } from "../lib/fakeUploads.js";
 
 let app: FastifyInstance;
 beforeAll(async () => {
@@ -83,6 +94,15 @@ beforeAll(async () => {
 afterAll(async () => {
   await app.close();
 });
+const FILES = ["/uploads/a.png", "/uploads/b.png", "/uploads/c.png", "/uploads/d.png", "/uploads/p.png", "/uploads/x.png"];
+/** The Upload table for a test: every file is dewi's (the caller) when `owned`, somebody else's when not. The reference scan sees what `inUse` holds. */
+function seedUploads() {
+  h.uploads = fakeUploads(
+    FILES.map((url) => ({ url, userId: h.owned ? "dewi" : "someone-else", claimedAt: new Date() })),
+    () => h.inUse.flatMap((t) => [...(t.previewUrl ? [t.previewUrl] : []), ...t.slideUrls]),
+  );
+}
+
 beforeEach(() => {
   h.role = "designer";
   h.rows = [];
@@ -91,6 +111,7 @@ beforeEach(() => {
   h.inTx = false;
   h.owned = false;
   h.inUse = [];
+  seedUploads();
   h.posts = [0, 0];
   h.storage.delete.mockClear();
   vi.mocked(prisma.upload.updateMany).mockClear();
@@ -535,6 +556,7 @@ describe("a carousel's slide images: POST", () => {
 
   it("stores the urls and names as two lists, the count of images as the slide count, and the trimmed guideline", async () => {
     h.owned = true;
+    seedUploads();
     const res = await app.inject({ method: "POST", url: "/templates", payload: carousel({ slides: 9 }) });
     expect(res.statusCode).toBe(201);
     expect(call("create")[0].args.data).toMatchObject({
@@ -547,12 +569,14 @@ describe("a carousel's slide images: POST", () => {
 
   it("claims the preview AND every slide image, so the orphan sweep leaves them alone", async () => {
     h.owned = true;
+    seedUploads();
     await app.inject({ method: "POST", url: "/templates", payload: carousel() });
     expect(claimed().sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/p.png"]);
   });
 
   it("a slide image the caller did not upload is refused: 400, nothing is created or claimed", async () => {
     h.owned = false;
+    seedUploads();
     const res = await app.inject({ method: "POST", url: "/templates", payload: carousel() });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("Upload the images again.");
@@ -562,6 +586,7 @@ describe("a carousel's slide images: POST", () => {
 
   it("only a carousel keeps images: a single image template stores none, and claims none", async () => {
     h.owned = true;
+    seedUploads();
     await app.inject({ method: "POST", url: "/templates", payload: carousel({ format: "single" }) });
     expect(call("create")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: null });
     expect(claimed()).toEqual(["/uploads/p.png"]);
@@ -587,9 +612,11 @@ describe("a carousel's slide images: PATCH", () => {
   it("asks only about the images that are new, claims those, and removes the ones that were dropped", async () => {
     h.rows = [stored()];
     h.owned = true;
+    seedUploads();
     const res = await edit(slides("/uploads/b.png", "/uploads/a.png", "/uploads/d.png"));
     expect(res.statusCode).toBe(200);
-    expect(vi.mocked(prisma.upload.count).mock.calls.at(-1)![0]).toMatchObject({ where: { url: { in: ["/uploads/d.png"] } } });
+    // only the new image is locked and claimed (inside the transaction that stores the template); the kept ones are not asked about
+    expect(h.uploads!.calls("lock")[0].args).toEqual(["/uploads/d.png"]);
     expect(claimed()).toEqual(["/uploads/d.png"]);
     expect(h.storage.delete.mock.calls.map(([u]) => u)).toEqual(["/uploads/c.png"]);
     expect(unclaimedDeleted()).toEqual(["/uploads/c.png"]);
@@ -600,12 +627,16 @@ describe("a carousel's slide images: PATCH", () => {
     h.rows = [stored()];
     h.owned = true;
     h.inUse = [{ previewUrl: null, slideUrls: ["/uploads/c.png"] }];
+    seedUploads();
     await edit(slides("/uploads/a.png", "/uploads/b.png"));
     expect(h.storage.delete).not.toHaveBeenCalled();
+    expect(h.uploads!.rows.has("/uploads/c.png")).toBe(true); // and its Upload row stays too
   });
 
   it("changing the format away from carousel drops the images from the template and from storage", async () => {
     h.rows = [stored()];
+    h.owned = true;
+    seedUploads();
     await edit([], { format: "single" });
     expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: null });
     expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
@@ -614,6 +645,7 @@ describe("a carousel's slide images: PATCH", () => {
   it("an image the caller did not upload is refused: 400 and nothing is written", async () => {
     h.rows = [stored()];
     h.owned = false;
+    seedUploads();
     const res = await edit(slides("/uploads/a.png", "/uploads/x.png"));
     expect(res.statusCode).toBe(400);
     expect(call("update")).toHaveLength(0);
@@ -657,6 +689,8 @@ describe("a carousel's slide images: PATCH", () => {
 
     it("moving to another format still drops the slides and their files (that is a decision, not a missing field)", async () => {
       h.rows = [stored()];
+      h.owned = true;
+      seedUploads();
       await old({ format: "single" });
       expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: null });
       expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
@@ -665,6 +699,8 @@ describe("a carousel's slide images: PATCH", () => {
 
   it("an empty list that IS sent clears the slides and removes their files, and a blank guideline clears the guideline", async () => {
     h.rows = [stored({ captionGuideline: "Open with the problem.", slides: 3 })];
+    h.owned = true;
+    seedUploads();
     await edit([], { slides: 4, captionGuideline: "" });
     expect(call("update")[0].args.data).toMatchObject({ slideUrls: [], slideLabels: [], slides: 4, captionGuideline: null });
     expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
@@ -682,6 +718,8 @@ describe("DELETE /templates/:id removes the slide images with the preview", () =
   it("deletes the files nothing else holds, and keeps one another template still holds", async () => {
     h.rows = [row({ previewUrl: "/uploads/p.png", slideUrls: ["/uploads/a.png", "/uploads/b.png"] })];
     h.inUse = [{ previewUrl: null, slideUrls: ["/uploads/b.png"] }];
+    h.owned = true;
+    seedUploads();
     const res = await app.inject({ method: "DELETE", url: "/templates/t1" });
     expect(res.statusCode).toBe(200);
     expect(h.storage.delete.mock.calls.map(([u]) => u).sort()).toEqual(["/uploads/a.png", "/uploads/p.png"]);

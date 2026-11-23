@@ -5,6 +5,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+  /** the Upload table: every url a test attaches must be a row of the person who attaches it */
+  uploads: null as null | ReturnType<typeof import("../lib/fakeUploads.js").fakeUploads>,
   role: "member" as string | null,
   viewer: "colleague",
   job: null as null | Record<string, unknown>,
@@ -35,10 +37,27 @@ vi.mock("../lib/prisma.js", () => {
       workspace: { findUnique: record("workspace.findUnique", () => ({ approvalRequired: true, plan: "pro" })) },
       postJobTarget: { findMany: record("target.findMany", () => []), deleteMany: record("target.deleteMany", () => ({})), createMany: record("target.createMany", () => ({})) },
       account: { findMany: record("account.findMany", (args) => ((args as { where: { id: { in: string[] } } }).where.id.in.map((id) => ({ id })))) },
-      $transaction: async (fn: (tx: unknown) => unknown) => fn({ postJob: { create: record("create", (args) => ({ id: "new", ...(args as { data: object }).data })) } }),
-      upload: { deleteMany: record("upload.deleteMany", () => ({ count: 1 })), updateMany: record("upload.updateMany", () => ({ count: 1 })) },
+      $transaction: async (fn: (tx: unknown) => unknown) => fn(tx()),
+      $queryRaw: (...a: [TemplateStringsArray, ...unknown[]]) => h.uploads!.$queryRaw(...a),
+      upload: {
+        deleteMany: record("upload.deleteMany", (args) => h.uploads!.upload.deleteMany(args as never)),
+        updateMany: record("upload.updateMany", (args) => h.uploads!.upload.updateMany(args as never)),
+      },
     },
   };
+  /** the client a transaction body sees: the same fake, so every call is recorded in order */
+  function tx() {
+    return {
+      postJob: { create: record("create", (args) => ({ id: "new", ...(args as { data: object }).data })), update: record("update", (args) => ({ id: "p1", ...(args as { data: object }).data })) },
+      $queryRaw: (...a: [TemplateStringsArray, ...unknown[]]) => h.uploads!.$queryRaw(...a),
+      upload: {
+        updateMany: record("upload.updateMany", (args) => h.uploads!.upload.updateMany(args as never)),
+        deleteMany: record("upload.deleteMany", (args) => h.uploads!.upload.deleteMany(args as never)),
+      },
+      template: { findMany: async () => [] },
+      legacyTemplateMedia: { findMany: async () => [] },
+    };
+  }
 });
 vi.mock("../lib/auth/withAuth.js", async () => {
   const real = await vi.importActual<typeof import("../lib/auth/withAuth.js")>("../lib/auth/withAuth.js");
@@ -59,6 +78,7 @@ vi.mock("../lib/auth/index.js", () => ({ authProvider: {} }));
 vi.mock("../adapters/index.js", () => ({ adapters: [] }));
 
 import { jobRoutes } from "./jobs.js";
+import { fakeUploads } from "../lib/fakeUploads.js";
 
 const storage = { upload: vi.fn(), delete: vi.fn(async () => {}), list: vi.fn(), isLocal: () => true };
 
@@ -72,6 +92,11 @@ afterAll(async () => {
   await app.close();
 });
 beforeEach(() => {
+  // a.png belongs to the head of marketing (it is on the draft); new.png was uploaded by the colleague who is editing
+  h.uploads = fakeUploads([
+    { url: "/uploads/a.png", userId: "head-of-marketing", claimedAt: new Date() },
+    { url: "/uploads/new.png", userId: "colleague", claimedAt: null },
+  ]);
   h.role = "member";
   h.viewer = "colleague";
   h.job = null;
@@ -165,8 +190,19 @@ describe("PATCH /jobs/:id: a colleague edits a draft the head of marketing uploa
     const claim = call("upload.updateMany");
     expect(claim).toHaveLength(1);
     const args = claim[0].args as { where: Record<string, unknown>; data: { claimedAt: unknown } };
-    expect(args.where).toEqual({ url: { in: ["/uploads/a.png", "/uploads/new.png"] }, userId: "colleague" });
+    // only the picture that is new in this edit is claimed, by the editor; the one the draft already held is only locked
+    expect(args.where).toEqual({ url: { in: ["/uploads/new.png"] }, userId: "colleague" });
     expect(args.data.claimedAt).toBeInstanceOf(Date);
+    expect(h.uploads!.rows.get("/uploads/new.png")!.claimedAt).toBeInstanceOf(Date);
+  });
+
+  it("a picture that was removed (or never uploaded by the editor) is refused with a 409 and the post is not changed", async () => {
+    h.job = draft();
+    const res = await patch({ mediaUrls: ["/uploads/a.png", "/uploads/gone.png"] });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "MEDIA_UNAVAILABLE" });
+    h.uploads!.rows.set("/uploads/theirs.png", { url: "/uploads/theirs.png", userId: "someone-else", claimedAt: null });
+    expect((await patch({ mediaUrls: ["/uploads/theirs.png"] })).statusCode).toBe(409);
   });
 
   it("an edit that does not touch the pictures claims nothing", async () => {
@@ -181,12 +217,13 @@ describe("PATCH /jobs/:id: a colleague edits a draft the head of marketing uploa
     expect(call("upload.updateMany")).toHaveLength(0);
   });
 
-  it("a file a colleague removes from the draft goes, whoever uploaded it, so no row points at a deleted file", async () => {
+  it("a file a colleague removes from the draft goes when it is the author's and nothing else uses it, so no row points at a deleted file", async () => {
     h.job = draft();
     await patch({ mediaUrls: [] });
     expect(storage.delete).toHaveBeenCalledWith("/uploads/a.png");
     const where = (call("upload.deleteMany")[0].args as { where: Record<string, unknown> }).where;
     expect(where).toEqual({ url: { in: ["/uploads/a.png"] } });
+    expect(h.uploads!.rows.has("/uploads/a.png")).toBe(false);
   });
 });
 
@@ -195,13 +232,45 @@ describe("POST /jobs: the pictures of a new post", () => {
   const create = (mediaUrls: string[]) =>
     app.inject({ method: "POST", url: "/jobs", payload: { draft: true, accountIds: [ACCOUNT], content: { text: "Caption", mediaUrls } } });
 
-  it("are claimed by the person who made it, so the orphan cleaner leaves them alone", async () => {
+  it("are claimed by the person who made it, in the transaction that stores the post", async () => {
     h.viewer = "head-of-marketing";
     const res = await create(["/uploads/a.png"]);
     expect(res.statusCode).toBe(201);
     const claim = call("upload.updateMany");
     expect(claim).toHaveLength(1);
     expect((claim[0].args as { where: unknown }).where).toEqual({ url: { in: ["/uploads/a.png"] }, userId: "head-of-marketing" });
+    // the lock comes before the post is written: the order is lock, claim, create
+    const order = h.uploads!.log.map((l) => l.fn);
+    expect(order[0]).toBe("lock");
+    expect(h.calls.map((c) => c.fn).indexOf("upload.updateMany")).toBeLessThan(h.calls.map((c) => c.fn).indexOf("create"));
+  });
+
+  it("a picture the person did not upload, or that was removed, refuses the post with a 409 and stores nothing", async () => {
+    h.viewer = "head-of-marketing";
+    expect((await create(["/uploads/new.png"])).statusCode).toBe(409); // another person's upload
+    expect((await create(["/uploads/never.png"])).statusCode).toBe(409); // no such upload
+    expect(call("create")).toHaveLength(0);
+  });
+
+  it("an address that is not a file of ours is refused with a 400: a path out of the uploads folder, a private address, another scheme", async () => {
+    h.viewer = "head-of-marketing";
+    for (const bad of ["/uploads/../../etc/passwd", "../secret.png", "file:///etc/passwd", "javascript:alert(1)", "http://169.254.169.254/latest/meta-data", "https://example.com/pic.png"]) {
+      const res = await create([bad]);
+      expect(res.statusCode, bad).toBe(400);
+      expect(res.json()).toMatchObject({ code: "INVALID_MEDIA_URL" });
+    }
+    expect(call("create")).toHaveLength(0);
+  });
+
+  it("the API's own address in front of an upload is accepted and stored as the path (the public docs show it that way)", async () => {
+    h.viewer = "head-of-marketing";
+    process.env.PUBLIC_API_URL = "https://api.example.test";
+    try {
+      expect((await create(["https://api.example.test/uploads/a.png"])).statusCode).toBe(201);
+      expect(JSON.parse((call("create")[0].args as { data: { content: string } }).data.content).mediaUrls).toEqual(["/uploads/a.png"]);
+    } finally {
+      delete process.env.PUBLIC_API_URL;
+    }
   });
 
   it("a post with no pictures claims nothing", async () => {

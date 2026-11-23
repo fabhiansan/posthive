@@ -19,6 +19,8 @@
 import * as Sentry from "@sentry/node";
 import { prisma } from "./prisma.js";
 import { schedulePostJob } from "./queue.js";
+import { safeFetch } from "./safeFetch.js";
+import { lockForCopy } from "./mediaDelete.js";
 
 const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const BATCH_SIZE = 100;             // libraries fetched per page
@@ -120,7 +122,7 @@ async function processLibrary(lib: LibraryRow) {
     const urls = (item.mediaUrls as string[]).filter(u => u.startsWith("http"));
     for (const url of urls) {
       try {
-        const res = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(8_000) });
+        const res = await safeFetch(url, { method: "HEAD", allowHttp: true, totalTimeoutMs: 8_000 });
         if (!res.ok) {
           await prisma.libraryItem.update({
             where: { id: item.id },
@@ -156,6 +158,9 @@ async function processLibrary(lib: LibraryRow) {
       // Atomic: claim item first (status guard), then create PostJob.
       // If another instance already claimed it, updateMany returns count=0 → skip.
       const job = await prisma.$transaction(async (tx) => {
+        // The files are locked first (the same locks a deleter takes), and the item must still exist once they are: a Library item that is
+        // deleted at this moment may have had its files removed, and the post must not be made to point at them (lib/mediaDelete.ts)
+        await lockForCopy(tx, item.mediaUrls as string[], async (t) => !!(await t.libraryItem.findFirst({ where: { id: item.id }, select: { id: true } })));
         // Optimistic lock: only proceed if item is still queued
         const claimed = await tx.libraryItem.updateMany({
           where: { id: item.id, status: "queued" },
@@ -181,7 +186,7 @@ async function processLibrary(lib: LibraryRow) {
           data: { scheduledJobId: j.id },
         });
         return j;
-      });
+      }, { timeout: 30_000 }); // it may wait on a deleter holding the file locks
 
       if (!job) { console.log(`[drip] item ${item.id} already claimed — skipping`); continue; }
 

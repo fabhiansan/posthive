@@ -13,21 +13,14 @@ import { enforcePlan } from "../lib/enforcePlan.js";
 import { getPlan } from "../lib/plans.js";
 import type { StorageAdapter } from "../lib/storage.js";
 import { adapters } from "../adapters/index.js";
-import { withoutTemplateMedia } from "../lib/templates.js";
+import { attachUploads, mediaProblem, releaseMedia, withUploads } from "../lib/mediaDelete.js";
+import { contentMediaUrls, mediaUrlList, toStoredUrl } from "../lib/mediaUrl.js";
 import { bucketJobCounts, jobFilterWhere } from "../lib/jobFilters.js";
 import { canEditJob, sameContent, shouldResetReview } from "../lib/jobEditRules.js";
 import { missingForReview, type MissingField } from "../lib/submitReadiness.js";
 import { firstSubmission, nextSubmission } from "../lib/submitStamp.js";
 import { CATEGORIES, PILLARS, pillarFor, type Category, type Pillar } from "../lib/contentTypes.js";
 
-/**
- * Marks uploads as used by a post, so the orphan cleaner (index.ts) leaves them alone: it deletes an unclaimed upload
- * after a day. Only the person's own uploads are claimed.
- */
-async function claimUploads(urls: string[] | undefined, userId: string): Promise<void> {
-  if (!urls?.length) return;
-  await prisma.upload.updateMany({ where: { url: { in: urls }, userId }, data: { claimedAt: new Date() } });
-}
 
 /**
  * A draft that can be sent for review: not in review and not sent back. It is part of the WHERE of the send itself
@@ -80,7 +73,7 @@ const createJobBody = z.object({
   draft: z.boolean().default(false),
   content: z.object({
     text: z.string().default(""),
-    mediaUrls: z.array(z.string()).default([]),
+    mediaUrls: z.array(z.string()).max(10).default([]),
     altTexts: z.array(z.string()).optional(),
     mediaType: z.enum(["post", "reel", "story"]).optional(),
     youtubeType: z.enum(["short", "video"]).optional(),
@@ -141,6 +134,12 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const { pillar, category, ...postContent } = content;
     const type = pillar !== undefined || category !== undefined ? contentType(pillar, category) : null;
     if (type && "error" in type) return reply.status(400).send({ error: type.error });
+    // The address of an upload may arrive with the API's own origin in front (the docs show it): stored, it is always the path the upload gave
+    const listed = mediaUrlList(postContent.mediaUrls ?? []);
+    if (listed === null) return reply.status(400).send({ error: "mediaUrls must be a list of addresses of at most 2048 characters", code: "INVALID_MEDIA_URL" });
+    postContent.mediaUrls = listed;
+    if (postContent.youtubeThumbnailUrl) postContent.youtubeThumbnailUrl = toStoredUrl(postContent.youtubeThumbnailUrl);
+    if (postContent.youtubeVideoUrl) postContent.youtubeVideoUrl = toStoredUrl(postContent.youtubeVideoUrl);
 
     // Approval gate — member posts in approval-enabled workspaces stay drafts
     // awaiting design review; scheduledFor is kept as the requested time.
@@ -179,7 +178,14 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     // Wrap plan-limit check + job creation in a transaction with an advisory lock
     // so concurrent bulk-CSV requests can't all pass the count check simultaneously.
     let planError: Awaited<ReturnType<typeof enforcePlan>> = null;
-    const job = await prisma.$transaction(async (tx) => {
+    // The pictures are locked, checked (each is an upload of this person that still exists, or the post is refused) and claimed in the
+    // SAME transaction that stores the post, so a delete of the file cannot slip in between (lib/mediaDelete.ts)
+    const attached = [...postContent.mediaUrls, ...(postContent.youtubeThumbnailUrl ? [postContent.youtubeThumbnailUrl] : [])];
+    const external = postContent.youtubeVideoUrl ? [postContent.youtubeVideoUrl] : [];
+    let job;
+    try {
+      job = await prisma.$transaction(async (tx) => {
+      await attachUploads(tx, [...attached, ...external], { userId, external });
       if (!draft && !needsReview) {
         // Lock per workspace — serializes concurrent scheduling requests (Postgres only)
         if (!process.env.DATABASE_URL?.startsWith("file:")) {
@@ -206,7 +212,12 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
         },
         include: { targets: { select: TARGET_SELECT } },
       });
-    }, { timeout: 30_000 });
+      }, { timeout: 30_000 });
+    } catch (err) {
+      const problem = mediaProblem(err);
+      if (problem) return reply.status(problem.status).send(problem.body);
+      throw err;
+    }
 
     if (planError) return reply.status(402).send(planError);
     if (!job) return reply.status(500).send({ error: "Failed to create job" });
@@ -214,8 +225,6 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (!draft && !needsReview) {
       await schedulePostJob(job.id, new Date(scheduledFor!));
     }
-
-    await claimUploads(content.mediaUrls, userId);
 
     return reply.status(201).send(job);
   });
@@ -397,7 +406,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       title: z.string().max(200).optional(),
       text: z.string().optional(),
       commentText: z.string().optional(),
-      mediaUrls: z.array(z.string()).optional(),
+      mediaUrls: z.array(z.string()).max(10).optional(),
       mediaType: z.enum(["post", "reel", "story"]).optional(),
       youtubeType: z.enum(["short", "video"]).optional(),
       youtubeVideoMode: z.enum(["upload", "url"]).optional(),
@@ -418,13 +427,20 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       category: z.enum(CATEGORIES).nullable().optional(),
     }).safeParse(req.body);
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
+    if (body.data.mediaUrls) {
+      const listed = mediaUrlList(body.data.mediaUrls);
+      if (listed === null) return reply.status(400).send({ error: "mediaUrls must be a list of addresses of at most 2048 characters", code: "INVALID_MEDIA_URL" });
+      body.data.mediaUrls = listed;
+    }
+    if (body.data.youtubeThumbnailUrl) body.data.youtubeThumbnailUrl = toStoredUrl(body.data.youtubeThumbnailUrl);
+    if (body.data.youtubeVideoUrl) body.data.youtubeVideoUrl = toStoredUrl(body.data.youtubeVideoUrl);
     const typeChanged = body.data.pillar !== undefined || body.data.category !== undefined;
     const type = typeChanged ? contentType(body.data.pillar, body.data.category) : null;
     if (type && "error" in type) return reply.status(400).send({ error: type.error });
 
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
-      select: { status: true, content: true, commentText: true, approvalStatus: true, targets: { select: { accountId: true } } },
+      select: { status: true, content: true, commentText: true, approvalStatus: true, userId: true, targets: { select: { accountId: true } } },
     });
     if (!job) return reply.status(404).send({ error: "Job not found" });
     const role = await getWorkspaceRole(userId, workspaceId);
@@ -487,7 +503,28 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       updateData.reviewedAt = null;
     }
 
-    const updated = await prisma.postJob.update({ where: { id }, data: updateData });
+    // What this edit attaches. An edit resends every address the post already holds (those are only locked, not re-checked: an older post may
+    // hold an address that predates these rules, and a draft is kept by the team, so a kept file may be a colleague's); a NEW one must be an
+    // upload of this person that still exists, or an outside address where outside addresses are allowed (the YouTube video link).
+    const held = new Set(contentMediaUrls(job.content).map((u) => toStoredUrl(u)));
+    const attached = [
+      ...(body.data.mediaUrls ?? []),
+      ...(body.data.youtubeThumbnailUrl ? [body.data.youtubeThumbnailUrl] : []),
+      ...(body.data.youtubeVideoUrl ? [body.data.youtubeVideoUrl] : []),
+    ];
+    const external = body.data.youtubeVideoUrl ? [body.data.youtubeVideoUrl] : [];
+    let updated;
+    try {
+      updated = await withUploads(
+        attached,
+        (tx) => attachUploads(tx, attached, { userId, keep: held, external }),
+        (db) => db.postJob.update({ where: { id }, data: updateData }),
+      );
+    } catch (err) {
+      const problem = mediaProblem(err);
+      if (problem) return reply.status(problem.status).send(problem.body);
+      throw err;
+    }
 
     if (body.data.accountIds) {
       const newIds = body.data.accountIds;
@@ -512,31 +549,16 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       }
     }
 
-    // A picture added in this edit belongs to the post now, or the orphan cleaner deletes it after a day
-    await claimUploads(body.data.mediaUrls, userId);
-
-    // Delete removed media files from storage (best-effort, non-fatal)
+    // Files this edit dropped: removed only when nothing else uses them (another post, a repeat or a duplicate, a Library item, a template),
+    // under the same locks as the writers above. A draft is kept by the team, so the file may be a colleague's upload: the author's and the
+    // editor's uploads go, anyone else's stays. Best effort: a failure leaves a file behind, never breaks the edit.
     if (body.data.mediaUrls !== undefined || body.data.youtubeThumbnailUrl !== undefined) {
       try {
-        const existing = JSON.parse(job.content) as { mediaUrls?: string[]; youtubeThumbnailUrl?: string };
-        const oldUrls = new Set<string>([
-          ...(existing.mediaUrls ?? []),
-          ...(existing.youtubeThumbnailUrl ? [existing.youtubeThumbnailUrl] : []),
-        ]);
-        const newUrls = new Set<string>([
-          ...(body.data.mediaUrls ?? existing.mediaUrls ?? []),
-          ...(body.data.youtubeThumbnailUrl !== undefined
-            ? (body.data.youtubeThumbnailUrl ? [body.data.youtubeThumbnailUrl] : [])
-            : (existing.youtubeThumbnailUrl ? [existing.youtubeThumbnailUrl] : [])),
-        ]);
-        const removed = await withoutTemplateMedia([...oldUrls].filter(u => !newUrls.has(u)));
-        if (removed.length) {
-          await Promise.allSettled(removed.map(u => storage.delete(u)));
-          // Not scoped to the editor: a draft is kept by the team, so the file may be a colleague's upload. Deleting a
-          // post already drops these rows the same way; a row left behind would point at a file that is gone.
-          await prisma.upload.deleteMany({ where: { url: { in: removed } } });
-        }
-      } catch { /* non-fatal */ }
+        const now = new Set(contentMediaUrls(updated.content));
+        await releaseMedia(storage, [...held].filter((u) => !now.has(u)), [job.userId, userId]);
+      } catch (err) {
+        req.log.warn({ err }, "media of an edited post was not cleaned up");
+      }
     }
 
     if (body.data.scheduledFor) {
@@ -776,24 +798,19 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       return reply.status(403).send({ error: "You can only delete your own posts.", code: "FORBIDDEN" });
     }
 
-    // Delete media files from storage
-    try {
-      const content = JSON.parse(job.content) as { mediaUrls?: string[]; youtubeThumbnailUrl?: string };
-      const urlsToDelete = await withoutTemplateMedia([
-        ...(content.mediaUrls ?? []),
-        ...(content.youtubeThumbnailUrl ? [content.youtubeThumbnailUrl] : []),
-      ]);
-      if (urlsToDelete.length) {
-        await Promise.allSettled(urlsToDelete.map((url) => storage.delete(url)));
-        await prisma.upload.deleteMany({ where: { url: { in: urlsToDelete } } });
-      }
-    } catch { /* non-fatal */ }
-
     // Remove from queue if pending
     if (job.status === "pending") await postJobQueue.remove(id).catch(() => {});
 
     // Targets are deleted automatically via onDelete: Cascade
     await prisma.postJob.delete({ where: { id } });
+
+    // The post no longer references its files, so they can be considered: each goes only if it is the author's (or the person deleting)
+    // and nothing else uses it (a duplicate, a repeat, a Library item, a template, another post). Best effort, after the post is gone.
+    try {
+      await releaseMedia(storage, contentMediaUrls(job.content), [job.userId, userId]);
+    } catch (err) {
+      req.log.warn({ err }, "media of a deleted post was not cleaned up");
+    }
 
     return reply.status(204).send();
   });
@@ -824,16 +841,14 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     const deletableIds: string[] = [];
     const mediaUrlsToDelete: string[] = [];
+    const owners = new Set<string>([userId]);
 
     for (const job of jobs) {
       if (job.status === "running") continue;
       if (!isAdmin && job.userId !== userId) continue;
       deletableIds.push(job.id);
-      try {
-        const content = JSON.parse(job.content) as { mediaUrls?: string[]; youtubeThumbnailUrl?: string };
-        if (content.mediaUrls?.length) mediaUrlsToDelete.push(...content.mediaUrls);
-        if (content.youtubeThumbnailUrl) mediaUrlsToDelete.push(content.youtubeThumbnailUrl);
-      } catch { /* non-fatal */ }
+      owners.add(job.userId);
+      mediaUrlsToDelete.push(...contentMediaUrls(job.content));
     }
 
     if (!deletableIds.length) return reply.status(200).send({ deleted: 0 });
@@ -842,15 +857,16 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const pendingIds = jobs.filter(j => j.status === "pending" && deletableIds.includes(j.id)).map(j => j.id);
     await Promise.allSettled(pendingIds.map(id => postJobQueue.remove(id)));
 
-    // Delete media files (template designs stay)
-    const ownMedia = await withoutTemplateMedia(mediaUrlsToDelete);
-    if (ownMedia.length) {
-      await Promise.allSettled(ownMedia.map(url => storage.delete(url)));
-      await prisma.upload.deleteMany({ where: { url: { in: ownMedia } } });
-    }
-
     // Bulk delete — targets cascade
     const { count } = await prisma.postJob.deleteMany({ where: { id: { in: deletableIds } } });
+
+    // Then the files, once the posts are gone: two of these posts may share a file (a duplicate, a repeat), and it goes only when the
+    // last one is deleted (template designs and Library items that use a file keep it too)
+    try {
+      await releaseMedia(storage, mediaUrlsToDelete, owners);
+    } catch (err) {
+      req.log.warn({ err }, "media of deleted posts was not cleaned up");
+    }
 
     return reply.status(200).send({ deleted: count });
   });

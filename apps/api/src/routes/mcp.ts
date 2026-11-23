@@ -25,6 +25,8 @@ import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
 import { designReference, findExternalTemplate, listExternalTemplates } from "../lib/templates.js";
 import { firstSubmission } from "../lib/submitStamp.js";
+import { attachUploads, lockForCopy, withUploads } from "../lib/mediaDelete.js";
+import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -450,15 +452,21 @@ export async function handleTool(
       }
 
       const isDraft = !scheduleDirectly || forcedDraft;
+      // Only files uploaded through POST /api/v1/upload by this key's owner may be attached (the tool says so); a failure here is thrown and
+      // the wrapper below turns it into the tool's error text
+      const mediaUrls = args.media_urls === undefined ? [] : mediaUrlList(args.media_urls);
+      if (mediaUrls === null || mediaUrls.length > 10) throw new Error("media_urls must be an array of at most 10 uploaded file URLs");
       const contentPayload = JSON.stringify({
         text: args.content,
-        mediaUrls: (args.media_urls as string[] | undefined) ?? [],
+        mediaUrls,
         ...(args.media_type ? { mediaType: args.media_type } : {}),
         ...(args.youtube_type ? { youtubeType: args.youtube_type } : {}),
         ...(args.per_account ? { perAccount: args.per_account } : {}),
       });
 
-      const job = await prisma.postJob.create({
+      // locked, checked (an upload of this key's owner that still exists) and CLAIMED in the transaction that stores the post: before this, a
+      // picture attached through MCP was never claimed and the 24 h orphan cleaner deleted it from under the post
+      const job = await withUploads(mediaUrls, (tx) => attachUploads(tx, mediaUrls, { userId }), (db) => db.postJob.create({
         data: {
           userId,
           workspaceId,
@@ -474,7 +482,7 @@ export async function handleTool(
           targets: { create: accountIds.map((accountId) => ({ accountId })) },
         },
         include: { targets: { select: { id: true, accountId: true, status: true } } },
-      });
+      }));
 
       if (!isDraft) await schedulePostJob(job.id, scheduledFor);
 
@@ -673,19 +681,25 @@ export async function handleTool(
       if (!job || job.workspaceId !== workspaceId) throw new Error("Post not found");
       if (!isDraftVisibleTo(ctx.role, userId, job as DraftVisibilityJob)) throw new Error("Post not found");
 
-      const duplicate = await prisma.postJob.create({
-        data: {
-          userId,
-          workspaceId,
-          scheduledFor: new Date(0),
-          status: "draft",
-          content: job.content,
-          commentText: job.commentText,
-          dryRun: false,
-          targets: { create: job.targets.map((t) => ({ accountId: t.accountId })) },
-        },
-        include: { targets: { select: { id: true, accountId: true, status: true } } },
-      });
+      // the copy shares the source's files: locked, and the source must still exist once they are (a delete of the source may have just run)
+      const duplicate = await withUploads(
+        contentMediaUrls(job.content),
+        (tx) => lockForCopy(tx, contentMediaUrls(job.content), async (t) => !!(await t.postJob.findFirst({ where: { id: job.id }, select: { id: true } }))),
+        (db) =>
+          db.postJob.create({
+            data: {
+              userId,
+              workspaceId,
+              scheduledFor: new Date(0),
+              status: "draft",
+              content: job.content,
+              commentText: job.commentText,
+              dryRun: false,
+              targets: { create: job.targets.map((t) => ({ accountId: t.accountId })) },
+            },
+            include: { targets: { select: { id: true, accountId: true, status: true } } },
+          }),
+      );
 
       return ok({
         id: duplicate.id,

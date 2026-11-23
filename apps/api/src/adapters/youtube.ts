@@ -3,7 +3,7 @@ import { google } from "googleapis";
 import { decrypt, encrypt } from "../lib/encryption.js";
 import type { PlatformAdapter } from "./types.js";
 import { prisma } from "../lib/prisma.js";
-import { isSsrfBlocked } from "../lib/ssrf.js";
+import { SafeFetchError, safeFetch } from "../lib/safeFetch.js";
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos";
@@ -112,8 +112,11 @@ export const youtubeAdapter: PlatformAdapter = {
     const asShort = youtubeType !== "video"; // defaults to Short unless explicitly "video"
     const { title, description } = splitTitleDescription(text, asShort);
 
-    if (isSsrfBlocked(videoUrl)) throw new Error("YouTube video URL points to a private network address.");
-    const videoRes = await fetch(videoUrl);
+    // a 100 MB upload is the limit of our own route; a pasted address may be bigger, so the cap is generous (the body is streamed)
+    const videoRes = await safeFetch(videoUrl, { maxBytes: 300 * 1024 * 1024, totalTimeoutMs: 15 * 60_000, idleTimeoutMs: 60_000 }).catch((err) => {
+      if (err instanceof SafeFetchError) throw new Error(`YouTube video URL cannot be fetched: ${err.message}`);
+      throw err;
+    });
     if (!videoRes.ok || !videoRes.body) {
       throw new Error(`Failed to fetch video for upload: ${videoRes.status}`);
     }
@@ -187,9 +190,8 @@ export const youtubeAdapter: PlatformAdapter = {
           ? youtubeThumbnailUrl
           : `${PUBLIC_API_URL2}${youtubeThumbnailUrl}`;
 
-        if (isSsrfBlocked(thumbUrl)) throw new Error("Thumbnail URL points to a private network address.");
         console.log(`[youtube] fetching thumbnail from ${thumbUrl}`);
-        const thumbRes = await fetch(thumbUrl);
+        const thumbRes = await safeFetch(thumbUrl, { maxBytes: 5 * 1024 * 1024, totalTimeoutMs: 30_000 }); // YouTube's own thumbnail limit is 2 MB
         const contentType = thumbRes.headers.get("content-type") ?? "unknown";
         const contentLength = thumbRes.headers.get("content-length") ?? "unknown";
         console.log(`[youtube] thumbnail fetch status=${thumbRes.status} content-type=${contentType} content-length=${contentLength}`);

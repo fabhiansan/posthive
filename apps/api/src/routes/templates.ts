@@ -4,7 +4,8 @@ import { prisma } from "../lib/prisma.js";
 import { withAuth, withAuthOrToken, getUser, getWorkspaceId, getWorkspaceRole, requireTemplateManagerRole } from "../lib/auth/withAuth.js";
 import { pillarFor } from "../lib/contentTypes.js";
 import type { StorageAdapter } from "../lib/storage.js";
-import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, slideColumns, slideImagesOf, sourceOf, toLibraryTemplate, withoutTemplateMedia, type SlideImage } from "../lib/templates.js";
+import { LIBRARY_SELECT, SOURCE_SELECT, hasCanvasSource, hasFigmaSource, hasUsableSource, isLibraryVisible, lockTemplate, slideColumns, slideImagesOf, sourceOf, toLibraryTemplate, type SlideImage } from "../lib/templates.js";
+import { MediaUnavailable, attachUploads, releaseMedia } from "../lib/mediaDelete.js";
 import { templateBody, type TemplateBody } from "../lib/templateBody.js";
 
 /** A parsed body once the slide list is known: the parser leaves it out when the request did not send one. */
@@ -64,17 +65,17 @@ export async function templateRoutes(
     return owned === new Set(urls).size;
   }
 
-  // Uploads unclaimed for 24h are deleted by the orphan cron (index.ts) — claim template files.
-  async function claimUploads(urls: string[]): Promise<void> {
-    if (urls.length) await prisma.upload.updateMany({ where: { url: { in: urls } }, data: { claimedAt: new Date() } });
-  }
-
-  // Remove files a template no longer uses. Legacy kit files stay (posts share them).
-  async function removeFiles(urls: string[]): Promise<void> {
-    const free = await withoutTemplateMedia(urls);
-    if (!free.length) return;
-    await Promise.allSettled(free.map((url) => storage.delete(url)));
-    await prisma.upload.deleteMany({ where: { url: { in: free } } });
+  // Remove files a template no longer uses. A file a post, a Library item, another template or a legacy kit still uses stays (releaseMedia
+  // looks everywhere, under the Upload row lock). Only the design team's own uploads go: the person acting, or whoever uploaded the file
+  // when it was attached (a template is kept by the team).
+  async function removeFiles(urls: string[], userId: string, workspaceId: string): Promise<void> {
+    if (!urls.length) return;
+    try {
+      const team = await prisma.workspaceMember.findMany({ where: { workspaceId }, select: { userId: true } });
+      await releaseMedia(storage, urls, [userId, ...team.map((m) => m.userId)]);
+    } catch {
+      // best effort: a file left behind is a leak, never a reason to fail the request
+    }
   }
 
   // List the workspace's design templates. The design team sees drafts too; every other role sees only what was
@@ -116,13 +117,14 @@ export async function templateRoutes(
     if (!(await ownsUploads(files, userId))) return reply.status(400).send({ error: "Upload the images again." });
 
     try {
-      const template = await prisma.template.create({
-        data: { userId, workspaceId, ...templateData(body) },
-        select: LIBRARY_SELECT,
-      });
-      await claimUploads(files);
+      // the files are locked, checked (uploads of this person that still exist) and claimed in the transaction that stores the template
+      const template = await prisma.$transaction(async (tx) => {
+        await attachUploads(tx, files, { userId });
+        return tx.template.create({ data: { userId, workspaceId, ...templateData(body) }, select: LIBRARY_SELECT });
+      }, { timeout: 30_000 });
       return reply.status(201).send({ template: toLibraryTemplate(template) });
     } catch (err) {
+      if (err instanceof MediaUnavailable) return reply.status(400).send({ error: "Upload the images again." });
       if (isUniqueViolation(err)) return reply.status(409).send(duplicate(body.category));
       throw err;
     }
@@ -168,7 +170,10 @@ export async function templateRoutes(
     let template;
     try {
       if (hasFigmaSource(body.linkUrl)) {
-        template = await prisma.template.update({ where: { id }, data: templateData(body), select: LIBRARY_SELECT });
+        template = await prisma.$transaction(async (tx) => {
+          await attachUploads(tx, added, { userId });
+          return tx.template.update({ where: { id }, data: templateData(body), select: LIBRARY_SELECT });
+        }, { timeout: 30_000 });
       } else {
         // The edit leaves the template without a Figma link (R2): under the template's lock, a published template must
         // still have its Canvas revision, unless it had no source to lose in the first place.
@@ -177,19 +182,20 @@ export async function templateRoutes(
           const before = await tx.template.findFirst({ where: { id, workspaceId }, select: SOURCE_SELECT });
           if (!before) return "missing" as const;
           if (before.published && hasUsableSource(sourceOf(before)) && !hasCanvasSource(sourceOf(before).canvasRevision)) return "required" as const;
+          await attachUploads(tx, added, { userId });
           return tx.template.update({ where: { id }, data: templateData(body), select: LIBRARY_SELECT });
-        });
+        }, { timeout: 30_000 });
         if (outcome === "missing") return reply.status(404).send({ error: "Not found" });
         if (outcome === "required") return reply.status(409).send(SOURCE_REQUIRED);
         template = outcome;
       }
     } catch (err) {
+      if (err instanceof MediaUnavailable) return reply.status(400).send({ error: "Upload the images again." });
       if (isUniqueViolation(err)) return reply.status(409).send(duplicate(body.category));
       throw err;
     }
-    await claimUploads(added);
     const next = new Set(bodyFiles(body));
-    await removeFiles(filesOf(current).filter((url) => !next.has(url)));
+    await removeFiles(filesOf(current).filter((url) => !next.has(url)), userId, workspaceId);
     return reply.send({ template: toLibraryTemplate(template) });
   });
 
@@ -231,7 +237,7 @@ export async function templateRoutes(
   });
 
   // Delete a template and its files — design team only. Posts never reference
-  // design template files; legacy kit files stay protected (withoutTemplateMedia).
+  // design template files; a file a post or a Library item still uses stays (releaseMedia).
   app.delete("/templates/:id", { preHandler: [withAuth] }, async (req, reply) => {
     const { id: userId } = getUser(req);
     const workspaceId = getWorkspaceId(req);
@@ -247,7 +253,7 @@ export async function templateRoutes(
     if (!template) return reply.status(404).send({ error: "Not found" });
 
     await prisma.template.delete({ where: { id } });
-    await removeFiles(filesOf(template));
+    await removeFiles(filesOf(template), userId, workspaceId);
     return reply.send({ ok: true });
   });
 

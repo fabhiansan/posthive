@@ -8,6 +8,8 @@ import { firstSubmission } from "../lib/submitStamp.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
+import { attachUploads, lockForCopy, mediaProblem, withUploads } from "../lib/mediaDelete.js";
+import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
 
 const preHandler = [withApiKey];
 
@@ -82,6 +84,9 @@ export async function publicApiRoutes(
       return reply.status(400).send({ error: "accountIds must contain at most 50 accounts" });
     if (body.images && (!Array.isArray(body.images) || body.images.length > 10))
       return reply.status(400).send({ error: "images must be an array of at most 10 URLs" });
+    // Only files uploaded through POST /api/v1/upload by this key's owner may be attached (the docs: "Image URLs from POST /upload")
+    const images = body.images === undefined ? undefined : mediaUrlList(body.images);
+    if (images === null) return reply.status(400).send({ error: "images must be an array of at most 10 URLs" });
 
     const isDraft = body.draft === true;
 
@@ -114,34 +119,48 @@ export async function publicApiRoutes(
 
     const contentPayload = JSON.stringify({
       text: body.content,
-      mediaUrls: body.images ?? [],
+      mediaUrls: images ?? [],
       ...(body.altTexts?.length ? { altTexts: body.altTexts } : {}),
       ...(body.mediaType ? { mediaType: body.mediaType } : {}),
       ...(body.youtubeType ? { youtubeType: body.youtubeType } : {}),
       ...(body.perAccount ? { perAccount: normalizePerAccount(body.perAccount) } : {}),
     });
 
-    const job = await prisma.postJob.create({
-      data: {
-        userId,
-        workspaceId,
-        scheduledFor: scheduledFor ?? new Date(0),
-        status: staysDraft ? "draft" : "pending",
-        approvalStatus: needsReview ? "pending" : null,
-        ...(needsReview ? firstSubmission(userId) : {}),
-        content: contentPayload,
-        commentText: body.commentText ?? null,
-        dryRun: body.dryRun ?? false,
-        repeatInterval: body.repeatInterval ?? null,
-        repeatEndsAt: body.repeatEndsAt ? new Date(body.repeatEndsAt) : null,
-        targets: {
-          create: body.accountIds.map((accountId) => ({ accountId })),
-        },
-      },
-      include: {
-        targets: { select: { id: true, accountId: true, status: true } },
-      },
-    });
+    let job;
+    try {
+      // locked, checked (an upload of this key's owner that still exists) and CLAIMED in the transaction that stores the post: before this,
+      // a picture attached through the API was never claimed and the 24 h orphan cleaner deleted it from under a live post
+      job = await withUploads(
+        images ?? [],
+        (tx) => attachUploads(tx, images ?? [], { userId }),
+        (db) =>
+          db.postJob.create({
+            data: {
+              userId,
+              workspaceId,
+              scheduledFor: scheduledFor ?? new Date(0),
+              status: staysDraft ? "draft" : "pending",
+              approvalStatus: needsReview ? "pending" : null,
+              ...(needsReview ? firstSubmission(userId) : {}),
+              content: contentPayload,
+              commentText: body.commentText ?? null,
+              dryRun: body.dryRun ?? false,
+              repeatInterval: body.repeatInterval ?? null,
+              repeatEndsAt: body.repeatEndsAt ? new Date(body.repeatEndsAt) : null,
+              targets: {
+                create: body.accountIds.map((accountId) => ({ accountId })),
+              },
+            },
+            include: {
+              targets: { select: { id: true, accountId: true, status: true } },
+            },
+          }),
+      );
+    } catch (err) {
+      const problem = mediaProblem(err);
+      if (problem) return reply.status(problem.status).send(problem.body);
+      throw err;
+    }
 
     if (!staysDraft) await schedulePostJob(job.id, scheduledFor!);
 
@@ -290,6 +309,13 @@ export async function publicApiRoutes(
 
     const updateData: Record<string, unknown> = {};
 
+    let images: string[] | undefined;
+    if (body.images !== undefined) {
+      const list = Array.isArray(body.images) && body.images.length <= 10 ? mediaUrlList(body.images) : null;
+      if (list === null) return reply.status(400).send({ error: "images must be an array of at most 10 URLs" });
+      images = list;
+    }
+
     if (body.scheduledFor !== undefined) {
       const scheduledFor = new Date(body.scheduledFor);
       if (isNaN(scheduledFor.getTime()) || scheduledFor <= new Date())
@@ -312,7 +338,7 @@ export async function publicApiRoutes(
       updateData.content = JSON.stringify({
         ...existing,
         ...(body.content !== undefined ? { text: body.content } : {}),
-        ...(body.images !== undefined ? { mediaUrls: body.images } : {}),
+        ...(images !== undefined ? { mediaUrls: images } : {}),
         ...(body.altTexts !== undefined ? { altTexts: body.altTexts } : {}),
         ...(body.mediaType !== undefined ? { mediaType: body.mediaType } : {}),
         ...(body.youtubeType !== undefined ? { youtubeType: body.youtubeType } : {}),
@@ -323,7 +349,20 @@ export async function publicApiRoutes(
     if (body.commentText !== undefined)
       updateData.commentText = body.commentText || null;
 
-    const updated = await prisma.postJob.update({ where: { id }, data: updateData });
+    let updated;
+    try {
+      // what the post already holds is only locked; a new picture must be an upload of this key's owner that still exists
+      const held = new Set(contentMediaUrls(job.content));
+      updated = await withUploads(
+        images ?? [],
+        (tx) => attachUploads(tx, images ?? [], { userId, keep: held }),
+        (db) => db.postJob.update({ where: { id }, data: updateData }),
+      );
+    } catch (err) {
+      const problem = mediaProblem(err);
+      if (problem) return reply.status(problem.status).send(problem.body);
+      throw err;
+    }
 
     if (body.accountIds !== undefined) {
       if (!Array.isArray(body.accountIds) || body.accountIds.length === 0)
@@ -437,19 +476,32 @@ export async function publicApiRoutes(
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (!isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Post not found" });
 
-    const duplicate = await prisma.postJob.create({
-      data: {
-        userId,
-        workspaceId,
-        scheduledFor: new Date(0),
-        status: "draft",
-        content: job.content,
-        commentText: job.commentText,
-        dryRun: false,
-        targets: { create: job.targets.map((t) => ({ accountId: t.accountId })) },
-      },
-      include: { targets: { select: { id: true, accountId: true, status: true } } },
-    });
+    // the copy shares the source's files: locked, and the source must still exist once they are (a delete of the source may have just run)
+    let duplicate;
+    try {
+      duplicate = await withUploads(
+        contentMediaUrls(job.content),
+        (tx) => lockForCopy(tx, contentMediaUrls(job.content), async (t) => !!(await t.postJob.findFirst({ where: { id: job.id }, select: { id: true } }))),
+        (db) =>
+          db.postJob.create({
+            data: {
+              userId,
+              workspaceId,
+              scheduledFor: new Date(0),
+              status: "draft",
+              content: job.content,
+              commentText: job.commentText,
+              dryRun: false,
+              targets: { create: job.targets.map((t) => ({ accountId: t.accountId })) },
+            },
+            include: { targets: { select: { id: true, accountId: true, status: true } } },
+          }),
+      );
+    } catch (err) {
+      const problem = mediaProblem(err);
+      if (problem) return reply.status(problem.status).send(problem.body);
+      throw err;
+    }
 
     return reply.status(201).send({
       id: duplicate.id,

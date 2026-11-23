@@ -2,7 +2,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from "nostr-too
 import { Relay } from "nostr-tools/relay";
 import { SimplePool } from "nostr-tools/pool";
 import { decrypt, encrypt } from "../lib/encryption.js";
-import { isSsrfBlocked } from "../lib/ssrf.js";
+import { safeFetch } from "../lib/safeFetch.js";
 import type { Account } from "@prisma/client";
 import type { CommentResult, PlatformAdapter, PostResult } from "./types.js";
 
@@ -68,11 +68,8 @@ export async function fetchNostrProfile(
     let picture: string | null = meta.picture ?? null;
     if (picture) {
       try {
-        if (isSsrfBlocked(picture)) { picture = null; }
-        else {
-          const check = await fetch(picture, { method: "HEAD", signal: AbortSignal.timeout(5_000) });
-          if (!check.ok) picture = null;
-        }
+        const check = await safeFetch(picture, { method: "HEAD", totalTimeoutMs: 5_000 }); // refuses an address that is not public (including after a redirect)
+        if (!check.ok) picture = null;
       } catch { picture = null; }
     }
 

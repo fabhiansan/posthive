@@ -7,7 +7,7 @@ import {
 import { withAuth, getUser } from "../lib/auth/withAuth.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { prisma } from "../lib/prisma.js";
-import { withoutTemplateMedia } from "../lib/templates.js";
+import { releaseMedia } from "../lib/mediaDelete.js";
 
 const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/mov"];
 const MAX_VIDEO_SIZE_BYTES = 100_000_000; // 100 MB (Instagram Reels limit)
@@ -25,11 +25,10 @@ export async function uploadRoutes(
     // Verify ownership before touching storage
     const record = await prisma.upload.findFirst({ where: { url, userId } });
     if (!record) return reply.status(404).send({ error: "Upload not found" });
-    // Files a design template uses (and legacy kit designs posts share) — keep them
-    if ((await withoutTemplateMedia([url])).length === 0) return reply.status(204).send();
+    // Removed only when nothing uses it: a saved draft, a scheduled or published post, a duplicate, a Library item, a template (compose
+    // calls this when the person removes a picture or leaves the page, so a file the draft they just saved holds must stay)
     try {
-      await storage.delete(url);
-      await prisma.upload.deleteMany({ where: { url, userId } });
+      await releaseMedia(storage, [url], [userId]);
     } catch {
       // Best-effort — don't fail if file is already gone
     }

@@ -4,6 +4,8 @@ import * as Sentry from "@sentry/node";
 import { prisma } from "../lib/prisma.js";
 import { withAuth, getUser, getWorkspaceId, requireAdminRole } from "../lib/auth/withAuth.js";
 import { getPlan } from "../lib/plans.js";
+import { attachUploads, mediaProblem, withUploads } from "../lib/mediaDelete.js";
+import { externalMediaUrl, isStoredUploadPath, toStoredUrl } from "../lib/mediaUrl.js";
 
 const MAX_CSV_ROWS = 500;
 const MAX_TEXT_LENGTH = 5000;
@@ -28,11 +30,15 @@ const libraryUpdateSchema = z.object({
   accountIds: z.array(z.string().cuid()).min(1).max(100).optional(),
 });
 
-// CSV item schema — one row from the uploaded CSV
+// CSV item schema — one row from the uploaded CSV. A picture is an outside address the drip cron downloads later (the Library page tells
+// people to use a public CDN), or one of this app's own uploads; anything else (file:, data:, a private network address) is refused here.
 const csvItemSchema = z.object({
   text: z.string().min(1).max(MAX_TEXT_LENGTH),
   commentText: z.string().max(MAX_TEXT_LENGTH).optional(),
-  mediaUrls: z.array(z.string().url()).max(10).default([]),
+  mediaUrls: z
+    .array(z.string().refine((u) => externalMediaUrl(u) !== null || isStoredUploadPath(toStoredUrl(u)), "Each media URL must be a public http(s) address or an uploaded file"))
+    .max(10)
+    .default([]),
 });
 
 async function getWorkspacePlan(workspaceId: string) {
@@ -338,21 +344,32 @@ export async function libraryRoutes(app: FastifyInstance): Promise<void> {
     let created = 0;
     try {
       for (let i = 0; i < items.length; i += BATCH) {
-        const chunk = items.slice(i, i + BATCH);
-        await prisma.libraryItem.createMany({
-          data: chunk.map((item, idx) => ({
-            libraryId: id,
-            workspaceId,
-            text: item.text,
-            commentText: item.commentText ?? null,
-            mediaUrls: (item.mediaUrls ?? []) as unknown as string[],
-            order: startOrder + i + idx,
-            status: "queued",
-          })),
-        });
+        const chunk = items.slice(i, i + BATCH).map((item) => ({ ...item, mediaUrls: (item.mediaUrls ?? []).map((u) => toStoredUrl(u)) }));
+        // An item may name one of this person's uploads: those are locked, checked and claimed in the transaction that stores the items.
+        // Outside addresses (the usual CSV) have no row and are only checked for what they are.
+        const all = chunk.flatMap((item) => item.mediaUrls);
+        const external = all.filter((u) => !isStoredUploadPath(u));
+        await withUploads(
+          all,
+          (tx) => attachUploads(tx, all, { userId, external }),
+          (db) =>
+            db.libraryItem.createMany({
+              data: chunk.map((item, idx) => ({
+                libraryId: id,
+                workspaceId,
+                text: item.text,
+                commentText: item.commentText ?? null,
+                mediaUrls: item.mediaUrls as unknown as string[],
+                order: startOrder + i + idx,
+                status: "queued",
+              })),
+            }),
+        );
         created += chunk.length;
       }
     } catch (err) {
+      const problem = mediaProblem(err);
+      if (problem) return reply.status(problem.status).send({ ...problem.body, created });
       Sentry.captureException(err, { tags: { route: "POST /library/:id/items", workspaceId, libraryId: id }, extra: { itemCount: items.length, createdSoFar: created } });
       throw err;
     }

@@ -71,12 +71,62 @@ export interface StorageAdapter {
   ownsUrl(url: string): boolean;
 }
 
+/** A key or URL that does not name a file inside the uploads folder. Nothing was read, written or removed. */
+export class StorageKeyError extends Error {
+  readonly code = "EINVALIDKEY";
+  constructor() {
+    super("That is not a path inside the uploads folder.");
+    this.name = "StorageKeyError";
+  }
+}
+
 export class LocalDiskStorage implements StorageAdapter {
   constructor(private readonly uploadsDir: string) {}
 
+  /**
+   * Where a key lives on disk, or a StorageKeyError. Every read, write, delete and listing goes through here:
+   *  - the key is cut into segments and none may be empty, "." or "..", or contain a backslash, a colon (a drive or stream on Windows) or
+   *    a NUL: nothing is ever resolved by joining text that came from outside;
+   *  - the result must still lie under the REAL path of the uploads folder;
+   *  - no part of the key may be a symbolic link (the app never makes one), so a link planted in the folder cannot lead out of it.
+   * shortcut: a link swapped in between this check and the file operation is not caught; that needs write access to the uploads folder,
+   * which is the same access the files themselves are protected by. Upgrade: open with O_NOFOLLOW (not available on Windows).
+   */
+  private async locate(key: string): Promise<string> {
+    if (typeof key !== "string" || !key) throw new StorageKeyError();
+    const segments = key.split("/");
+    if (segments.some((s) => s === "" || s === "." || s === ".." || /[\\:\0]/.test(s))) throw new StorageKeyError();
+    const resolved = path.resolve(this.uploadsDir);
+    const root = await fs.realpath(resolved).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return resolved; // nothing has been stored yet
+      throw err;
+    });
+    const full = path.resolve(root, ...segments);
+    if (!full.startsWith(root + path.sep)) throw new StorageKeyError();
+    let at = root;
+    for (const segment of segments) {
+      at = path.join(at, segment);
+      try {
+        if ((await fs.lstat(at)).isSymbolicLink()) throw new StorageKeyError();
+      } catch (err) {
+        if (err instanceof StorageKeyError) throw err;
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") break; // the rest of the path does not exist yet
+        throw err;
+      }
+    }
+    return full;
+  }
+
+  /** The key of an "/uploads/..." URL. Anything else is not ours. */
+  private keyOf(url: string): string {
+    if (typeof url !== "string" || !url.startsWith("/uploads/")) throw new StorageKeyError();
+    return url.slice("/uploads/".length);
+  }
+
   async upload(buffer: Buffer, mimeType: string, folder?: string, fileName?: string): Promise<string> {
     const key = objectKey(mimeType, folder, fileName);
-    const filepath = path.join(this.uploadsDir, key);
+    const filepath = await this.locate(key);
     await fs.mkdir(path.dirname(filepath), { recursive: true });
     await fs.writeFile(filepath, buffer);
     return `/uploads/${key}`;
@@ -84,15 +134,12 @@ export class LocalDiskStorage implements StorageAdapter {
 
   async getBuffer(url: string): Promise<Buffer> {
     // Support both /uploads/filename and /uploads/folder/filename
-    const relative = url.replace(/^\/uploads\//, "");
-    const filepath = path.join(this.uploadsDir, relative);
-    return fs.readFile(filepath);
+    return fs.readFile(await this.locate(this.keyOf(url)));
   }
 
   async delete(url: string): Promise<void> {
+    const filepath = await this.locate(this.keyOf(url));
     try {
-      const relative = url.replace(/^\/uploads\//, "");
-      const filepath = path.join(this.uploadsDir, relative);
       await fs.unlink(filepath);
     } catch (err: unknown) {
       // File already gone — not an error
@@ -101,7 +148,7 @@ export class LocalDiskStorage implements StorageAdapter {
   }
 
   async listFolder(folder: string): Promise<string[]> {
-    const dir = path.join(this.uploadsDir, folder);
+    const dir = await this.locate(folder);
     try {
       const files = await fs.readdir(dir);
       return files.map((f) => `/uploads/${folder}/${f}`);
@@ -156,7 +203,9 @@ export class SupabaseStorage implements StorageAdapter {
   }
 
   async getBuffer(url: string): Promise<Buffer> {
-    const res = await fetch(url, { headers: this.headers() });
+    // The service key goes with this request: it must never be sent to an address that is not this project's storage.
+    if (!this.ownsUrl(url)) throw new StorageKeyError();
+    const res = await fetch(url, { headers: this.headers(), redirect: "error" });
     if (!res.ok) throw new Error(`Supabase getBuffer failed: ${res.status}`);
     return Buffer.from(await res.arrayBuffer());
   }
@@ -185,7 +234,7 @@ export class SupabaseStorage implements StorageAdapter {
   }
 
   ownsUrl(url: string): boolean {
-    return url.startsWith(this.baseUrl);
+    return url.startsWith(`${this.baseUrl}/`); // with the slash: https://project.supabase.co.evil.test/ is not this project
   }
 }
 
@@ -252,6 +301,6 @@ export class R2Storage implements StorageAdapter {
   }
 
   ownsUrl(url: string): boolean {
-    return url.startsWith(this.publicUrl);
+    return url.startsWith(`${this.publicUrl}/`); // with the slash: https://pub.r2.dev.evil.test/ is not this bucket
   }
 }

@@ -1,5 +1,6 @@
 import type { StorageAdapter } from "./storage.js";
 import { isSsrfBlocked } from "./ssrf.js";
+import { safeFetch } from "./safeFetch.js";
 
 let store: StorageAdapter | null = null;
 export function setAvatarStorage(s: StorageAdapter): void { store = s; }
@@ -9,7 +10,7 @@ export async function downloadAndStoreAvatar(url: string | null): Promise<string
   if (!url || !store) return url;
   if (isSsrfBlocked(url)) return null;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const res = await safeFetch(url, { totalTimeoutMs: 15_000, maxBytes: 10 * 1024 * 1024 });
     if (!res.ok) return url;
     const ct = res.headers.get("content-type") ?? "image/jpeg";
     const mime = ct.startsWith("image/") ? ct.split(";")[0].trim() : "image/jpeg";

@@ -67,6 +67,9 @@ import { canvasRoutes } from "./routes/canvas.js";
 import { publicUploadsStatic } from "./lib/canvasAssets.js";
 import { withAuth } from "./lib/auth/withAuth.js";
 import { validateAuthConfig } from "./lib/auth/config.js";
+import { isSsrfBlocked } from "./lib/ssrf.js";
+import { safeFetch } from "./lib/safeFetch.js";
+import { releaseMedia } from "./lib/mediaDelete.js";
 import type { StorageAdapter } from "./lib/storage.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -273,27 +276,11 @@ async function main() {
     try { parsed = new URL(url); } catch { return reply.status(400).send({ error: "Invalid URL" }); }
 
     if (parsed.protocol !== "https:") return reply.status(400).send({ error: "Only HTTPS URLs allowed" });
-
-    // Block private/internal IP ranges (SSRF protection)
-    const hostname = parsed.hostname;
-    if (
-      hostname === "localhost" ||
-      hostname === "127.0.0.1" ||
-      hostname.startsWith("192.168.") ||
-      hostname.startsWith("10.") ||
-      hostname.startsWith("172.16.") ||
-      hostname === "169.254.169.254" || // cloud metadata
-      hostname.endsWith(".local") ||
-      hostname.endsWith(".internal")
-    ) {
-      return reply.status(400).send({ error: "URL not allowed" });
-    }
+    if (isSsrfBlocked(url)) return reply.status(400).send({ error: "URL not allowed" });
 
     try {
-      const res = await fetch(url, {
-        headers: { "User-Agent": "Posthive/1.0" },
-        signal: AbortSignal.timeout(5000),
-      });
+      // safeFetch checks every address the name resolves to and every redirect hop (a link to a public name that points at a private one)
+      const res = await safeFetch(url, { headers: { "User-Agent": "Posthive/1.0" }, totalTimeoutMs: 5000, maxBytes: 2 * 1024 * 1024 });
       if (!res.ok) return reply.status(200).send({});
       const html = await res.text();
       const getTag = (prop: string) => {
@@ -342,16 +329,14 @@ function startOrphanCleanup(storage: StorageAdapter) {
     const orphans = await prisma.upload.findMany({
       where: { claimedAt: null, createdAt: { lt: cutoff } },
       select: { id: true, url: true },
+      take: 500, // the scan under the locks costs a pass over the posts per file: a backlog is worked off over several runs
     });
     if (!orphans.length) return;
-    console.log(`[orphan-cleanup] deleting ${orphans.length} unclaimed upload(s)`);
-    const BATCH = 50;
-    for (let i = 0; i < orphans.length; i += BATCH) {
-      await Promise.allSettled(orphans.slice(i, i + BATCH).map(async (u) => {
-        try { await storage.delete(u.url); } catch { /* already gone */ }
-        await prisma.upload.delete({ where: { id: u.id } });
-      }));
-    }
+    // Under the same Upload row locks as every writer, and only while nothing references the file: an upload that was attached through a
+    // path that never claimed it is claimed here instead of deleted. (Before this the file was removed first and the row after, with no
+    // second look at the row: a post that claimed it in between lost its picture.)
+    const removed = await releaseMedia(storage, orphans.map((u) => u.url), "unclaimed");
+    console.log(`[orphan-cleanup] deleted ${removed.length} of ${orphans.length} unclaimed upload(s)`);
   }
 
   // Run once at startup (catches anything from a previous session), then on interval

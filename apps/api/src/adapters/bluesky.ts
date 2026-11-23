@@ -4,6 +4,7 @@ import type { Account } from "@prisma/client";
 import { decrypt, encrypt } from "../lib/encryption.js";
 import { compressForPlatform } from "../lib/compress.js";
 import type { StorageAdapter } from "../lib/storage.js";
+import { safeFetch } from "../lib/safeFetch.js";
 import type { AnalyticsResult, CommentResult, PlatformAdapter, PostResult } from "./types.js";
 
 interface BlueskyCredentials {
@@ -75,9 +76,11 @@ async function buildLinkCard(
   url: string
 ): Promise<AppBskyEmbedExternal.Main | undefined> {
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
+      allowHttp: true,
       headers: { "User-Agent": "Posthive/1.0 (+https://posthive.co)" },
-      signal: AbortSignal.timeout(5000),
+      totalTimeoutMs: 5000,
+      maxBytes: 2 * 1024 * 1024,
     });
     if (!res.ok) return undefined;
     const html = await res.text();
@@ -96,7 +99,7 @@ async function buildLinkCard(
     let thumb: AppBskyEmbedExternal.Main["external"]["thumb"] | undefined;
     if (imageUrl) {
       try {
-        const imgRes = await fetch(imageUrl, { signal: AbortSignal.timeout(5000) });
+        const imgRes = await safeFetch(imageUrl, { allowHttp: true, totalTimeoutMs: 5000, maxBytes: 5 * 1024 * 1024 });
         if (imgRes.ok) {
           const buf = Buffer.from(await imgRes.arrayBuffer());
           const ext = imageUrl.split(".").pop()?.split("?")[0]?.toLowerCase() ?? "jpg";

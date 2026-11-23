@@ -14,6 +14,7 @@ import type { Account } from "@prisma/client";
 import { decrypt, encrypt } from "../lib/encryption.js";
 import { prisma } from "../lib/prisma.js";
 import type { StorageAdapter } from "../lib/storage.js";
+import { safeFetch } from "../lib/safeFetch.js";
 import type { AnalyticsResult, CommentResult, PlatformAdapter, PostResult } from "./types.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
@@ -79,7 +80,7 @@ async function uploadPhotoBuffer(
   if (storageAdapter.ownsUrl(imageUrl)) {
     buffer = await storageAdapter.getBuffer(imageUrl);
   } else {
-    const fetched = await fetch(imageUrl, { signal: AbortSignal.timeout(15_000) });
+    const fetched = await safeFetch(imageUrl, { allowHttp: true, maxBytes: 20 * 1024 * 1024, totalTimeoutMs: 15_000 });
     if (!fetched.ok) throw new Error(`Facebook: could not fetch image ${imageUrl}: ${fetched.status}`);
     buffer = Buffer.from(await fetched.arrayBuffer());
   }

@@ -19,6 +19,8 @@ import { prisma } from "../lib/prisma.js";
 import { schedulePostJob } from "../lib/queue.js";
 import { firstSubmission } from "../lib/submitStamp.js";
 import { isSsrfBlocked } from "../lib/ssrf.js";
+import { MediaUnavailable, lockForCopy, withUploads } from "../lib/mediaDelete.js";
+import { contentMediaUrls } from "../lib/mediaUrl.js";
 import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
 import { explainPublishError, textLimitProblem } from "../lib/publishError.js";
@@ -168,22 +170,33 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
       const endsAt = fullJob.repeatEndsAt;
       if (!endsAt || next <= endsAt) {
         const parentId = fullJob.repeatParentId ?? job.id; // flat chain — always point to root
-        const nextJob = await prisma.postJob.create({
-          data: {
-            scheduledFor: next,
-            status: needsApproval ? "draft" : "pending",
-            approvalStatus: needsApproval ? "pending" : null,
-            ...(needsApproval ? firstSubmission(fullJob.userId) : {}),
-            content: fullJob.content,
-            commentText: fullJob.commentText,
-            userId: fullJob.userId,
-            workspaceId: fullJob.workspaceId,
-            repeatInterval: fullJob.repeatInterval,
-            repeatEndsAt: endsAt,
-            repeatParentId: parentId,
-            targets: { create: fullJob.targets.map(t => ({ accountId: t.accountId })) },
-          },
+        // The next occurrence shares this post's files. They are locked under the same locks a deleter takes, and this post must still exist
+        // once they are (a delete of it may have just run and removed its files): a post that is gone is not repeated.
+        const nextJob = await withUploads(
+          contentMediaUrls(fullJob.content),
+          (tx) => lockForCopy(tx, contentMediaUrls(fullJob.content), async (t) => !!(await t.postJob.findFirst({ where: { id: job.id }, select: { id: true } }))),
+          (db) =>
+            db.postJob.create({
+              data: {
+                scheduledFor: next,
+                status: needsApproval ? "draft" : "pending",
+                approvalStatus: needsApproval ? "pending" : null,
+                ...(needsApproval ? firstSubmission(fullJob.userId) : {}),
+                content: fullJob.content,
+                commentText: fullJob.commentText,
+                userId: fullJob.userId,
+                workspaceId: fullJob.workspaceId,
+                repeatInterval: fullJob.repeatInterval,
+                repeatEndsAt: endsAt,
+                repeatParentId: parentId,
+                targets: { create: fullJob.targets.map(t => ({ accountId: t.accountId })) },
+              },
+            }),
+        ).catch((err) => {
+          if (err instanceof MediaUnavailable) return null; // the post was deleted while it ran: nothing to repeat
+          throw err;
         });
+        if (!nextJob) return;
         if (!needsApproval) {
           await schedulePostJob(nextJob.id, next);
         }

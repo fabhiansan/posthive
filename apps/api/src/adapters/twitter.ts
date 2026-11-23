@@ -16,6 +16,8 @@ import { decrypt } from "../lib/encryption.js";
 import { prisma } from "../lib/prisma.js";
 import { getPlan } from "../lib/plans.js";
 import type { CommentResult, PlatformAdapter, PostResult } from "./types.js";
+import { isStoredUploadPath, toStoredUrl } from "../lib/mediaUrl.js";
+import { safeFetch } from "../lib/safeFetch.js";
 
 const X_API_KEY    = process.env.X_API_KEY!;
 const X_API_SECRET = process.env.X_API_SECRET!;
@@ -109,8 +111,11 @@ async function uploadImages(client: TwitterApi, mediaUrls: string[]): Promise<st
 
   const port = process.env.PORT ?? "3001";
   for (const rawUrl of mediaUrls.slice(0, 4)) {
-    const url = rawUrl.startsWith("http") ? rawUrl : `http://localhost:${port}${rawUrl}`;
-    const res = await fetch(url);
+    // A file this app stored is read from this server itself (the path must have exactly the shape of a stored upload: it is appended to
+    // "localhost", so anything else could change the host). Any other address is somebody else's and goes through safeFetch.
+    const stored = toStoredUrl(rawUrl);
+    const url = isStoredUploadPath(stored) ? `http://localhost:${port}${stored}` : rawUrl;
+    const res = isStoredUploadPath(stored) ? await fetch(url) : await safeFetch(url, { allowHttp: true, maxBytes: 20 * 1024 * 1024 });
     if (!res.ok) throw new Error(`Failed to fetch media: ${url}`);
 
     const buffer = Buffer.from(await res.arrayBuffer());

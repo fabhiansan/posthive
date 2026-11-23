@@ -14,7 +14,8 @@ import cron from "node-cron";
 import { prisma } from "./prisma.js";
 import type { StorageAdapter } from "./storage.js";
 import { sendCleanupSummaryEmail } from "./mailer.js";
-import { withoutTemplateMedia } from "./templates.js";
+import { releaseMedia } from "./mediaDelete.js";
+import { contentMediaUrls } from "./mediaUrl.js";
 
 let storageAdapter: StorageAdapter | null = null;
 export function setCleanupStorage(s: StorageAdapter): void { storageAdapter = s; }
@@ -100,7 +101,7 @@ async function runCleanup(): Promise<void> {
   // duplicate emails when multiple instances run the cron at the same time.
   const totalDeleted = sessionCount + oldEvents.count + oldPostJobs.count + oldOAuthStates.count + oldEmailVerifications.count + revokedApiKeys.count + staleApiKeys.count + staleOAuthClients.count;
   if (totalDeleted > 0) {
-    sendCleanupSummaryEmail("guna@posthive.co", {
+    sendCleanupSummaryEmail("mail@lilt.digital", {
       sessions: sessionCount,
       events: oldEvents.count,
       postJobs: oldPostJobs.count,
@@ -118,37 +119,25 @@ async function runCleanup(): Promise<void> {
     try {
       const failedJobs = await prisma.postJob.findMany({
         where: { status: "failed", createdAt: { lt: cut30d } },
-        select: { id: true, content: true },
+        select: { id: true, content: true, userId: true },
       });
 
       const allUrls: string[] = [];
+      const authors = new Set<string>();
       for (const job of failedJobs) {
-        try {
-          const c = JSON.parse(job.content) as { mediaUrls?: string[]; youtubeThumbnailUrl?: string };
-          const urls = [
-            ...(c.mediaUrls ?? []),
-            ...(c.youtubeThumbnailUrl ? [c.youtubeThumbnailUrl] : []),
-          ].filter((url) => storageAdapter!.ownsUrl(url));
-          allUrls.push(...urls);
-        } catch { /* malformed content — skip */ }
+        const urls = contentMediaUrls(job.content).filter((url) => storageAdapter!.ownsUrl(url));
+        if (urls.length) authors.add(job.userId);
+        allUrls.push(...urls);
       }
 
-      // Template design files are shared across posts — never clean them up here
-      const uniqueUrls = await withoutTemplateMedia([...new Set(allUrls)]);
-      if (uniqueUrls.length) {
-        const MEDIA_BATCH = 10;
-        const MEDIA_DELAY_MS = 200;
-        let deleted = 0;
-        for (let i = 0; i < uniqueUrls.length; i += MEDIA_BATCH) {
-          const batch = uniqueUrls.slice(i, i + MEDIA_BATCH);
-          await Promise.allSettled(batch.map((url) => storageAdapter!.delete(url)));
-          deleted += batch.length;
-          if (i + MEDIA_BATCH < uniqueUrls.length) {
-            await new Promise((r) => setTimeout(r, MEDIA_DELAY_MS));
-          }
-        }
-        await prisma.upload.deleteMany({ where: { url: { in: uniqueUrls } } });
-        console.log(`[cleanup-cron] failed-job media: ${deleted} file(s) deleted`);
+      // A failed post's row stays; its files go, but only the ones nothing else uses (another post of the same files, a Library item, a
+      // template, a legacy kit), under the same Upload row locks as every writer, and only the author's own uploads.
+      const uniqueUrls = [...new Set(allUrls)];
+      const deletedUrls = uniqueUrls.length
+        ? await releaseMedia(storageAdapter, uniqueUrls, authors, { ignoreJobs: failedJobs.map((j) => j.id), pauseMs: 200 })
+        : [];
+      if (deletedUrls.length) {
+        console.log(`[cleanup-cron] failed-job media: ${deletedUrls.length} file(s) deleted`);
       } else {
         console.log(`[cleanup-cron] failed-job media: nothing to clean`);
       }
