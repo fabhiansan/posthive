@@ -17,6 +17,9 @@ export function wibKey(d: Date): string {
   return new Date(d.getTime() + WIB_MS).toISOString().slice(0, 10);
 }
 
+/** The MCP and the public API save a post with no date as the epoch: that is "no date", not 1 January 1970. */
+export const realDate = (d: Date | null | undefined): Date | null => (d && d.getTime() > 0 ? d : null);
+
 /** The instant a WIB day starts. */
 export function wibStart(key: string): Date {
   return new Date(`${key}T00:00:00+07:00`);
@@ -385,7 +388,7 @@ export function toQueuePost(job: QueueRecord): QueuePost {
     submittedAt: job.submittedAt ? job.submittedAt.toISOString() : null,
     submittedBy: job.submittedBy?.name ?? job.user?.name ?? null,
     // The MCP and the public API save a post with no date as the epoch: that is "no date", not 1 January 1970
-    scheduledFor: job.scheduledFor && job.scheduledFor.getTime() > 0 ? job.scheduledFor.toISOString() : null,
+    scheduledFor: realDate(job.scheduledFor)?.toISOString() ?? null,
   };
 }
 

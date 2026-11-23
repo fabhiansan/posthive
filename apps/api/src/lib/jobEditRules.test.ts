@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canEditJob, sameContent, shouldResetReview } from "./jobEditRules.js";
+import { CANVAS_KEYS, canEditJob, sameContent, shouldResetReview, withoutCanvasKeys } from "./jobEditRules.js";
 
 describe("sameContent (what counts as a content change)", () => {
   it("ignores empty values the edit form always sends", () => {
@@ -93,5 +93,41 @@ describe("shouldResetReview", () => {
   it("never resets when a manage role edits", () => {
     expect(shouldResetReview("admin", inReview, true)).toBe(false);
     expect(shouldResetReview("owner", inReview, true)).toBe(false);
+  });
+});
+
+describe("sameContent: the keys it is told to ignore", () => {
+  const studio = '{"text":"a","canvasInstanceId":"ci","canvasTemplateId":"ct"}';
+
+  it("the Studio link is not a change, so opening the Studio never sends a post back out of review", () => {
+    expect(sameContent('{"text":"a"}', studio, CANVAS_KEYS)).toBe(true);
+    expect(sameContent(studio, '{"text":"a","canvasInstanceId":"other","canvasTemplateId":"ct"}', CANVAS_KEYS)).toBe(true);
+  });
+
+  it("without the list the same difference counts, and a real change still counts with it", () => {
+    expect(sameContent('{"text":"a"}', studio)).toBe(false);
+    expect(sameContent('{"text":"a"}', studio.replace('"a"', '"b"'), CANVAS_KEYS)).toBe(false);
+  });
+
+  it("content that is not an object is compared as it is", () => {
+    expect(sameContent("[1]", "[1]", CANVAS_KEYS)).toBe(true);
+    expect(sameContent("not json", "not json", CANVAS_KEYS)).toBe(true);
+    expect(sameContent("not json", "other", CANVAS_KEYS)).toBe(false);
+  });
+});
+
+describe("withoutCanvasKeys: what a copy of a post keeps", () => {
+  it("drops the Studio link and keeps everything else", () => {
+    expect(JSON.parse(withoutCanvasKeys('{"text":"a","youtubeTags":["x"],"canvasInstanceId":"ci","canvasTemplateId":"ct"}'))).toEqual({ text: "a", youtubeTags: ["x"] });
+  });
+
+  it("a post that has no link is returned as the very same string (not re-formatted)", () => {
+    const raw = '{ "text": "a" }';
+    expect(withoutCanvasKeys(raw)).toBe(raw);
+  });
+
+  it("content that is not an object is returned as it is", () => {
+    expect(withoutCanvasKeys("not json")).toBe("not json");
+    expect(withoutCanvasKeys("[1]")).toBe("[1]");
   });
 });

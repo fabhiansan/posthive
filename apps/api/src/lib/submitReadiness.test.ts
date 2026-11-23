@@ -8,6 +8,7 @@ const complete = {
     text: "Caption",
     mediaUrls: ["/uploads/a.png"],
     category: "Case Study",
+    format: "carousel",
   }),
   targetPlatforms: ["linkedin"],
 };
@@ -30,6 +31,11 @@ describe("missingForReview", () => {
     expect(missingForReview({ ...complete, scheduledFor: null })).toEqual(["date"]);
   });
 
+  it("the epoch the API saves for a post with no date is no date", () => {
+    expect(missingForReview({ ...complete, scheduledFor: new Date(0) })).toEqual(["date"]);
+    expect(missingForReview({ ...complete, scheduledFor: "1970-01-01T00:00:00.000Z" })).toEqual(["date"]);
+  });
+
   it("flags an empty caption", () => {
     expect(missingForReview(withContent({ text: "" }))).toEqual(["caption"]);
   });
@@ -42,6 +48,12 @@ describe("missingForReview", () => {
   it("flags a missing or unknown category", () => {
     expect(missingForReview(withContent({ category: null }))).toEqual(["category"]);
     expect(missingForReview(withContent({ category: "Nonsense" }))).toEqual(["category"]);
+  });
+
+  it("flags a missing format; single and carousel pass, anything else does not", () => {
+    expect(missingForReview(withContent({ format: undefined }))).toEqual(["format"]);
+    expect(missingForReview(withContent({ format: "reel" }))).toEqual(["format"]);
+    expect(missingForReview(withContent({ format: "single" }))).toEqual([]);
   });
 
   it("accepts imported free-text categories in other casing", () => {
@@ -63,11 +75,11 @@ describe("missingForReview", () => {
 
   it("lists every missing field, in form order", () => {
     expect(missingForReview({ scheduledFor: null, content: "{}", targetPlatforms: [] }))
-      .toEqual(["title", "date", "caption", "category", "accounts", "media"]);
+      .toEqual(["title", "date", "caption", "category", "format", "accounts", "media"]);
   });
 
   it("treats broken content JSON as empty", () => {
     expect(missingForReview({ ...complete, content: "not json" }))
-      .toEqual(["title", "caption", "category", "media"]);
+      .toEqual(["title", "caption", "category", "format", "media"]);
   });
 });

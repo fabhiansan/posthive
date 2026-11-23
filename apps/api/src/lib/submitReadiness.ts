@@ -2,7 +2,7 @@
 // Mirrored in apps/web/src/lib/submitReadiness.ts; keep both identical.
 import { normalizeCategory } from "./contentTypes.js";
 
-export type MissingField = "title" | "date" | "caption" | "category" | "accounts" | "media";
+export type MissingField = "title" | "date" | "caption" | "category" | "format" | "accounts" | "media";
 
 /** Platforms whose posts carry their own title/description instead of a caption. */
 const NO_CAPTION_PLATFORMS = new Set(["youtube", "pinterest"]);
@@ -13,6 +13,7 @@ interface Content {
   mediaUrls?: unknown;
   youtubeVideoUrl?: unknown;
   category?: unknown;
+  format?: unknown;
 }
 
 const filled = (v: unknown): boolean => typeof v === "string" && v.trim().length > 0;
@@ -30,7 +31,8 @@ export function missingForReview(input: {
 
   const missing: MissingField[] = [];
   if (!filled(content.title)) missing.push("title");
-  if (!input.scheduledFor) missing.push("date");
+  // the API saves a post with no date as the epoch
+  if (!input.scheduledFor || !(new Date(input.scheduledFor).getTime() > 0)) missing.push("date");
 
   const platforms = input.targetPlatforms;
   const captionOptional = platforms.length > 0 && platforms.every((p) => NO_CAPTION_PLATFORMS.has(p));
@@ -38,6 +40,7 @@ export function missingForReview(input: {
 
   // Pillar is derived from the category, so the category alone decides
   if (!normalizeCategory(content.category)) missing.push("category");
+  if (content.format !== "single" && content.format !== "carousel") missing.push("format");
   if (platforms.length === 0) missing.push("accounts");
 
   const hasMedia = (Array.isArray(content.mediaUrls) && content.mediaUrls.length > 0) || filled(content.youtubeVideoUrl);

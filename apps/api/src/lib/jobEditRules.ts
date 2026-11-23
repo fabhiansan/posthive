@@ -29,6 +29,27 @@ export function canEditJob(role: string | null | undefined, job: EditableJobStat
   return { ok: true };
 }
 
+/**
+ * The Canvas design a post opened from a template. Opening the Studio saves these two; that is not an edit of the post, so it
+ * never sends it back out of review (`sameContent` ignores them). A COPY of a post must not keep them: two posts would share
+ * one Studio design, and editing it for one would change the other.
+ */
+export const CANVAS_KEYS = ["canvasInstanceId", "canvasTemplateId"] as const;
+
+/** The content JSON without the Studio link; the very same string when it has none (a copy is not re-formatted). */
+export function withoutCanvasKeys(content: string): string {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return content;
+    const copy = { ...(parsed as Record<string, unknown>) };
+    if (!CANVAS_KEYS.some((k) => k in copy)) return content;
+    for (const k of CANVAS_KEYS) delete copy[k];
+    return JSON.stringify(copy);
+  } catch {
+    return content;
+  }
+}
+
 // Drops empty values and sorts keys, so `perAccount: {}` or `mediaUrls: []` that the
 // edit form always sends does not count as a change against content that omits them.
 function canonical(value: unknown): unknown {
@@ -47,10 +68,19 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-/** True when two content JSON strings carry the same meaningful values. */
-export function sameContent(a: string, b: string): boolean {
+/** True when two content JSON strings carry the same meaningful values, leaving out the top-level `ignore` keys. */
+export function sameContent(a: string, b: string, ignore: readonly string[] = []): boolean {
+  const without = (json: string): unknown => {
+    const v = JSON.parse(json) as unknown;
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const copy = { ...(v as Record<string, unknown>) };
+      for (const key of ignore) delete copy[key];
+      return copy;
+    }
+    return v;
+  };
   try {
-    return JSON.stringify(canonical(JSON.parse(a))) === JSON.stringify(canonical(JSON.parse(b)));
+    return JSON.stringify(canonical(without(a))) === JSON.stringify(canonical(without(b)));
   } catch {
     return a === b;
   }

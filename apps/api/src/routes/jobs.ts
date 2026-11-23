@@ -16,10 +16,13 @@ import { adapters } from "../adapters/index.js";
 import { attachUploads, mediaProblem, releaseMedia, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls, mediaUrlList, toStoredUrl } from "../lib/mediaUrl.js";
 import { bucketJobCounts, jobFilterWhere } from "../lib/jobFilters.js";
-import { canEditJob, sameContent, shouldResetReview } from "../lib/jobEditRules.js";
+import { CANVAS_KEYS, canEditJob, sameContent, shouldResetReview } from "../lib/jobEditRules.js";
+import { promoteRefusal } from "../lib/promoteGate.js";
 import { missingForReview, type MissingField } from "../lib/submitReadiness.js";
 import { firstSubmission, nextSubmission } from "../lib/submitStamp.js";
 import { CATEGORIES, PILLARS, pillarFor, type Category, type Pillar } from "../lib/contentTypes.js";
+import { safeLink } from "../lib/contentList.js";
+import { IN_DESIGN, NOT_IN_DESIGN, designRequestSelect, toDesignRequestView } from "../lib/designRequest.js";
 
 
 /**
@@ -68,6 +71,17 @@ function contentType(pillar: Pillar | null | undefined, category: Category | nul
   return { pillar: derived, category };
 }
 
+// The Figma (or any https) link to the customised design; "" clears it
+const designLink = z.string().trim().max(500).refine((v) => v === "" || (v.startsWith("https://") && safeLink(v) !== null), "Use an https link");
+
+// Content keys PATCH /jobs/:id may change. A key that is not sent keeps its stored value; null or "" clears it.
+const CONTENT_KEYS = [
+  "text", "mediaUrls", "mediaType", "youtubeType", "youtubeVideoMode", "youtubeVideoUrl", "youtubeThumbnailUrl",
+  "pixelfedSensitive", "pixelfedVisibility", "youtubeVisibility", "youtubeTags", "youtubeMadeForKids",
+  "linkedinVisibility", "blueskyLanguage", "blueskyContentWarning", "perAccount",
+  "format", "designFigmaUrl", "canvasInstanceId", "canvasTemplateId",
+] as const;
+
 const createJobBody = z.object({
   scheduledFor: z.string().datetime().optional(),
   draft: z.boolean().default(false),
@@ -95,9 +109,12 @@ const createJobBody = z.object({
     title: z.string().max(200).optional(),
     pillar: z.enum(PILLARS).nullable().optional(),
     category: z.enum(CATEGORIES).nullable().optional(),
+    format: z.enum(["single", "carousel"]).nullable().optional(),
+    designFigmaUrl: designLink.optional(),
   }),
   commentText: z.string().optional(),
-  accountIds: z.array(z.string().cuid()).min(1),
+  // A draft may have no account yet (the Edit Content page saves one before a channel is picked); scheduling needs one
+  accountIds: z.array(z.string().cuid()).default([]),
   dryRun: z.boolean().default(false),
   repeatInterval: z.enum(["daily", "weekly", "monthly"]).optional(),
   repeatEndsAt: z.string().datetime().optional(),
@@ -130,6 +147,9 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     if (!draft && !scheduledFor) {
       return reply.status(400).send({ error: "scheduledFor is required when not saving as draft" });
+    }
+    if (!draft && accountIds.length === 0) {
+      return reply.status(400).send({ error: "Pick at least one account" });
     }
     const { pillar, category, ...postContent } = content;
     const type = pillar !== undefined || category !== undefined ? contentType(pillar, category) : null;
@@ -389,11 +409,12 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const role = await getWorkspaceRole(userId, workspaceId);
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
-      include: { targets: { select: TARGET_SELECT } },
+      include: { targets: { select: TARGET_SELECT }, designRequest: { select: designRequestSelect(workspaceId) } },
     });
     if (!job) return reply.status(404).send({ error: "Job not found" });
     if (!isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
-    return reply.send(job);
+    const { designRequest, ...rest } = job;
+    return reply.send({ ...rest, designRequest: designRequest ? toDesignRequestView(designRequest) : null });
   });
 
   // Update a pending job (content, commentText, scheduledFor — all optional)
@@ -420,11 +441,16 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       linkedinVisibility: z.enum(["PUBLIC", "CONNECTIONS"]).optional(),
       blueskyLanguage: z.string().optional(),
       blueskyContentWarning: z.string().optional(),
-      accountIds: z.array(z.string().cuid()).min(1).optional(),
+      accountIds: z.array(z.string().cuid()).optional(),
       perAccount: z.record(z.string().cuid(), perAccountOverrideSchema).optional(),
       // Sent together; category null clears both
       pillar: z.enum(PILLARS).nullable().optional(),
       category: z.enum(CATEGORIES).nullable().optional(),
+      format: z.enum(["single", "carousel"]).nullable().optional(),
+      designFigmaUrl: designLink.optional(),
+      // The Canvas design the post opened from its template; saved when the Studio is opened
+      canvasInstanceId: z.string().cuid().nullable().optional(),
+      canvasTemplateId: z.string().cuid().nullable().optional(),
     }).safeParse(req.body);
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
     if (body.data.mediaUrls) {
@@ -453,35 +479,22 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (!editCheck.ok) {
       return reply.status(editCheck.status).send({ error: editCheck.error, ...(editCheck.code ? { code: editCheck.code } : {}) });
     }
+    // Only a plain draft (or one sent back) can be left with no account: a post in review or scheduled needs a channel
+    if (body.data.accountIds?.length === 0 && (job.status !== "draft" || job.approvalStatus === "pending")) {
+      return reply.status(400).send({ error: "Pick at least one account" });
+    }
 
     const updateData: Record<string, unknown> = {};
 
     if (body.data.scheduledFor) {
       updateData.scheduledFor = new Date(body.data.scheduledFor);
     }
-    if (body.data.title !== undefined || body.data.text !== undefined || body.data.mediaUrls !== undefined || body.data.mediaType !== undefined || body.data.youtubeType !== undefined || body.data.youtubeVideoMode !== undefined || body.data.youtubeVideoUrl !== undefined || body.data.youtubeThumbnailUrl !== undefined || body.data.pixelfedSensitive !== undefined || body.data.pixelfedVisibility !== undefined || body.data.youtubeVisibility !== undefined || body.data.youtubeTags !== undefined || body.data.youtubeMadeForKids !== undefined || body.data.linkedinVisibility !== undefined || body.data.blueskyLanguage !== undefined || body.data.blueskyContentWarning !== undefined || body.data.perAccount !== undefined || typeChanged) {
-      const existing = JSON.parse(job.content) as { text: string; mediaUrls?: string[]; mediaType?: string; youtubeType?: string; youtubeVideoMode?: string; youtubeVideoUrl?: string; youtubeThumbnailUrl?: string; pixelfedSensitive?: boolean; pixelfedVisibility?: string; youtubeVisibility?: string; youtubeTags?: string[]; youtubeMadeForKids?: boolean; linkedinVisibility?: string; blueskyLanguage?: string; blueskyContentWarning?: string; perAccount?: Record<string, unknown> };
-      updateData.content = JSON.stringify({
-        ...existing,
-        ...(body.data.title !== undefined ? { title: body.data.title.trim() } : {}),
-        ...(body.data.text !== undefined ? { text: body.data.text } : {}),
-        ...(body.data.mediaUrls !== undefined ? { mediaUrls: body.data.mediaUrls } : {}),
-        ...(body.data.mediaType !== undefined ? { mediaType: body.data.mediaType } : {}),
-        ...(body.data.youtubeType !== undefined ? { youtubeType: body.data.youtubeType } : {}),
-        ...(body.data.youtubeVideoMode !== undefined ? { youtubeVideoMode: body.data.youtubeVideoMode } : {}),
-        ...(body.data.youtubeVideoUrl !== undefined ? { youtubeVideoUrl: body.data.youtubeVideoUrl } : {}),
-        ...(body.data.youtubeThumbnailUrl !== undefined ? { youtubeThumbnailUrl: body.data.youtubeThumbnailUrl } : {}),
-        ...(body.data.pixelfedSensitive !== undefined ? { pixelfedSensitive: body.data.pixelfedSensitive } : {}),
-        ...(body.data.pixelfedVisibility !== undefined ? { pixelfedVisibility: body.data.pixelfedVisibility } : {}),
-        ...(body.data.youtubeVisibility !== undefined ? { youtubeVisibility: body.data.youtubeVisibility } : {}),
-        ...(body.data.youtubeTags !== undefined ? { youtubeTags: body.data.youtubeTags } : {}),
-        ...(body.data.youtubeMadeForKids !== undefined ? { youtubeMadeForKids: body.data.youtubeMadeForKids } : {}),
-        ...(body.data.linkedinVisibility !== undefined ? { linkedinVisibility: body.data.linkedinVisibility } : {}),
-        ...(body.data.blueskyLanguage !== undefined ? { blueskyLanguage: body.data.blueskyLanguage } : {}),
-        ...(body.data.blueskyContentWarning !== undefined ? { blueskyContentWarning: body.data.blueskyContentWarning } : {}),
-        ...(body.data.perAccount !== undefined ? { perAccount: body.data.perAccount } : {}),
-        ...(type ?? {}),
-      });
+    const changes: Record<string, unknown> = {};
+    for (const key of CONTENT_KEYS) if (body.data[key] !== undefined) changes[key] = body.data[key];
+    if (body.data.title !== undefined) changes.title = body.data.title.trim();
+    if (Object.keys(changes).length > 0 || typeChanged) {
+      const existing = JSON.parse(job.content) as Record<string, unknown>;
+      updateData.content = JSON.stringify({ ...existing, ...changes, ...(type ?? {}) });
     }
     if (body.data.commentText !== undefined) {
       updateData.commentText = body.data.commentText || null;
@@ -493,7 +506,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       (body.data.accountIds.length !== job.targets.length ||
         body.data.accountIds.some((a) => !job.targets.some((t) => t.accountId === a)));
     const contentChanged =
-      (updateData.content !== undefined && !sameContent(updateData.content as string, job.content)) ||
+      (updateData.content !== undefined && !sameContent(updateData.content as string, job.content, CANVAS_KEYS)) ||
       (updateData.commentText !== undefined && updateData.commentText !== job.commentText) ||
       accountsChanged;
     if (shouldResetReview(role, job, contentChanged)) {
@@ -590,10 +603,13 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
     }
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true } });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, designRequest: { select: { status: true } }, targets: { select: { id: true }, take: 1 } } });
     // Other people's plain drafts are hidden from approvers — only in-review ones can be promoted
     if (!job || !isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only draft jobs can be scheduled" });
+    // The design is with the designer, or there is no account to post to (approving a post already in review is unaffected)
+    const refused = promoteRefusal(job);
+    if (refused) return reply.status(refused.status).send(refused.body);
 
     const blocked = await enforcePlan(userId, workspaceId, "scheduling");
     if (blocked) return reply.status(402).send(blocked);
@@ -657,7 +673,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
-      select: { status: true, approvalStatus: true, scheduledFor: true, content: true, targets: { select: { account: { select: { platform: true } } } } },
+      select: { status: true, approvalStatus: true, scheduledFor: true, content: true, designRequest: { select: { status: true } }, targets: { select: { account: { select: { platform: true } } } } },
     });
     if (!job) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only drafts can be submitted for review" });
@@ -668,6 +684,8 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     // Submitting is a content-editor action (designer reviews, never submits)
     // Any draft of the workspace: a plan is imported by one person and kept by the team
     if (!isContentEditorRole(role)) return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    // The design is with the designer: Marketing cancels the request or waits for the design
+    if (job.designRequest?.status === "sent") return reply.status(409).send(IN_DESIGN);
     const missing = missingForReview(readinessInput(job));
     if (missing.length > 0) {
       return reply.status(422).send({ error: `Complete the required fields first: ${missing.join(", ")}.`, code: "INCOMPLETE", missing });
@@ -675,7 +693,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     try {
       const updated = await prisma.postJob.update({
-        where: { id, workspaceId, status: "draft", OR: SUBMITTABLE },
+        where: { id, workspaceId, status: "draft", OR: SUBMITTABLE, ...NOT_IN_DESIGN },
         data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
         include: { targets: { select: TARGET_SELECT } },
       });
@@ -701,7 +719,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     const jobs = await prisma.postJob.findMany({
       where: { id: { in: body.data.ids }, workspaceId },
-      select: { id: true, status: true, approvalStatus: true, scheduledFor: true, content: true, targets: { select: { account: { select: { platform: true } } } } },
+      select: { id: true, status: true, approvalStatus: true, scheduledFor: true, content: true, designRequest: { select: { status: true } }, targets: { select: { account: { select: { platform: true } } } } },
     });
     const byId = new Map(jobs.map((j) => [j.id, j]));
     const submit: string[] = [];
@@ -717,6 +735,8 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
         skipped.push({ id, title, reason: "Already in review" });
       } else if (job.approvalStatus === "rejected") {
         skipped.push({ id, title, reason: "Sent back for changes: change it first" });
+      } else if (job.designRequest?.status === "sent") {
+        skipped.push({ id, title, reason: "Design requested: waiting for the designer" });
       } else {
         const missing = missingForReview(readinessInput(job));
         if (missing.length > 0) skipped.push({ id, title, reason: "Missing required fields", missing });
@@ -726,7 +746,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     if (submit.length > 0) {
       await prisma.postJob.updateMany({
-        where: { id: { in: submit }, workspaceId, status: "draft", OR: SUBMITTABLE },
+        where: { id: { in: submit }, workspaceId, status: "draft", OR: SUBMITTABLE, ...NOT_IN_DESIGN },
         data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
       });
     }

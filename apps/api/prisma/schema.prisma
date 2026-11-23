@@ -45,6 +45,8 @@ model User {
   postJobs           PostJob[]
   reviewedJobs       PostJob[]           @relation("PostJobReviewedBy")
   submittedJobs      PostJob[]           @relation("PostJobSubmittedBy")
+  designRequestsAssigned DesignRequest[] @relation("DesignRequestAssignee")
+  designRequestsCreated  DesignRequest[] @relation("DesignRequestCreatedBy")
   loginEvents        LoginEvent[]
   recoveryCodes      RecoveryCode[]
   totpChallenges     TotpChallenge[]
@@ -99,6 +101,7 @@ model Workspace {
   designs          Design[]
   designSubmissions    DesignSubmission[]
   designReviewRequests DesignReviewRequest[]
+  designRequests       DesignRequest[]
 
   // Back-ref for users whose activeWorkspace points here
   activeForUsers User[] @relation("UserActiveWorkspace")
@@ -266,7 +269,8 @@ model PostJob {
   workspaceId String?
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  targets PostJobTarget[]
+  targets       PostJobTarget[]
+  designRequest DesignRequest?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -571,6 +575,31 @@ model DesignReviewRequest {
   createdAt         DateTime         @default(now())
 
   @@index([workspaceId, status, createdAt, id])
+}
+
+// Marketing's request to a designer for the design of one post (Path B of the Edit Content page): who, by when, and the
+// brief. Not the Canvas DesignReviewRequest (that is a designer's answer to a Canvas submission). "draft" is a saved brief
+// Marketing can still change; "sent" is locked until Marketing cancels it. The assignee is nullable so deleting a user
+// keeps the brief; a designer who left the workspace stays here and the API reports them as no longer active.
+model DesignRequest {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  postJobId    String    @unique
+  postJob      PostJob   @relation(fields: [postJobId], references: [id], onDelete: Cascade)
+  assigneeId   String?
+  assignee     User?     @relation("DesignRequestAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  deadline     DateTime? // optional; an instant (WIB wall clock in the UI), before the post's publishing time
+  brief        String
+  referenceUrl String?
+  status       String    @default("draft") // draft | sent
+  sentAt       DateTime?
+  createdById  String?
+  createdBy    User?     @relation("DesignRequestCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([workspaceId, assigneeId, status])
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.

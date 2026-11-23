@@ -24,6 +24,7 @@ import { contentMediaUrls } from "../lib/mediaUrl.js";
 import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
 import { explainPublishError, textLimitProblem } from "../lib/publishError.js";
+import { withoutCanvasKeys } from "../lib/jobEditRules.js";
 import type { PostResult, CommentResult } from "../adapters/types.js";
 
 const MAX_ATTEMPTS = 3;
@@ -182,7 +183,7 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
                 status: needsApproval ? "draft" : "pending",
                 approvalStatus: needsApproval ? "pending" : null,
                 ...(needsApproval ? firstSubmission(fullJob.userId) : {}),
-                content: fullJob.content,
+                content: withoutCanvasKeys(fullJob.content),
                 commentText: fullJob.commentText,
                 userId: fullJob.userId,
                 workspaceId: fullJob.workspaceId,

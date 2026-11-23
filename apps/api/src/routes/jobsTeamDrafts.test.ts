@@ -114,8 +114,9 @@ const draft = (patch: Record<string, unknown> = {}) => ({
   userId: "head-of-marketing",
   scheduledFor: new Date("2026-03-07T01:00:00Z"),
   commentText: null,
-  content: JSON.stringify({ title: "T", text: "Caption", category: "Blog Post", mediaUrls: ["/uploads/a.png"] }),
+  content: JSON.stringify({ title: "T", text: "Caption", category: "Blog Post", format: "single", mediaUrls: ["/uploads/a.png"] }),
   targets: [{ accountId: "acc-1", account: { platform: "instagram" } }],
+  designRequest: null,
   ...patch,
 });
 
@@ -298,7 +299,7 @@ describe("POST /jobs/:id/submit: a colleague sends the head's draft for review",
   });
 
   it("still refuses a draft that lacks a field, naming it", async () => {
-    h.job = draft({ content: JSON.stringify({ title: "T", category: "Blog Post" }) });
+    h.job = draft({ content: JSON.stringify({ title: "T", category: "Blog Post", format: "single" }) });
     const res = await submit();
     expect(res.statusCode).toBe(422);
     expect(res.json().missing).toEqual(["caption", "media"]);

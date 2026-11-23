@@ -5,6 +5,8 @@ import { withApiKey } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN } from "../lib/auth/withAuth.js";
 import { designReference, findExternalTemplate, listExternalTemplates } from "../lib/templates.js";
 import { firstSubmission } from "../lib/submitStamp.js";
+import { promoteRefusal } from "../lib/promoteGate.js";
+import { withoutCanvasKeys } from "../lib/jobEditRules.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
@@ -437,9 +439,15 @@ export async function publicApiRoutes(
       return reply.status(403).send({ error: "Only workspace admins or designers can approve drafts.", code: "FORBIDDEN" });
     }
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId } });
+    const job = await prisma.postJob.findFirst({
+      where: { id, workspaceId },
+      include: { designRequest: { select: { status: true } }, targets: { select: { id: true }, take: 1 } },
+    });
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: `Post status is '${job.status}' — only drafts can be approved` });
+    // the design is with the designer, or there is no account to post to
+    const refused = promoteRefusal(job);
+    if (refused) return reply.status(refused.status).send(refused.body);
 
     const updated = await prisma.postJob.update({
       where: { id },
@@ -489,7 +497,7 @@ export async function publicApiRoutes(
               workspaceId,
               scheduledFor: new Date(0),
               status: "draft",
-              content: job.content,
+              content: withoutCanvasKeys(job.content),
               commentText: job.commentText,
               dryRun: false,
               targets: { create: job.targets.map((t) => ({ accountId: t.accountId })) },

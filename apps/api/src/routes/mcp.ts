@@ -27,6 +27,8 @@ import { designReference, findExternalTemplate, listExternalTemplates } from "..
 import { firstSubmission } from "../lib/submitStamp.js";
 import { attachUploads, lockForCopy, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
+import { promoteRefusal } from "../lib/promoteGate.js";
+import { withoutCanvasKeys } from "../lib/jobEditRules.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -585,11 +587,17 @@ export async function handleTool(
         throw new Error("Approval required — only workspace admins or designers can approve drafts in this workspace.");
       }
 
-      const job = await prisma.postJob.findUnique({ where: { id: postId } });
+      const job = await prisma.postJob.findUnique({
+        where: { id: postId },
+        include: { designRequest: { select: { status: true } }, targets: { select: { id: true }, take: 1 } },
+      });
       if (!job || job.workspaceId !== workspaceId) throw new Error("Post not found");
       if (job.status !== "draft") {
         throw new Error(`Post status is '${job.status}' — only drafts can be approved`);
       }
+      // the design is with the designer, or there is no account to post to
+      const refused = promoteRefusal(job);
+      if (refused) throw new Error(refused.body.error);
       if (!isManageRole(ctx.role) && job.userId !== userId) {
         throw new Error("You can only approve your own drafts.");
       }
@@ -692,7 +700,7 @@ export async function handleTool(
               workspaceId,
               scheduledFor: new Date(0),
               status: "draft",
-              content: job.content,
+              content: withoutCanvasKeys(job.content),
               commentText: job.commentText,
               dryRun: false,
               targets: { create: job.targets.map((t) => ({ accountId: t.accountId })) },

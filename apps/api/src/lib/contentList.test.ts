@@ -188,6 +188,14 @@ describe("toDetail", () => {
   it("a pillar the file wrote wins over the category's", () => {
     expect(toDetail(detail({ content: { title: "T", pillar: "Promotional", category: "Blog Post" } })).pillar).toBe("Promotional");
   });
+
+  it("the design request: who has it and the deadline as an ISO instant, or null when there is none (it is optional)", () => {
+    const withDeadline = toDetail(detail({ content: { title: "T" }, designRequest: { status: "sent", deadline: new Date("2026-03-04T03:00:00Z"), assignee: { name: "Rina Sari" } } }));
+    expect(withDeadline.designRequest).toEqual({ status: "sent", assignee: "Rina Sari", deadline: "2026-03-04T03:00:00.000Z" });
+    const open = toDetail(detail({ content: { title: "T" }, designRequest: { status: "draft", deadline: null, assignee: null } }));
+    expect(open.designRequest).toEqual({ status: "draft", assignee: null, deadline: null });
+    expect(toDetail(detail({ content: { title: "T" } })).designRequest).toBeNull();
+  });
 });
 
 describe("activityOf", () => {
@@ -245,7 +253,7 @@ describe("activityOf", () => {
 });
 
 describe("toDetail: what is still missing before review", () => {
-  const complete = { title: "T", text: "Caption", category: "Blog Post", mediaUrls: ["/uploads/a.png"] };
+  const complete = { title: "T", text: "Caption", category: "Blog Post", format: "single", mediaUrls: ["/uploads/a.png"] };
   const withAccount = [{ status: "pending", error: null, account: { platform: "instagram", displayName: "@a" } }];
 
   it("a post with everything the review needs lacks nothing", () => {
@@ -253,13 +261,13 @@ describe("toDetail: what is still missing before review", () => {
   });
 
   it("a draft that came in from a plan lacks its account and its media, in form order", () => {
-    const planned = { title: "T", text: "Caption", category: "Blog Post", platforms: ["linkedin"], sourceRow: 1 };
+    const planned = { title: "T", text: "Caption", category: "Blog Post", format: "single", platforms: ["linkedin"], sourceRow: 1 };
     // the channel the file named is not an account: the review needs a connected one
     expect(toDetail(detail({ content: planned })).missing).toEqual(["accounts", "media"]);
   });
 
-  it("each field is named: title, date, caption, category, account, media", () => {
-    expect(toDetail(detail({ content: {}, scheduledFor: null })).missing).toEqual(["title", "date", "caption", "category", "accounts", "media"]);
+  it("each field is named: title, date, caption, category, format, account, media", () => {
+    expect(toDetail(detail({ content: {}, scheduledFor: null })).missing).toEqual(["title", "date", "caption", "category", "format", "accounts", "media"]);
   });
 
   it("a caption is not needed when every channel carries its own text (YouTube, Pinterest)", () => {
@@ -268,7 +276,7 @@ describe("toDetail: what is still missing before review", () => {
   });
 
   it("is the same answer the submit route gives for the same post", () => {
-    const j = detail({ content: { title: "T", text: "", category: "Blog Post" }, targets: withAccount });
+    const j = detail({ content: { title: "T", text: "", category: "Blog Post", format: "single" }, targets: withAccount });
     expect(toDetail(j).missing).toEqual(["caption", "media"]);
   });
 });

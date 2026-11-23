@@ -341,9 +341,9 @@ describe("GET /jobs/:id/detail", () => {
   });
 
   it("lists what the post still lacks before review, from the content and the accounts it has", async () => {
-    h.job = detailRow({ content: JSON.stringify({ title: "T", text: "C", category: "Blog Post" }), targets: [] });
+    h.job = detailRow({ content: JSON.stringify({ title: "T", text: "C", category: "Blog Post", format: "single" }), targets: [] });
     expect((await app.inject({ method: "GET", url: "/jobs/p1/detail" })).json().missing).toEqual(["accounts", "media"]);
-    h.job = detailRow({ content: JSON.stringify({ title: "T", text: "C", category: "Blog Post", mediaUrls: ["/uploads/a.png"] }), targets: [{ status: "pending", error: null, account: { platform: "instagram", displayName: "@a" } }] });
+    h.job = detailRow({ content: JSON.stringify({ title: "T", text: "C", category: "Blog Post", format: "single", mediaUrls: ["/uploads/a.png"] }), targets: [{ status: "pending", error: null, account: { platform: "instagram", displayName: "@a" } }] });
     expect((await app.inject({ method: "GET", url: "/jobs/p1/detail" })).json().missing).toEqual([]);
   });
 

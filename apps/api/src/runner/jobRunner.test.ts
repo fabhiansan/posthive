@@ -121,6 +121,12 @@ describe("runJob: a repeating post's next occurrence", () => {
     expect(h.created[0]).not.toHaveProperty("submittedAt");
     expect(h.created[0]).not.toHaveProperty("submitCount");
   });
+
+  it("the next one does not share the Studio design of this one: that link is copied by no one", async () => {
+    h.full = finished({ content: JSON.stringify({ ...content, canvasInstanceId: "ci", canvasTemplateId: "ct" }) });
+    await runJob(job(content));
+    expect(JSON.parse(h.created[0].content as string)).toEqual(content);
+  });
 });
 
 describe("runJob: a post that does not go out says why in words a person can use", () => {
