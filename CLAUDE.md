@@ -51,7 +51,8 @@ pnpm db:seed-dev <password>   # Local dev only: workspace with admin@/marketing@
 |------|--------|---------|
 | `routes/auth.ts` | `/auth/*` | JWT login/register + Threads, Instagram, LinkedIn, YouTube, Facebook, Pinterest, Mastodon, Twitter, Discord, Tumblr OAuth + Lemmy credential connect |
 | `routes/accounts.ts` | `/accounts` | List/disconnect social accounts |
-| `routes/jobs.ts` | `/jobs` | CRUD + reschedule + delete scheduled posts |
+| `routes/jobs.ts` | `/jobs` | CRUD + reschedule + delete scheduled posts. `PATCH /jobs/:id` sends only the keys that changed (`CONTENT_KEYS` in the file): a key left out keeps its stored value, so a page that edits a few fields never wipes the rest of a post's JSON. The content also holds `format` (`single` or `carousel`, required before review: `missingForReview`), `designFigmaUrl` (the link to the customised design, https only) and `canvasInstanceId` + `canvasTemplateId` (the Canvas design the post opened from a template; saving them is not an edit, so it never sends a post back out of review: `sameContent` ignores them). A draft may have no account yet; scheduling needs one |
+| `routes/designRequests.ts` | `/design-requests/designers`, `/jobs/:id/design-request` | Path B of the Edit Content page: Marketing asks a designer for a post's design. `PUT` saves the brief (`send: false`) or sends it (`send: true`: locked); `POST …/cancel` takes a sent one back (the brief stays). One row per post (`DesignRequest`), a plain draft only (not in review, not scheduled); the designer must be a `designer` member of the workspace; the deadline is optional (an ISO instant, WIB date + time in the UI): when set it is later than now and strictly before the publishing date AND time (`deadlineProblem` in `lib/designRequest.ts`; a post with no date, the epoch, only needs "later than now"); a publishing time moved before a sent request's deadline afterwards only shows a warning on the page. While a request is `sent`, `POST /jobs/:id/submit`, `/jobs/submit-bulk` and `/jobs/:id/schedule` (on a plain draft) answer 409 `IN_DESIGN` / skip it, in the write's own WHERE (`NOT_IN_DESIGN`). `GET /design-requests/designers` is for Marketing and admins and answers name + photo only (no e-mail). The designer's side (My Task, returning a Figma link, notifications) is not built yet |
 | `routes/upload.ts` | `/upload` | Image/video upload → local disk or Supabase Storage |
 | `routes/billing.ts` | `/billing` | Dodo Payments checkout + webhook |
 | `routes/user.ts` | `/user` | Profile info + `/auth/refresh` (rate-limited 20/15 min) + `/auth/ping` (activity heartbeat) |
@@ -124,8 +125,9 @@ All 10 tools mirror the HTTP MCP server: `list_accounts`, `create_post`, `get_po
 | Route | File | Purpose |
 |-------|------|---------|
 | `/` | `app/page.tsx` | Landing page (public) |
-| `/compose` | `app/compose/page.tsx` | Compose — write post, pick accounts, schedule |
-| `/jobs` | `app/jobs/page.tsx` | Posts — list + calendar view |
+| `/compose` | `app/compose/page.tsx` | Add Content: the same editor as `/jobs/[id]/edit` for a post that does not exist yet (`components/post-editor`). `/compose?template=<id>` fills pillar + category; `?design=` is the Canvas review hand-off |
+| `/jobs/[id]/edit` | `app/jobs/[id]/edit/page.tsx` | Edit Content (docs/design/Edit Content · Path A, Path B): A basics, B design path (a template + Open Studio Editor in a new tab, or Assign to Designer), C upload design (PNG/JPG ≤ 10 MB, one file per slide), D preview + review workflow, a sticky Cancel / Save as Draft / Submit bar. Only LinkedIn and Instagram are shown; a save sends only what changed, so what the page does not show (YouTube fields, other channels, per-channel text, a first comment) stays as stored. Not for the design team (`lib/permissions.ts`) |
+| `/jobs` | `app/jobs/page.tsx` | Content List — table, Kanban and calendar views + the post drawer |
 | `/templates` | `app/templates/page.tsx` | Template Library — Master Template for the design team (drafts + published, upload, delete, export), published-only read mode for Marketing; `/templates/[id]` is the detail page (edit, publish/unpublish, delete) |
 | `/accounts` | `app/accounts/page.tsx` | Connect/disconnect social accounts |
 | `/billing` | `app/billing/page.tsx` | Plan status + upgrade |
@@ -310,6 +312,7 @@ Schema at `apps/api/prisma/schema.prisma`. Migrations use Postgres SQL.
 | `AuthSession` | Server-side login session (local auth). Access JWT carries its id as `sid`; refresh token is opaque, hashed, rotated on use. Idle 1h, absolute 7d (`lib/auth/sessionPolicy.ts`). |
 | `Account` | Connected social account. Credentials AES-256-GCM encrypted. |
 | `PostJob` | A scheduled post. Has `content` (JSON string), status, scheduledFor. |
+| `DesignRequest` | Marketing's request to a designer for one post's design (brief, deadline, reference link; `draft` or `sent`). One per post, cascades on post delete. Not the Canvas `DesignReviewRequest`. |
 | `PostJobTarget` | One per platform per PostJob. Tracks per-platform status + errors. Cascades on PostJob delete. |
 | `Template` | Design template: one per workspace + category (Figma link / preview). Legacy `content` JSON is deprecated. |
 | `LegacyTemplateMedia` | Files of old template kits that posts still share — never deleted by post cleanup (`withoutTemplateMedia`). |
@@ -343,7 +346,7 @@ Schema at `apps/api/prisma/schema.prisma`. Migrations use Postgres SQL.
 9. Add to `PLATFORMS_NAV` in `apps/web/src/components/LandingNav.tsx`
 10. Add platform data object in `apps/web/src/app/platforms/[platform]/page.tsx`
 11. Add docs section in `apps/web/src/app/docs/page.tsx`
-12. Add to `NO_COMMENT_PLATFORMS` in compose, EditPostDialog, and `jobRunner.ts` if the platform has no comment API
+12. Add to `NO_COMMENT_PLATFORMS` in `jobRunner.ts` if the platform has no comment API (the editor page shows only LinkedIn and Instagram: a new platform needs its own cards there)
 13. Add env vars to `apps/api/.env.example` and document in `README.md`
 
 ---
