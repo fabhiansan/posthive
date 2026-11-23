@@ -14,15 +14,19 @@ interface Props {
   value: string; // "HH:MM"
   onChange: (v: string) => void;
   className?: string;
+  /** Names the two selects for a screen reader when a page has more than one time ("Deadline hour"); default "Hour" / "Minute". */
+  label?: string;
 }
 
-export function TimeInput24({ value, onChange, className }: Props) {
+export function TimeInput24({ value, onChange, className, label }: Props) {
   const [h = "09", m = "00"] = value.split(":");
+  const hourName = label ? `${label} hour` : "Hour";
+  const minuteName = label ? `${label} minute` : "Minute";
 
   return (
     <div className={cn("flex items-center gap-1", className)}>
       <NativeSelect
-        aria-label="Hour"
+        aria-label={hourName}
         value={h}
         onChange={(e) => onChange(`${e.target.value}:${m}`)}
         containerClassName="w-auto flex-1"
@@ -32,7 +36,7 @@ export function TimeInput24({ value, onChange, className }: Props) {
       </NativeSelect>
       <span className="type-body-r-xs text-neutral-500">:</span>
       <NativeSelect
-        aria-label="Minute"
+        aria-label={minuteName}
         value={m}
         onChange={(e) => onChange(`${h}:${e.target.value}`)}
         containerClassName="w-auto flex-1"

@@ -70,6 +70,11 @@ export interface PostDetail extends ListItem {
   mine: boolean;
   /** What the post still lacks before it can be sent for review (the server's own rule); empty = complete. */
   missing: MissingField[];
+  format: "single" | "carousel" | null;
+  /** The link to the customised design that Marketing saved. */
+  designFigmaUrl: string | null;
+  /** The request to a designer, when there is one; `deadline` is an ISO instant, or null (it is optional). */
+  designRequest: { status: string; assignee: string | null; deadline: string | null } | null;
 }
 
 // ── The six statuses ────────────────────────────────────────────────────────

@@ -11,6 +11,19 @@ export interface JobTarget {
   account: { platform: string; displayName: string; avatarUrl: string | null } | null;
 }
 
+/** A request from Marketing to a designer for the design of one post (Path B). `deadline` is an ISO instant, or null: it is optional. */
+export interface DesignRequestView {
+  id: string;
+  status: string; // draft = a saved brief | sent = with the designer, locked
+  /** `active` is false once they left the design team; null once their account is gone. */
+  assignee: { id: string; name: string; avatarUrl: string | null; active: boolean } | null;
+  deadline: string | null;
+  brief: string;
+  referenceUrl: string | null;
+  sentAt: string | null;
+  updatedAt: string;
+}
+
 export interface Job {
   id: string;
   userId?: string;
@@ -20,6 +33,8 @@ export interface Job {
   commentText: string | null;
   dryRun: boolean;
   createdAt: string;
+  updatedAt?: string;
+  designRequest?: DesignRequestView | null;
   repeatInterval?: string | null;
   repeatParentId?: string | null;
   approvalStatus?: string | null; // pending | approved | rejected | null

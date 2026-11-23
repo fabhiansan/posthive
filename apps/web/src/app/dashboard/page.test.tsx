@@ -14,16 +14,17 @@ const h = vi.hoisted(() => ({
   workspaceLoading: false,
   approvalRequired: false,
   toast: { success: vi.fn(), error: vi.fn() },
+  push: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch, assetUrl: (u: string) => u }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }) }));
 vi.mock("@/context/AuthContext", () => ({ useAuth: () => ({ user: { name: "Putri Anggraini", avatarUrl: null, role: h.role } }) }));
 vi.mock("@/context/WorkspaceContext", () => ({
   useWorkspace: () => ({ activeWorkspace: h.workspaceLoading ? null : { id: h.workspace, role: h.role, approvalRequired: h.approvalRequired }, loading: h.workspaceLoading }),
 }));
 vi.mock("@/components/Toast", () => ({ useToast: () => h.toast }));
 // The dialogs have their own tests; here only that the page hands them the right post
-vi.mock("@/components/EditPostDialog", () => ({ EditPostDialog: ({ job }: { job: { id: string } }) => <div role="dialog" aria-label="edit dialog">{job.id}</div> }));
 vi.mock("@/components/ReviewDialog", () => ({ ReviewDialog: ({ job }: { job: { id: string } }) => <div role="dialog" aria-label="review dialog">{job.id}</div> }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
@@ -797,7 +798,7 @@ describe("dashboard page: acting on the content list", () => {
     expect(bar()).toBeNull();
   });
 
-  it("nothing asks for the accounts or the design references until a post is opened, and then only once", async () => {
+  it("nothing asks for the design references until a post is opened, and then only once; the accounts are the editor page's, not the dashboard's", async () => {
     serveActions();
     render(<DashboardPage />);
     await screen.findByText("Plain draft");
@@ -807,7 +808,7 @@ describe("dashboard page: acting on the content list", () => {
     await userEvent.click(screen.getByRole("row", { name: "Open Plain draft" }));
     await screen.findByRole("heading", { name: "Plain draft" });
     await waitFor(() => expect(asked("/templates")).toBe(1));
-    expect(asked("/accounts")).toBe(1);
+    expect(asked("/accounts")).toBe(0);
   });
 });
 

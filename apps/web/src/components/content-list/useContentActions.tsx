@@ -1,13 +1,13 @@
 "use client";
 
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { ContentDrawer } from "@/components/content-list/ContentDrawer";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
-import type { Account } from "@/components/PlatformPreview";
 import { apiFetch } from "@/lib/api";
 import { filterOf } from "@/lib/content-list";
-import { approveJob, deleteJob, deleteMany, fetchJob, rejectJob, retryFailed, savedMessage, submitForReview, submitMany, updateJob } from "@/lib/jobActions";
+import { approveJob, deleteJob, deleteMany, fetchJob, rejectJob, retryFailed, submitForReview, submitMany } from "@/lib/jobActions";
 import type { Job } from "@/lib/jobTypes";
 import { MISSING_LABEL, type MissingField } from "@/lib/submitReadiness";
 import type { DesignTemplate } from "@/lib/templates";
@@ -15,9 +15,8 @@ import { usePermissions } from "@/lib/usePermissions";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-// The two big dialogs (about 1,200 lines) open only after a click: loaded then, so a page that only lists posts, the
-// dashboard above all, does not carry them
-const EditPostDialog = lazy(() => import("@/components/EditPostDialog").then((m) => ({ default: m.EditPostDialog })));
+// The review dialog opens only after a click: loaded then, so a page that only lists posts, the dashboard above all,
+// does not carry it
 const ReviewDialog = lazy(() => import("@/components/ReviewDialog").then((m) => ({ default: m.ReviewDialog })));
 
 /** What the actions need to know of a row: which post it is and where it stands. The list and the dashboard each have their own row. */
@@ -29,7 +28,7 @@ export interface ActionRow {
 
 /**
  * Everything a list of posts does with a row, for the Content List and for the dashboard's table: open a post in the
- * drawer, tick rows, send them for review, delete them, edit, review, retry. `rows` are the rows on screen; `reload` asks
+ * drawer, tick rows, send them for review, delete them, edit (the editor page), review, retry. `rows` are the rows on screen; `reload` asks
  * for them again after a change. `layer` is the drawer and the dialogs: render it once, anywhere in the page.
  *
  * `keepGone`: the Content List keeps a tick when its row is on another page (the person turns pages and ticks on). A list
@@ -37,6 +36,7 @@ export interface ActionRow {
  * or the bar would count, and Delete would reach, a post nobody can see.
  */
 export function useContentActions({ rows, reload, keepGone = true }: { rows: readonly ActionRow[]; reload: () => void; keepGone?: boolean }) {
+  const router = useRouter();
   const { success, error: toastError } = useToast();
   const { canEditContent, canReview, canSubmitOwn } = usePermissions();
 
@@ -45,20 +45,15 @@ export function useContentActions({ rows, reload, keepGone = true }: { rows: rea
   const [picked, setPicked] = useState<Map<string, ActionRow>>(new Map());
   const selected = useMemo(() => new Set(picked.keys()), [picked]);
   const [busy, setBusy] = useState(false);
-  const [accounts, setAccounts] = useState<Account[]>([]);
   const [templates, setTemplates] = useState<DesignTemplate[]>([]);
-  const [editing, setEditing] = useState<Job | null>(null);
   const [reviewing, setReviewing] = useState<Job | null>(null);
   const [deleting, setDeleting] = useState<string[] | null>(null);
 
-  // The accounts and the design references are for the drawer and the dialogs only: asked the first time one is wanted
-  // (a page that only lists posts does not ask), and once. A failed answer leaves the list empty, as it always did.
+  // The design references are for the drawer and the review dialog only: asked the first time one is wanted (a page that
+  // only lists posts does not ask), and once. A failed answer leaves the list empty, as it always did.
   const lookups = useRef<Promise<unknown> | null>(null);
   function loadLookups() {
-    lookups.current ??= Promise.all([
-      apiFetch<Account[]>("/accounts").then(setAccounts).catch(() => {}),
-      apiFetch<{ templates: DesignTemplate[] }>("/templates").then((d) => setTemplates(d.templates)).catch(() => {}),
-    ]);
+    lookups.current ??= apiFetch<{ templates: DesignTemplate[] }>("/templates").then((d) => setTemplates(d.templates)).catch(() => {});
     return lookups.current;
   }
   useEffect(() => {
@@ -100,16 +95,12 @@ export function useContentActions({ rows, reload, keepGone = true }: { rows: rea
   // The page's own row wins over the one kept when it was ticked: a post sent from the drawer since is in review now.
   const submittable = [...picked.values()].filter((p) => filterOf(rows.find((r) => r.id === p.id) ?? p) === "draft").map((p) => p.id);
 
-  /**
-   * Open the full post in a dialog (they need its whole content, not the list's light rows). The editor reads the accounts
-   * once, when it opens (which channels are ticked, the YouTube and Pinterest fields): it must not open before they are here.
-   */
-  async function openDialog(id: string, kind: "edit" | "review") {
+  /** Open the full post in the review dialog (it needs the whole content, not the list's light rows). */
+  async function openReview(id: string) {
     try {
       const [job] = await Promise.all([fetchJob(id), loadLookups()]);
       setOpenId(null);
-      if (kind === "edit") setEditing(job);
-      else setReviewing(job);
+      setReviewing(job);
     } catch (e) {
       toastError(errorText(e));
     }
@@ -175,8 +166,8 @@ export function useContentActions({ rows, reload, keepGone = true }: { rows: rea
         canReview={canReview}
         canSubmitOwn={canSubmitOwn}
         onClose={() => setOpenId(null)}
-        onEdit={(id) => openDialog(id, "edit")}
-        onReview={(id) => openDialog(id, "review")}
+        onEdit={(id) => router.push(`/jobs/${id}/edit`)}
+        onReview={openReview}
         onSubmit={sendForReview}
         onRetry={retry}
         onDelete={(id) => setDeleting([id])}
@@ -184,28 +175,6 @@ export function useContentActions({ rows, reload, keepGone = true }: { rows: rea
 
       {/* nothing to show while a dialog loads: it opens a moment after the click, and the drawer is still on screen */}
       <Suspense fallback={null}>
-        {editing && (
-          <EditPostDialog
-            open
-            job={editing}
-            accounts={accounts}
-            templates={templates}
-            reviewMode={editing.status === "draft" && canSubmitOwn}
-            onSave={async (text, commentText, scheduledFor, mediaUrls, accountIds, perAccount, mediaType, youtubeType, youtubeVideoMode, youtubeVideoUrl, youtubeThumbnailUrl, pixelfedSensitive, pixelfedVisibility, youtubeVisibility, youtubeTags, youtubeMadeForKids, linkedinVisibility, blueskyContentWarning, contentType, title, send) => {
-              const isDraft = editing.status === "draft";
-              try {
-                await updateJob(editing.id, text, commentText, scheduledFor, mediaUrls, accountIds, perAccount, mediaType, youtubeType, youtubeVideoMode, youtubeVideoUrl, isDraft, canSubmitOwn, youtubeThumbnailUrl, pixelfedSensitive, pixelfedVisibility, youtubeVisibility, youtubeTags, youtubeMadeForKids, linkedinVisibility, blueskyContentWarning, contentType, title, send);
-              } catch (e) {
-                toastError(errorText(e));
-                throw e;
-              }
-              success(savedMessage(isDraft, canSubmitOwn, send));
-              reload();
-            }}
-            onClose={() => setEditing(null)}
-          />
-        )}
-
         {reviewing && (
           <ReviewDialog
             job={reviewing}
@@ -262,7 +231,7 @@ export function useContentActions({ rows, reload, keepGone = true }: { rows: rea
     openId,
     open: setOpenId,
     /** Opens the review dialog of a post without going through the drawer. */
-    review: (id: string) => openDialog(id, "review"),
+    review: openReview,
     selected,
     count: picked.size,
     toggle,

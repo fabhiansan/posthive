@@ -15,6 +15,8 @@ interface Props {
   onChange: (v: string) => void;
   min?: string; // "YYYY-MM-DD": earlier days are disabled
   placeholder?: string;
+  /** A day that cannot be emptied once set (no Clear): for a date the server cannot unset. */
+  required?: boolean;
 }
 
 /**
@@ -22,7 +24,7 @@ interface Props {
  * not the browser's, like every schedule time in the app. A day can be changed but not unpicked
  * from the grid; "Clear" empties it.
  */
-export function DatePicker({ value, onChange, min, placeholder = "End date (optional)" }: Props) {
+export function DatePicker({ value, onChange, min, placeholder = "End date (optional)", required }: Props) {
   const [open, setOpen] = useState(false);
   const selected = keyToDate(value);
   const minDate = keyToDate(min);
@@ -58,7 +60,7 @@ export function DatePicker({ value, onChange, min, placeholder = "End date (opti
           today={today}
           disabled={minDate ? { before: minDate } : undefined}
         />
-        {value && (
+        {value && !required && (
           <div className="border-t border-border px-3 py-2">
             <Button
               variant="ghost"

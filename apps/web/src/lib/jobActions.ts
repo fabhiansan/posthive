@@ -1,11 +1,9 @@
 // What a person can do to a post from the Content List, as plain calls to the API. Moved here from the old
 // Posts page as they were (same routes, same bodies); the page owns the toasts and the reloading.
 import { apiFetch } from "./api";
-import type { ContentType } from "../components/ContentTypeSelects";
-import type { PerAccountOverride } from "../components/PlatformPreview";
-import type { Job } from "./jobTypes";
+import type { DesignRequestView, Job } from "./jobTypes";
 
-/** The whole post, as the edit and review dialogs take it. */
+/** The whole post, as the editor page and the review dialog take it. */
 export const fetchJob = (id: string) => apiFetch<Job>(`/jobs/${id}`);
 
 /** Approve = schedule: the creator's requested time if it is still ahead, else five minutes from now. */
@@ -47,56 +45,27 @@ export async function deleteMany(ids: string[]): Promise<number> {
   }
 }
 
-/**
- * Save the edit dialog's fields, then (for a draft) promote it: Marketing saves or sends for approval, the others
- * schedule it. The parameters are the dialog's own, in its order.
- */
-export async function updateJob(
-  jobId: string, text: string, commentText: string, scheduledFor: Date, mediaUrls: string[], accountIds: string[],
-  perAccount: Record<string, PerAccountOverride>, mediaType: "post" | "reel" | "story" | undefined, youtubeType: "short" | "video" | undefined,
-  youtubeVideoMode: "upload" | "url" | undefined, youtubeVideoUrl: string | undefined, isDraft: boolean | undefined, canSubmitOwn: boolean,
-  youtubeThumbnailUrl?: string, pixelfedSensitive?: boolean, pixelfedVisibility?: "public" | "unlisted" | "private",
-  youtubeVisibility?: "public" | "unlisted" | "private", youtubeTags?: string[], youtubeMadeForKids?: boolean,
-  linkedinVisibility?: "PUBLIC" | "CONNECTIONS", blueskyContentWarning?: string, contentType?: ContentType, title?: string, send?: boolean,
-): Promise<Job> {
-  await apiFetch(`/jobs/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify({
-      text,
-      ...(title !== undefined ? { title } : {}),
-      commentText,
-      // Drafts keep their date too: it is the requested post date
-      scheduledFor: scheduledFor.toISOString(),
-      mediaUrls,
-      mediaType,
-      // An imported draft can still have no account; the API requires at least one when sent
-      ...(accountIds.length > 0 ? { accountIds } : {}),
-      ...(youtubeType ? { youtubeType } : {}),
-      ...(youtubeVideoMode ? { youtubeVideoMode } : {}),
-      ...(youtubeVideoUrl !== undefined ? { youtubeVideoUrl } : {}),
-      ...(youtubeThumbnailUrl !== undefined ? { youtubeThumbnailUrl } : {}),
-      ...(pixelfedSensitive !== undefined ? { pixelfedSensitive } : {}),
-      ...(pixelfedVisibility !== undefined ? { pixelfedVisibility } : {}),
-      ...(youtubeVisibility !== undefined ? { youtubeVisibility } : {}),
-      ...(youtubeTags !== undefined ? { youtubeTags } : {}),
-      ...(youtubeMadeForKids !== undefined ? { youtubeMadeForKids } : {}),
-      ...(linkedinVisibility !== undefined ? { linkedinVisibility } : {}),
-      ...(blueskyContentWarning !== undefined ? { blueskyContentWarning } : {}),
-      ...(contentType ? { pillar: contentType.pillar, category: contentType.category } : {}),
-      perAccount: Object.keys(perAccount).length > 0 ? perAccount : {},
-    }),
-  });
-  if (isDraft) {
-    if (canSubmitOwn) {
-      if (send) await apiFetch(`/jobs/${jobId}/submit`, { method: "POST" });
-    } else {
-      await apiFetch(`/jobs/${jobId}/schedule`, { method: "POST", body: JSON.stringify({ scheduledFor: scheduledFor.toISOString() }) });
-    }
-  }
-  return fetchJob(jobId);
+/** A designer of the workspace, for the "Designer (PIC)" select. */
+export interface Designer {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
 }
 
-/** The toast after a save, by what was saved. */
-export function savedMessage(isDraft: boolean, canSubmitOwn: boolean, send?: boolean): string {
-  return isDraft ? (canSubmitOwn ? (send ? "Sent for design review." : "Draft saved.") : "Draft scheduled!") : "Post updated.";
+export const listDesigners = () => apiFetch<{ designers: Designer[] }>("/design-requests/designers").then((d) => d.designers);
+
+export interface DesignRequestInput {
+  assigneeId: string;
+  /** An ISO instant, or null for no deadline (optional). */
+  deadline: string | null;
+  brief: string;
+  referenceUrl: string;
+  /** false saves the brief; true sends it to the designer and locks it. */
+  send: boolean;
 }
+
+export const saveDesignRequest = (jobId: string, body: DesignRequestInput) =>
+  apiFetch<{ request: DesignRequestView }>(`/jobs/${jobId}/design-request`, { method: "PUT", body: JSON.stringify(body) }).then((r) => r.request);
+
+export const cancelDesignRequest = (jobId: string) =>
+  apiFetch<{ request: DesignRequestView }>(`/jobs/${jobId}/design-request/cancel`, { method: "POST" }).then((r) => r.request);

@@ -22,7 +22,6 @@ vi.mock("@/lib/usePermissions", () => ({ usePermissions: () => h.perms }));
 vi.mock("@/components/Toast", () => ({ useToast: () => h.toast }));
 vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null }));
 // The dialogs have their own tests; here only that the page hands them the right post
-vi.mock("@/components/EditPostDialog", () => ({ EditPostDialog: ({ job }: { job: { id: string } }) => <div role="dialog" aria-label="edit dialog">{job.id}</div> }));
 vi.mock("@/components/ReviewDialog", () => ({ ReviewDialog: ({ job }: { job: { id: string } }) => <div role="dialog" aria-label="review dialog">{job.id}</div> }));
 
 import ContentListPage from "./page";
@@ -71,6 +70,9 @@ const detail = (id = "p1"): PostDetail => ({
   activity: [{ kind: "created", by: "Putri Anggraini", at: "2026-11-13T03:00:00.000Z", note: null, channel: null }],
   mine: true,
   missing: [],
+  format: "single",
+  designFigmaUrl: null,
+  designRequest: null,
 });
 
 /** The calendar's answer for a range: no post in it, none before or after. */
@@ -261,7 +263,7 @@ describe("Content List page", () => {
   });
 
   describe("the drawer", () => {
-    it("the accounts and the design references are asked the first time something needs them, and once: not when the list opens", async () => {
+    it("the design references are asked the first time something needs them, and once: not when the list opens", async () => {
       serve();
       render(<ContentListPage />);
       await screen.findByText("Post 1");
@@ -270,13 +272,14 @@ describe("Content List page", () => {
       expect(asked("/templates")).toBe(0);
       await userEvent.click(screen.getByRole("row", { name: "Open Post 1" }));
       await waitFor(() => expect(asked("/templates")).toBe(1));
-      expect(asked("/accounts")).toBe(1);
+      // the editor page asks for the accounts itself: the list and its drawer never do
+      expect(asked("/accounts")).toBe(0);
       await screen.findByRole("heading", { name: "Post 1" });
       await userEvent.keyboard("{Escape}");
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       await userEvent.click(screen.getByRole("row", { name: "Open Post 2" }));
       await screen.findByRole("dialog");
-      expect(asked("/accounts")).toBe(1);
+      expect(asked("/accounts")).toBe(0);
       expect(asked("/templates")).toBe(1);
     });
 
@@ -288,29 +291,14 @@ describe("Content List page", () => {
       expect(await screen.findByRole("heading", { name: "Post 1" })).toBeTruthy();
     });
 
-    it("Edit Content waits for the accounts: the editor reads them once, when it opens, so it must not open on an empty list", async () => {
-      serve();
-      const base = h.apiFetch.getMockImplementation()!;
-      let release!: () => void;
-      h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) =>
-        path === "/accounts" ? new Promise((resolve) => (release = () => resolve([]))) : base(path, init as never)
-      );
-      render(<ContentListPage />);
-      await userEvent.click(await screen.findByRole("row", { name: "Open Post 1" }));
-      await userEvent.click(await screen.findByRole("button", { name: "Edit Content" }));
-      await waitFor(() => expect(h.apiFetch).toHaveBeenCalledWith("/jobs/p1"));
-      expect(screen.queryByRole("dialog", { name: "edit dialog" })).toBeNull();
-      release();
-      expect(await screen.findByRole("dialog", { name: "edit dialog" })).toBeTruthy();
-    });
-
-    it("Edit Content fetches the whole post and opens the editor with it", async () => {
+    it("Edit Content goes to the editor page of that post: nothing is fetched for it here, the page loads the post itself", async () => {
       serve();
       render(<ContentListPage />);
       await userEvent.click(await screen.findByRole("row", { name: "Open Post 1" }));
+      h.apiFetch.mockClear();
       await userEvent.click(await screen.findByRole("button", { name: "Edit Content" }));
-      expect(h.apiFetch).toHaveBeenCalledWith("/jobs/p1");
-      expect((await screen.findByRole("dialog", { name: "edit dialog" })).textContent).toBe("p1");
+      expect(h.push).toHaveBeenCalledWith("/jobs/p1/edit");
+      expect(h.apiFetch).not.toHaveBeenCalledWith("/jobs/p1");
     });
 
     it("Review (for the people who approve) opens the review dialog on a post in review", async () => {

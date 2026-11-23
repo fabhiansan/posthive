@@ -91,6 +91,8 @@ const PAGE_ACCESS: Record<string, readonly AppRole[]> = {
 export function canAccessPage(pathname: string, role: string | null | undefined): boolean {
   const r = normalizeRole(role);
   if (r === "owner" || r === "admin") return true;
+  // The edit page of a post is the editor, like /compose: the design team reads posts in the drawer and never edits
+  if (/^\/jobs\/[^/]+\/edit\/?$/.test(pathname)) return PAGE_ACCESS["/compose"].includes(r);
   // Longest matching prefix wins, so "/jobs/import" isn't swallowed by "/jobs"
   const match = Object.keys(PAGE_ACCESS)
     .filter(prefix => pathname === prefix || pathname.startsWith(prefix + "/"))

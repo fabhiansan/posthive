@@ -74,11 +74,6 @@ export interface Account {
   avatarUrl?: string | null;
 }
 
-export interface PerAccountOverride {
-  text?: string;
-  commentText?: string;
-}
-
 export interface UploadedImage {
   url: string;        // server URL — sent to API on save
   previewUrl: string; // display URL — blob or server
@@ -125,8 +120,6 @@ export const PLATFORM_LIMIT: Record<string, number> = {
   tiktok: 2200,
   instagram: 2200,
 };
-
-export const MAX_IMAGES = 4;
 
 export function countGraphemes(text: string): number {
   try { return [...new Intl.Segmenter().segment(text)].length; }

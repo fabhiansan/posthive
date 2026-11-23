@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock("./api", () => ({ apiFetch: h.apiFetch }));
 
-import { approveJob, deleteMany, savedMessage } from "./jobActions";
+import { approveJob, cancelDesignRequest, deleteMany, listDesigners, saveDesignRequest } from "./jobActions";
 import type { Job } from "./jobTypes";
 
 const job = (patch: Partial<Job> = {}, content: Record<string, unknown> = { text: "Caption", title: "Title" }): Job => ({
@@ -70,11 +70,36 @@ describe("deleteMany", () => {
   });
 });
 
-describe("savedMessage", () => {
-  it("says what the save did, by who saved it", () => {
-    expect(savedMessage(true, true, true)).toBe("Sent for design review.");
-    expect(savedMessage(true, true, false)).toBe("Draft saved.");
-    expect(savedMessage(true, false)).toBe("Draft scheduled!");
-    expect(savedMessage(false, false)).toBe("Post updated.");
+describe("the design request calls", () => {
+  const input = { assigneeId: "u1", deadline: "2026-12-04T10:00:00.000Z", brief: "Five slides", referenceUrl: "", send: false };
+
+  it("save sends the brief to the post's own route and answers the request", async () => {
+    h.apiFetch.mockResolvedValue({ request: { id: "dr1", status: "draft" } });
+    expect(await saveDesignRequest("p1", input)).toEqual({ id: "dr1", status: "draft" });
+    expect(h.apiFetch.mock.calls[0]).toEqual(["/jobs/p1/design-request", { method: "PUT", body: JSON.stringify(input) }]);
+  });
+
+  it("no deadline goes as null (the deadline is optional)", async () => {
+    h.apiFetch.mockResolvedValue({ request: { id: "dr1", status: "draft" } });
+    await saveDesignRequest("p1", { ...input, deadline: null });
+    expect(JSON.parse(h.apiFetch.mock.calls[0][1].body).deadline).toBeNull();
+  });
+
+  it("send is the same call with send: true", async () => {
+    h.apiFetch.mockResolvedValue({ request: { id: "dr1", status: "sent" } });
+    await saveDesignRequest("p1", { ...input, send: true });
+    expect(JSON.parse(h.apiFetch.mock.calls[0][1].body)).toMatchObject({ send: true });
+  });
+
+  it("cancel posts to the cancel route and answers the request", async () => {
+    h.apiFetch.mockResolvedValue({ request: { id: "dr1", status: "draft" } });
+    expect(await cancelDesignRequest("p1")).toEqual({ id: "dr1", status: "draft" });
+    expect(h.apiFetch.mock.calls[0]).toEqual(["/jobs/p1/design-request/cancel", { method: "POST" }]);
+  });
+
+  it("the designers list answers the people, not the wrapper", async () => {
+    h.apiFetch.mockResolvedValue({ designers: [{ id: "u1", name: "Rina S.", avatarUrl: null }] });
+    expect(await listDesigners()).toEqual([{ id: "u1", name: "Rina S.", avatarUrl: null }]);
+    expect(h.apiFetch.mock.calls[0][0]).toBe("/design-requests/designers");
   });
 });

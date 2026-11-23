@@ -5,7 +5,6 @@ import { CloudUploadIcon, ImageIcon, ImageOffIcon } from "lucide-react";
 import { DesignReferenceCard } from "@/components/DesignReferenceCard";
 import { PlatformIcon } from "@/components/PlatformIcon";
 import { PLATFORM_LIMIT } from "@/components/PlatformPreview";
-import { StatusDot } from "@/components/dashboard/StatusDot";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,12 +25,14 @@ import {
   type PostDetail,
 } from "@/lib/content-list";
 import { CONTENT_STATUS } from "@/lib/content-status";
+import { requestLine } from "@/lib/post-editor";
 import { formatPlanDate } from "@/lib/import-rows";
 import { wibDateKey } from "@/lib/datetime";
 import { platformLabel } from "@/lib/platforms";
 import { missingMessage } from "@/lib/submitReadiness";
 import { templatesByCategory, type DesignTemplate } from "@/lib/templates";
 import { InfoTile } from "./InfoTile";
+import { StatusChip } from "./StatusChip";
 
 type Props = {
   /** The post to show; null closes the drawer. */
@@ -49,16 +50,6 @@ type Props = {
   onRetry: (id: string) => void;
   onDelete: (id: string) => void;
 };
-
-/** A chip of the header: "Content: Draft". */
-function StatusChip({ status, label }: { status: Parameters<typeof StatusDot>[0]["status"]; label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-bg px-2.5 py-1 type-body-sb-xxs text-fg">
-      <StatusDot status={status} className="size-1.5" />
-      {label}
-    </span>
-  );
-}
 
 /** The post of one row, read only: what it is, its caption, its design, what happened to it. Everything is edited in the full editor. */
 export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn, onClose, onEdit, onReview, onSubmit, onRetry, onDelete }: Props) {
@@ -98,12 +89,15 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
   // In review the post has been sent: nothing to submit until an edit pulls it back to a draft
   // Sent back by the reviewer is the same: nothing to send until an edit changes the content (the server clears the
   // rejection then and the post is a plain draft again, with Submit)
-  const canSubmit = canEdit && canSubmitOwn && filter === "draft" && complete;
+  const withDesigner = post?.designRequest?.status === "sent";
+  const canSubmit = canEdit && canSubmitOwn && filter === "draft" && complete && !withDesigner;
   const canDelete = ownerOrAdmin && (!unsent || complete);
   const canRetry = ownerOrAdmin && filter === "failed";
   // Told only to the person who sends posts for review: why their draft has only two buttons
   const hint =
-    post && canEdit && canSubmitOwn && filter === "rejected"
+    post && canEdit && canSubmitOwn && withDesigner && post.designRequest
+      ? `Design requested · ${requestLine(post.designRequest)}. Cancel the request in the editor to send this post on.`
+      : post && canEdit && canSubmitOwn && filter === "rejected"
       ? "Revision requested. Edit the content to send it for review again."
       : post && canEdit && canSubmitOwn && unsent && !complete
         ? missingMessage(post.missing)
@@ -295,7 +289,7 @@ function DesignSection({ post, template, category }: { post: PostDetail; templat
             <CloudUploadIcon aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
             <div className="min-w-0">
               <p className="type-body-m-m text-fg">No template or design yet</p>
-              <p className="mt-0.5 type-body-r-xs text-muted-foreground">Choose a Postly template for this pillar or upload a ready design in the full-page editor.</p>
+              <p className="mt-0.5 type-body-r-xs text-muted-foreground">Choose a template for this content type, ask a designer, or upload a ready design in the editor.</p>
             </div>
           </div>
         )}
@@ -304,6 +298,17 @@ function DesignSection({ post, template, category }: { post: PostDetail; templat
             <ImageIcon aria-hidden="true" className="size-3.5" />
             {shown > 0 ? `${shown} ${shown === 1 ? "image" : "images"} attached` : "The files of this design are no longer stored."}
           </p>
+        )}
+        {post.designRequest && (
+          <p className="rounded-xl bg-brand-100 px-4 py-3 type-body-r-s text-brand-800">
+            Design requested · {requestLine(post.designRequest)}
+            {post.designRequest.status === "draft" ? " (brief saved, not sent yet)" : ""}
+          </p>
+        )}
+        {post.designFigmaUrl && (
+          <a href={post.designFigmaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 type-body-m-s text-brand-800 underline-offset-2 hover:underline">
+            Open the design in Figma <span aria-hidden>↗</span>
+          </a>
         )}
         <DesignReferenceCard template={template} category={category} />
       </div>

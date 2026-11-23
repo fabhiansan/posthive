@@ -73,6 +73,15 @@ describe("page access", () => {
     expect(open("/templates")).toEqual([...ROLES]);
   });
 
+  it("the edit page of a post is the editor: the design team is kept out, an unknown role too, and /jobs/<id> alone is open", () => {
+    expect(open("/jobs/ckabc123/edit")).toEqual(["owner", "admin", "member"]);
+    expect(open("/jobs/ckabc123/edit/")).toEqual(["owner", "admin", "member"]);
+    expect(canAccessPage("/jobs/ckabc123/edit", "superuser")).toBe(false);
+    expect(open("/jobs/ckabc123")).toEqual([...ROLES]);
+    // only the edit page of one post: a longer path under it is not the editor
+    expect(canAccessPage("/jobs/ckabc123/edit/more", "designer")).toBe(true);
+  });
+
   it("/jobs/import is not swallowed by /jobs (the longest prefix wins)", () => {
     expect(canAccessPage("/jobs/import", "designer")).toBe(false);
     expect(canAccessPage("/jobs", "designer")).toBe(true);

@@ -314,6 +314,9 @@ describe("ContentDrawer", () => {
     activity: [{ kind: "imported", by: "Putri Anggraini", at: "2026-11-13T03:42:00.000Z", note: null, channel: null }],
     mine: true,
     missing: [],
+    format: "single",
+    designFigmaUrl: null,
+    designRequest: null,
     ...patch,
   });
 
@@ -449,6 +452,27 @@ describe("ContentDrawer", () => {
     it("once every required field is there a draft also has Submit for review and Delete", async () => {
       await open(detail({ missing: [] }), { canSubmitOwn: true });
       expect(buttons()).toEqual(["Delete", "Submit for review", "Close", "Edit Content"]);
+    });
+
+    it("a request that is with the designer takes Submit away and says who has it and by when (date and time, WIB); a saved brief does not", async () => {
+      await open(detail({ missing: [], designRequest: { status: "sent", assignee: "Rina Sari", deadline: "2026-03-04T10:00:00.000Z" } }), { canSubmitOwn: true });
+      expect(buttons()).toEqual(["Delete", "Close", "Edit Content"]);
+      expect(within(screen.getByRole("dialog")).getByRole("status").textContent).toContain("Design requested · Rina S. · due Wed, 4 Mar 2026, 17:00 WIB");
+      await open(detail({ missing: [], designRequest: { status: "draft", assignee: "Rina Sari", deadline: "2026-03-04T10:00:00.000Z" } }), { canSubmitOwn: true });
+      expect(buttons()).toEqual(["Delete", "Submit for review", "Close", "Edit Content"]);
+    });
+
+    it("a request with no deadline says so, and still takes Submit away", async () => {
+      await open(detail({ missing: [], designRequest: { status: "sent", assignee: "Rina Sari", deadline: null } }), { canSubmitOwn: true });
+      expect(buttons()).toEqual(["Delete", "Close", "Edit Content"]);
+      expect(within(screen.getByRole("dialog")).getByRole("status").textContent).toContain("Design requested · Rina S. · no deadline");
+    });
+
+    it("the Design tab shows the request, and the Figma link of the design when there is one", async () => {
+      await open(detail({ designRequest: { status: "sent", assignee: null, deadline: "2026-03-04T10:00:00.000Z" }, designFigmaUrl: "https://www.figma.com/design/AbC/Case" }));
+      await userEvent.click(screen.getByRole("tab", { name: /Design/ }));
+      expect(screen.getAllByText(/Design requested · Designer removed · due Wed, 4 Mar 2026, 17:00 WIB/).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("link", { name: /Open the design in Figma/ })[0].getAttribute("href")).toBe("https://www.figma.com/design/AbC/Case");
     });
 
     it("a person who does not go through review has Delete but no Submit when the draft is complete", async () => {

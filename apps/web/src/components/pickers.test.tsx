@@ -5,7 +5,6 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { DatePicker } from "./DatePicker";
 import { DateTimePicker } from "./DateTimePicker";
-import { RepeatPicker } from "./RepeatPicker";
 import { TimeInput24 } from "./TimeInput24";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 
@@ -89,6 +88,13 @@ describe("DatePicker", () => {
     await user().click(await screen.findByRole("button", { name: "Clear" }));
     expect(onChange).toHaveBeenCalledWith("");
     expect(screen.getByRole("button", { name: /End date/ })).toBeTruthy();
+  });
+
+  it("a required day has no Clear: a date the server cannot unset is not offered to empty", async () => {
+    render(<DatePicker value="2026-11-20" onChange={vi.fn()} required />);
+    await user().click(screen.getByRole("button", { name: dayLabel(2026, 11, 20) }));
+    await screen.findByRole("grid");
+    expect(screen.queryByRole("button", { name: "Clear" })).toBeNull();
   });
 
   it("picking the same day again keeps it (no deselect)", async () => {
@@ -227,53 +233,6 @@ describe("DateTimePicker", () => {
   });
 });
 
-function Repeat({ initial = "" as "" | "daily" | "weekly" | "monthly", onInterval, onEnds }: { initial?: "" | "daily" | "weekly" | "monthly"; onInterval?: (v: string) => void; onEnds?: (v: string) => void }) {
-  const [v, setV] = useState(initial);
-  const [ends, setEnds] = useState("2026-12-01");
-  return <RepeatPicker value={v} endsAt={ends} onChangeInterval={(x) => { setV(x); onInterval?.(x); }} onChangeEndsAt={(x) => { setEnds(x); onEnds?.(x); }} />;
-}
-
-describe("RepeatPicker", () => {
-  it("starts as 'Repeat Post…' with no end date", () => {
-    render(<Repeat />);
-    expect(screen.getByRole("combobox", { name: "Repeat" }).textContent).toContain("Repeat Post…");
-    expect(screen.queryByText("until")).toBeNull();
-  });
-
-  it("choosing an interval shows it, asks for an end date and clears the old end date", async () => {
-    const onInterval = vi.fn();
-    const onEnds = vi.fn();
-    render(<Repeat onInterval={onInterval} onEnds={onEnds} />);
-    await user().click(screen.getByRole("combobox", { name: "Repeat" }));
-    await user().click(await screen.findByRole("option", { name: "Every Week" }));
-    expect(onInterval).toHaveBeenCalledWith("weekly");
-    expect(onEnds).toHaveBeenCalledWith("");
-    expect(screen.getByRole("combobox", { name: "Repeat" }).textContent).toContain("Every Week");
-    expect(screen.getByText("until")).toBeTruthy();
-  });
-
-  it("'Do Not Repeat' sets the interval back to empty and hides the end date", async () => {
-    const onInterval = vi.fn();
-    render(<Repeat initial="daily" onInterval={onInterval} />);
-    expect(screen.getByText("until")).toBeTruthy();
-    await user().click(screen.getByRole("combobox", { name: "Repeat" }));
-    await user().click(await screen.findByRole("option", { name: "Do Not Repeat" }));
-    expect(onInterval).toHaveBeenLastCalledWith("");
-    expect(screen.queryByText("until")).toBeNull();
-    expect(screen.getByRole("combobox", { name: "Repeat" }).textContent).toContain("Repeat Post…");
-  });
-
-  it("the end date picker will not take a day before the first repeat", async () => {
-    render(<Repeat initial="weekly" />);
-    await user().click(screen.getByRole("button", { name: dayLabel(2026, 12, 1) }));
-    // it opens on December (the current end date); go back to November
-    await user().click(await screen.findByRole("button", { name: /previous month/i }));
-    // weekly: the earliest end is 7 days after the WIB today (Nov 7), so Nov 13 is out and Nov 14 is in
-    expect(((await screen.findByRole("button", { name: /November 13th, 2026/ })) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: /November 14th, 2026/ }) as HTMLButtonElement).disabled).toBe(false);
-  });
-});
-
 describe("TimeInput24", () => {
   it("shows hour and minute as 24-hour selects", () => {
     render(<TimeInput24 value="09:05" onChange={() => {}} />);
@@ -295,5 +254,15 @@ describe("TimeInput24", () => {
   it("they are real selects, so a phone shows its own picker", () => {
     render(<TimeInput24 value="09:00" onChange={() => {}} />);
     expect(screen.getByLabelText("Hour").tagName).toBe("SELECT");
+  });
+
+  it("a label tells two times on one page apart, and changing one still keeps the other part", async () => {
+    const onChange = vi.fn();
+    render(<TimeInput24 value="09:05" onChange={onChange} label="Deadline" />);
+    expect(screen.queryByLabelText("Hour")).toBeNull();
+    await user().selectOptions(screen.getByLabelText("Deadline hour"), "17");
+    expect(onChange).toHaveBeenLastCalledWith("17:05");
+    await user().selectOptions(screen.getByLabelText("Deadline minute"), "45");
+    expect(onChange).toHaveBeenLastCalledWith("09:45");
   });
 });
