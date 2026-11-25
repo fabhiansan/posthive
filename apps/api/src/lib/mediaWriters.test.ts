@@ -14,6 +14,7 @@ const EXEMPT: Record<string, string> = {
   "lib/worker.ts": "only sets a status; never a media address",
   "routes/import.ts": "writes mediaUrls: [] (an import carries no pictures)",
   "routes/canvas.ts": "sets Template.designId (the link to a Canvas design); never a media address",
+  "routes/designTasks.ts": "Mark as done copies the designer's Figma link into the post's designFigmaUrl; the content's mediaUrls are carried through unchanged",
 };
 
 function sources(dir: string, out: string[] = []): string[] {

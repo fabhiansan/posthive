@@ -190,11 +190,19 @@ describe("toDetail", () => {
   });
 
   it("the design request: who has it and the deadline as an ISO instant, or null when there is none (it is optional)", () => {
-    const withDeadline = toDetail(detail({ content: { title: "T" }, designRequest: { status: "sent", deadline: new Date("2026-03-04T03:00:00Z"), assignee: { name: "Rina Sari" } } }));
-    expect(withDeadline.designRequest).toEqual({ status: "sent", assignee: "Rina Sari", deadline: "2026-03-04T03:00:00.000Z" });
-    const open = toDetail(detail({ content: { title: "T" }, designRequest: { status: "draft", deadline: null, assignee: null } }));
-    expect(open.designRequest).toEqual({ status: "draft", assignee: null, deadline: null });
+    const withDeadline = toDetail(detail({ content: { title: "T" }, designRequest: { status: "sent", deadline: new Date("2026-03-04T03:00:00Z"), doneAt: null, assignee: { name: "Rina Sari" } } }));
+    expect(withDeadline.designRequest).toEqual({ status: "sent", assignee: "Rina Sari", deadline: "2026-03-04T03:00:00.000Z", doneAt: null });
+    const open = toDetail(detail({ content: { title: "T" }, designRequest: { status: "draft", deadline: null, doneAt: null, assignee: null } }));
+    expect(open.designRequest).toEqual({ status: "draft", assignee: null, deadline: null, doneAt: null });
     expect(toDetail(detail({ content: { title: "T" } })).designRequest).toBeNull();
+  });
+
+  it("a done request says when the designer sent the design; a request that is not done never does", () => {
+    const at = new Date("2026-03-03T08:00:00Z");
+    const done = toDetail(detail({ content: { title: "T" }, designRequest: { status: "done", deadline: null, doneAt: at, assignee: { name: "Rina Sari" } } }));
+    expect(done.designRequest).toMatchObject({ status: "done", doneAt: "2026-03-03T08:00:00.000Z" });
+    const stale = toDetail(detail({ content: { title: "T" }, designRequest: { status: "sent", deadline: null, doneAt: at, assignee: null } }));
+    expect(stale.designRequest?.doneAt).toBeNull();
   });
 });
 

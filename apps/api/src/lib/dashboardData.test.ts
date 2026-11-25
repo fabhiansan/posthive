@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   addDays,
   dayWhere,
-  designActivities,
   isDateKey,
   listWhere,
-  mediaOf,
   monthOf,
   pillarOf,
   quarterCount,
@@ -15,11 +13,9 @@ import {
   publishWhere,
   tasksWhere,
   toPost,
-  toQueuePost,
   wibKey,
   wibStart,
   type PostRecord,
-  type QueueRecord,
 } from "./dashboardData.js";
 
 describe("the WIB day", () => {
@@ -363,153 +359,12 @@ describe("quarterCount: the quarter, per content category", () => {
   });
 });
 
-describe("the designer's review queue", () => {
-  const record = (patch: Partial<QueueRecord> = {}, content: Record<string, unknown> = {}): QueueRecord => ({
-    id: "p1",
-    status: "draft",
-    approvalStatus: "pending",
-    scheduledFor: new Date("2026-11-17T02:00:00Z"),
-    content: JSON.stringify({ title: "Backcasting 2026", mediaUrls: ["/uploads/a.png", "/uploads/b.png"], category: "Case Study", ...content }),
-    submittedAt: new Date("2026-11-14T02:00:00Z"),
-    submitCount: 2,
-    submittedBy: { name: "Dewi K." },
-    user: { name: "Putri A." },
-    ...patch,
-  });
-
-  it("says who sent it and when, which round it is, and what it is made of, and sends no content", () => {
-    const post = toQueuePost(record());
-    expect(post).toEqual({
-      id: "p1",
-      status: "draft",
-      approvalStatus: "pending",
-      title: "Backcasting 2026",
-      thumbnail: "/uploads/a.png",
-      pillar: "Promotional",
-      media: { images: 2, video: false, mediaType: null, youtubeType: null },
-      submitCount: 2,
-      submittedAt: "2026-11-14T02:00:00.000Z",
-      submittedBy: "Dewi K.",
-      scheduledFor: "2026-11-17T02:00:00.000Z",
-    });
-    expect(JSON.stringify(post)).not.toContain("content");
-  });
-
-  it("a post that was waiting before the send was recorded: the author, and no time", () => {
-    const post = toQueuePost(record({ submittedBy: null, submittedAt: null }));
-    expect(post.submittedBy).toBe("Putri A.");
-    expect(post.submittedAt).toBeNull();
-  });
-
-  it("a post saved with no date (the epoch, by the MCP and the public API) has no date, not 1 January 1970", () => {
-    expect(toQueuePost(record({ scheduledFor: new Date(0) })).scheduledFor).toBeNull();
-    expect(toQueuePost(record({ scheduledFor: null })).scheduledFor).toBeNull();
-  });
-
-  it("no picture: no thumbnail", () => {
-    expect(toQueuePost(record({}, { mediaUrls: [] })).thumbnail).toBeNull();
-  });
-
-  describe("pillarOf", () => {
-    it("is the saved one, else the category's, else none", () => {
-      expect(pillarOf({ pillar: "Educational", category: "Case Study" })).toBe("Educational");
-      expect(pillarOf({ category: "Blog Post" })).toBe("Educational");
-      expect(pillarOf({ category: "ama" })).toBeNull(); // Ask Me Anything is outside the four pillars
-      expect(pillarOf({ category: "Not a category" })).toBeNull();
-      expect(pillarOf({})).toBeNull();
-    });
-  });
-
-  describe("mediaOf", () => {
-    it("counts pictures, and leaves out a video and links the browser will not open", () => {
-      expect(mediaOf({ mediaUrls: ["/uploads/a.png", "/uploads/b.jpg", "/uploads/c.mp4", "javascript:alert(1)", "/uploads/../x.png"] })).toMatchObject({ images: 2, video: true });
-    });
-
-    it("a post with no media at all, or a broken list", () => {
-      expect(mediaOf({})).toEqual({ images: 0, video: false, mediaType: null, youtubeType: null });
-      expect(mediaOf({ mediaUrls: "nope" })).toMatchObject({ images: 0, video: false });
-    });
-
-    it("a YouTube video the post points at is a video", () => {
-      expect(mediaOf({ youtubeVideoUrl: "https://youtu.be/x", youtubeType: "short" })).toMatchObject({ video: true, youtubeType: "short" });
-    });
-
-    it("a Reel or a Story says so; the plain post type says nothing", () => {
-      expect(mediaOf({ mediaType: "reel" }).mediaType).toBe("reel");
-      expect(mediaOf({ mediaType: "story" }).mediaType).toBe("story");
-      expect(mediaOf({ mediaType: "post" }).mediaType).toBeNull();
-      expect(mediaOf({ mediaType: "carousel" }).mediaType).toBeNull();
-    });
-  });
-});
-
-describe("designActivities", () => {
-  const since = new Date("2026-11-10T00:00:00Z");
-  const at = (iso: string) => new Date(iso);
-  const content = (title: string) => JSON.stringify({ title });
-  const sources = () => ({
-    submitted: [
-      { content: content("When Environmental Data"), submittedAt: at("2026-11-17T02:12:00Z"), submittedById: "putri", submittedBy: { name: "Putri A." }, user: { name: "Putri A." } },
-      { content: content("Satellite Imagery 101"), submittedAt: at("2026-11-11T07:22:00Z"), submittedById: "rina", submittedBy: { name: "Rina S." }, user: { name: "Rina S." } },
-    ],
-    reviewed: [
-      { content: content("Behind the Scenes"), approvalStatus: "approved", reviewedAt: at("2026-11-17T01:55:00Z"), reviewedByUserId: "dewi", reviewedBy: { name: "Dewi K." } },
-      { content: content("Backcasting"), approvalStatus: "rejected", reviewedAt: at("2026-11-16T09:40:00Z"), reviewedByUserId: "dewi", reviewedBy: { name: "Dewi K." } },
-    ],
-    templates: [{ name: "Insight Carousel v3", pillar: "Educational", createdAt: at("2026-11-16T07:10:00Z"), userId: "dewi", user: { name: "Dewi K." } }],
-  });
-
-  it("merges sends, answers and uploaded templates, newest first", () => {
-    const events = designActivities("dewi", sources(), since, 10);
-    expect(events.map((e) => [e.kind, e.title])).toEqual([
-      ["submitted", "When Environmental Data"],
-      ["approved", "Behind the Scenes"],
-      ["revision", "Backcasting"],
-      ["template", "Insight Carousel v3"],
-      ["submitted", "Satellite Imagery 101"],
-    ]);
-  });
-
-  it("marks what the viewer did, and not what someone else did", () => {
-    const events = designActivities("dewi", sources(), since, 10);
-    expect(events.map((e) => e.mine)).toEqual([false, true, true, true, false]);
-  });
-
-  it("keeps only the newest few", () => {
-    expect(designActivities("dewi", sources(), since, 2).map((e) => e.title)).toEqual(["When Environmental Data", "Behind the Scenes"]);
-  });
-
-  it("leaves out an event older than the window", () => {
-    const old = new Date("2026-11-17T00:00:00Z");
-    expect(designActivities("dewi", sources(), old, 10)).toHaveLength(2);
-  });
-
-  it("a template carries its pillar; a post does not", () => {
-    const events = designActivities("dewi", sources(), since, 10);
-    expect(events.find((e) => e.kind === "template")?.pillar).toBe("Educational");
-    expect(events.find((e) => e.kind === "approved")?.pillar).toBeNull();
-  });
-
-  it("a review that is neither an approval nor a revision, or has no time, is not an event", () => {
-    const src = sources();
-    src.reviewed = [
-      { content: content("X"), approvalStatus: "pending", reviewedAt: at("2026-11-17T01:00:00Z"), reviewedByUserId: "dewi", reviewedBy: null },
-      { content: content("Y"), approvalStatus: "approved", reviewedAt: null as unknown as Date, reviewedByUserId: "dewi", reviewedBy: null },
-    ];
-    src.submitted = [];
-    src.templates = [];
-    expect(designActivities("dewi", src, since, 10)).toEqual([]);
-  });
-
-  it("a person who was removed has no name, and the event still shows", () => {
-    const src = sources();
-    src.reviewed[0].reviewedBy = null;
-    const approved = designActivities("dewi", src, since, 10).find((e) => e.kind === "approved");
-    expect(approved?.by).toBeNull();
-  });
-
-  it("sends nothing but the event: no content, no sort key", () => {
-    const [first] = designActivities("dewi", sources(), since, 1);
-    expect(Object.keys(first).sort()).toEqual(["at", "by", "kind", "mine", "pillar", "title"]);
+describe("pillarOf", () => {
+  it("is the saved one, else the category's, else none", () => {
+    expect(pillarOf({ pillar: "Educational", category: "Case Study" })).toBe("Educational");
+    expect(pillarOf({ category: "Blog Post" })).toBe("Educational");
+    expect(pillarOf({ category: "ama" })).toBeNull(); // Ask Me Anything is outside the four pillars
+    expect(pillarOf({ category: "Not a category" })).toBeNull();
+    expect(pillarOf({})).toBeNull();
   });
 });

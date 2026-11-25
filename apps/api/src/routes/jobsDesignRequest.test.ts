@@ -10,6 +10,8 @@ const h = vi.hoisted(() => ({
   job: null as null | Record<string, unknown>,
   jobs: [] as Array<Record<string, unknown>>,
   calls: [] as Array<{ fn: string; args: unknown }>,
+  notified: [] as unknown[],
+  admins: [] as unknown[],
 }));
 
 vi.mock("../lib/prisma.js", () => {
@@ -43,9 +45,15 @@ vi.mock("../lib/auth/withAuth.js", async () => {
     getWorkspaceId: () => "ws-1",
     getWorkspaceRole: async () => h.role,
     requireContentEditorRole: async () => (h.role === "designer" ? { error: "Content is created and edited by Admin and Marketing only.", code: "FORBIDDEN" } : null),
+    // the real rule (owner/admin only): the mock stands in for the database read of the role, not for what the role may do
+    requireManageRole: async () => (real.isManageRole(h.role) ? null : { error: real.MANAGE_FORBIDDEN_MSG, code: "FORBIDDEN" }),
   };
 });
 vi.mock("../lib/queue.js", () => ({ schedulePostJob: vi.fn(), postJobQueue: { remove: vi.fn(async () => {}) } }));
+vi.mock("../lib/notifications.js", () => ({
+  notify: vi.fn(async (rows: unknown[]) => void h.notified.push(...rows)),
+  notifyAdmins: vi.fn(async (...args: unknown[]) => void h.admins.push(args)),
+}));
 vi.mock("../lib/enforcePlan.js", () => ({ enforcePlan: async () => null }));
 vi.mock("../lib/templates.js", () => ({ withoutTemplateMedia: async (urls: string[]) => urls }));
 vi.mock("../lib/auth/index.js", () => ({ authProvider: {} }));
@@ -70,6 +78,8 @@ beforeEach(() => {
   h.job = null;
   h.jobs = [];
   h.calls = [];
+  h.notified = [];
+  h.admins = [];
 });
 
 const STORED = { title: "T", text: "Caption", category: "Blog Post", format: "single", mediaUrls: ["/uploads/a.png"], youtubeTags: ["geo"], assetNotes: "from the plan" };
@@ -132,9 +142,73 @@ describe("a design request that is with the designer blocks sending the post on"
 
   it("approving a post already in review is not blocked by the request", async () => {
     h.role = "admin";
-    h.job = draft({ ...SENT, approvalStatus: "pending" });
+    h.job = draft({ ...SENT, approvalStatus: "pending", submittedById: "marketing-1" });
     const res = await app.inject({ method: "POST", url: "/jobs/p1/schedule", payload: { scheduledFor: "2030-01-01T01:00:00.000Z" } });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("approving is the owner's and the admin's: the design team may not", () => {
+  const schedule = () => app.inject({ method: "POST", url: "/jobs/p1/schedule", payload: { scheduledFor: "2030-01-01T01:00:00.000Z" } });
+  const reject = () => app.inject({ method: "POST", url: "/jobs/p1/reject", payload: { note: "Make the timeline readable" } });
+
+  it("a designer cannot approve or send back a post in review: 403, and nothing is written", async () => {
+    h.role = "designer";
+    h.job = draft({ approvalStatus: "pending" });
+    for (const res of [await schedule(), await reject()]) {
+      expect(res.statusCode).toBe(403);
+      expect(res.json().error).toBe("Only workspace owners and admins can perform this action.");
+    }
+    expect(call("update")).toHaveLength(0);
+  });
+
+  it.each(["admin", "owner"])("an %s approves a post in review, and the person who sent it is told", async (role) => {
+    h.role = role;
+    h.job = draft({ approvalStatus: "pending", submittedById: "marketing-1" });
+    expect((await schedule()).statusCode).toBe(200);
+    expect(h.notified).toEqual([{ workspaceId: "ws-1", userId: "marketing-1", kind: "post_approved", postJobId: "p1", actorId: "colleague" }]);
+  });
+
+  it("an approval with no recorded sender tells the post's author", async () => {
+    h.role = "admin";
+    h.job = draft({ approvalStatus: "pending", submittedById: null });
+    await schedule();
+    expect(h.notified).toMatchObject([{ userId: "head-of-marketing", kind: "post_approved" }]);
+  });
+
+  it("scheduling a plain draft is nobody's answer: nobody is told", async () => {
+    h.role = "admin";
+    h.job = draft({ userId: "colleague" });
+    expect((await schedule()).statusCode).toBe(200);
+    expect(h.notified).toEqual([]);
+  });
+
+  it("sending a post back tells the person who sent it", async () => {
+    h.role = "admin";
+    h.job = draft({ approvalStatus: "pending", submittedById: "marketing-1" });
+    expect((await reject()).statusCode).toBe(200);
+    expect(h.notified).toEqual([{ workspaceId: "ws-1", userId: "marketing-1", kind: "post_sent_back", postJobId: "p1", actorId: "colleague" }]);
+  });
+});
+
+describe("sending a post for review tells the owners and admins", () => {
+  it("submit: one fact for the post", async () => {
+    h.job = draft();
+    expect((await app.inject({ method: "POST", url: "/jobs/p1/submit" })).statusCode).toBe(200);
+    expect(h.admins).toEqual([["ws-1", "review_submitted", ["p1"], "colleague"]]);
+  });
+
+  it("a submit that is refused (the design is with the designer) tells nobody", async () => {
+    h.job = draft(SENT);
+    await app.inject({ method: "POST", url: "/jobs/p1/submit" });
+    expect(h.admins).toEqual([]);
+  });
+
+  it("bulk submit: only the posts that were sent", async () => {
+    const ids = ["ckaaaaaaaaaaaaaaaaaaaaaaa", "ckbbbbbbbbbbbbbbbbbbbbbbb"];
+    h.jobs = [draft({ id: ids[0], ...SENT }), draft({ id: ids[1] })];
+    await app.inject({ method: "POST", url: "/jobs/submit-bulk", payload: { ids } });
+    expect(h.admins).toEqual([["ws-1", "review_submitted", [ids[1]], "colleague"]]);
   });
 });
 
@@ -213,13 +287,21 @@ describe("GET /jobs/:id answers the design request as a view", () => {
     h.job = {
       ...draft(),
       designRequest: {
-        id: "dr1", status: "sent", deadline: new Date("2026-03-04T00:00:00Z"), brief: "5 slides", referenceUrl: null, sentAt: new Date("2026-03-01T01:00:00Z"), updatedAt: new Date("2026-03-01T01:00:00Z"),
+        id: "dr1", status: "sent", deadline: new Date("2026-03-04T00:00:00Z"), brief: "5 slides", referenceUrl: null, sentAt: new Date("2026-03-01T01:00:00Z"), updatedAt: new Date("2026-03-01T01:00:00Z"), figmaUrl: "https://www.figma.com/design/a/draft", designerNote: "draft note", doneAt: null,
         assignee: { id: "u9", name: "Rina S.", avatarUrl: null, workspaceMembers: [] },
       },
     };
     const res = await app.inject({ method: "GET", url: "/jobs/p1" });
     expect(res.statusCode).toBe(200);
     expect(res.json().designRequest).toMatchObject({ status: "sent", deadline: "2026-03-04T00:00:00.000Z", assignee: { name: "Rina S.", active: false } });
+  });
+
+  it("the designer's saved link and note are the designer's own: Marketing sees them only once the request is done", async () => {
+    const dr = { id: "dr1", status: "sent", deadline: null, brief: "b", referenceUrl: null, sentAt: new Date("2026-03-01T01:00:00Z"), updatedAt: new Date("2026-03-01T01:00:00Z"), figmaUrl: "https://www.figma.com/design/a/draft", designerNote: "draft note", doneAt: null, assignee: { id: "u9", name: "Rina S.", avatarUrl: null, workspaceMembers: [] } };
+    h.job = { ...draft(), designRequest: dr };
+    expect((await app.inject({ method: "GET", url: "/jobs/p1" })).json().designRequest).toMatchObject({ figmaUrl: null, designerNote: null, doneAt: null });
+    h.job = { ...draft(), designRequest: { ...dr, status: "done", doneAt: new Date("2026-03-03T08:00:00Z") } };
+    expect((await app.inject({ method: "GET", url: "/jobs/p1" })).json().designRequest).toMatchObject({ status: "done", figmaUrl: "https://www.figma.com/design/a/draft", designerNote: "draft note", doneAt: "2026-03-03T08:00:00.000Z" });
   });
 
   it("is null when the post has no request", async () => {

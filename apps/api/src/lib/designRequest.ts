@@ -11,6 +11,9 @@ export const designRequestSelect = (workspaceId: string) => ({
   referenceUrl: true,
   sentAt: true,
   updatedAt: true,
+  figmaUrl: true,
+  designerNote: true,
+  doneAt: true,
   assignee: {
     select: {
       id: true,
@@ -34,10 +37,15 @@ export interface DesignRequestView {
   referenceUrl: string | null;
   sentAt: string | null;
   updatedAt: string;
+  /** The designer's answer, only once the request is done: until then the link and note are the designer's own draft. */
+  doneAt: string | null;
+  figmaUrl: string | null;
+  designerNote: string | null;
 }
 
 export function toDesignRequestView(row: DesignRequestRow): DesignRequestView {
   const a = row.assignee;
+  const done = row.status === "done";
   return {
     id: row.id,
     status: row.status,
@@ -47,20 +55,25 @@ export function toDesignRequestView(row: DesignRequestRow): DesignRequestView {
     referenceUrl: row.referenceUrl,
     sentAt: row.sentAt ? row.sentAt.toISOString() : null,
     updatedAt: row.updatedAt.toISOString(),
+    doneAt: done && row.doneAt ? row.doneAt.toISOString() : null,
+    figmaUrl: done ? row.figmaUrl : null,
+    designerNote: done ? row.designerNote : null,
   };
 }
 
-export type DeadlineProblem = "DEADLINE_PAST" | "DEADLINE_AFTER_PUBLISH";
+export type DeadlineProblem = "DEADLINE_REQUIRED" | "DEADLINE_PAST" | "DEADLINE_AFTER_PUBLISH";
 
 export const DEADLINE_MESSAGE: Record<DeadlineProblem, string> = {
+  DEADLINE_REQUIRED: "Add a design deadline before sending the request to the designer.",
   DEADLINE_PAST: "The design deadline must be later than now.",
   DEADLINE_AFTER_PUBLISH: "The design deadline must be before the publishing date and time.",
 };
 
 /**
- * The deadline is optional; when there is one it must come after now and strictly before the moment the post goes out
- * (`publishAt` is null for a post with no date yet: then only "after now" applies). Instants, not days: a deadline at
- * 08:00 on the publishing day is fine for a post that goes out at 09:00.
+ * A saved brief may have no deadline, but a SENT request needs one (the designer works to it). When there is one it must
+ * come after now and strictly before the moment the post goes out (`publishAt` is null for a post with no date yet: then
+ * only "after now" applies). Instants, not days: a deadline at 08:00 on the publishing day is fine for a post that goes
+ * out at 09:00.
  */
 export function deadlineProblem(deadline: Date, now: Date, publishAt: Date | null): DeadlineProblem | null {
   if (deadline.getTime() <= now.getTime()) return "DEADLINE_PAST";

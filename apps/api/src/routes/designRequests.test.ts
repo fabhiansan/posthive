@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
   updateCount: 1,
   createError: null as null | Error,
   saved: null as null | Record<string, unknown>,
+  was: { assigneeId: "ckaaaaaaaaaaaaaaaaaaaaaaa" } as null | { assigneeId: string | null },
+  notified: [] as unknown[],
   calls: [] as Array<{ fn: string; args: unknown }>,
 }));
 
@@ -34,7 +36,8 @@ vi.mock("../lib/prisma.js", () => {
           if (h.createError) throw h.createError;
           return h.saved;
         }),
-        findUnique: record("dr.findUnique", () => h.saved),
+        // the cancel route first asks who the task was with (select: { assigneeId }), then reads the whole row
+        findUnique: record("dr.findUnique", (args) => ((args as { select: { id?: true } }).select.id ? h.saved : h.was)),
       },
     },
   };
@@ -43,6 +46,8 @@ vi.mock("../lib/auth/withAuth.js", async () => {
   const real = await vi.importActual<typeof import("../lib/auth/withAuth.js")>("../lib/auth/withAuth.js");
   return { ...real, withAuth: async () => {}, getUser: () => ({ id: h.viewer }), getWorkspaceId: () => "ws-1", getWorkspaceRole: async () => h.role };
 });
+
+vi.mock("../lib/notifications.js", () => ({ notify: vi.fn(async (rows: unknown[]) => void h.notified.push(...rows)) }));
 
 import { designRequestRoutes } from "./designRequests.js";
 
@@ -58,7 +63,7 @@ afterAll(async () => {
 
 const DESIGNER = "ckaaaaaaaaaaaaaaaaaaaaaaa";
 const row = (patch: Record<string, unknown> = {}) => ({
-  id: "dr1", status: "draft", deadline: new Date("2030-03-04T03:00:00Z"), brief: "Five slides", referenceUrl: null, sentAt: null, updatedAt: new Date("2030-01-01T00:00:00Z"),
+  id: "dr1", status: "draft", deadline: new Date("2030-03-04T03:00:00Z"), brief: "Five slides", referenceUrl: null, sentAt: null, updatedAt: new Date("2030-01-01T00:00:00Z"), figmaUrl: null, designerNote: null, doneAt: null,
   assignee: { id: DESIGNER, name: "Rina S.", avatarUrl: null, workspaceMembers: [{ id: "m1" }] },
   ...patch,
 });
@@ -81,6 +86,8 @@ beforeEach(() => {
   h.updateCount = 1;
   h.createError = null;
   h.saved = row();
+  h.was = { assigneeId: DESIGNER };
+  h.notified = [];
   h.calls = [];
 });
 
@@ -162,7 +169,7 @@ describe("PUT /jobs/:id/design-request", () => {
     expect(call("dr.create")).toHaveLength(0);
   });
 
-  it("the deadline is optional: absent or null saves a request with no deadline (a full replace clears an old one)", async () => {
+  it("a saved brief may have no deadline: absent or null saves it with none (a full replace clears an old one)", async () => {
     const { deadline: _skip, ...without } = body();
     expect((await put(without)).statusCode).toBe(200);
     expect(call("dr.create")[0].args).toMatchObject({ data: { deadline: null } });
@@ -170,6 +177,36 @@ describe("PUT /jobs/:id/design-request", () => {
     h.job = post({ designRequest: { status: "draft" } });
     expect((await put(body({ deadline: null }))).statusCode).toBe(200);
     expect(call("dr.updateMany")[0].args).toMatchObject({ data: { deadline: null } });
+  });
+
+  it("a SENT request needs a deadline: absent or null is 400 DEADLINE_REQUIRED and nothing is written or told", async () => {
+    const { deadline: _skip, ...without } = body({ send: true });
+    for (const payload of [without, body({ send: true, deadline: null })]) {
+      const res = await put(payload);
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ code: "DEADLINE_REQUIRED" });
+    }
+    expect(call("dr.create")).toHaveLength(0);
+    expect(h.notified).toEqual([]);
+  });
+
+  it("sending tells the designer about the task; saving a brief tells nobody", async () => {
+    await put(body());
+    expect(h.notified).toEqual([]);
+    h.saved = row({ status: "sent", sentAt: new Date() });
+    h.calls = [];
+    h.job = post();
+    await put(body({ send: true }));
+    expect(h.notified).toEqual([{ workspaceId: "ws-1", userId: DESIGNER, kind: "task_assigned", postJobId: "p1", actorId: "marketing-1" }]);
+  });
+
+  it("a request the designer already answered is locked for Marketing too: 409 REQUEST_DONE", async () => {
+    h.job = post({ designRequest: { status: "done" } });
+    const res = await put(body());
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: "REQUEST_DONE" });
+    expect(call("dr.updateMany")).toHaveLength(0);
+    expect(call("dr.create")).toHaveLength(0);
   });
 
   it("a deadline in the past, or after the publishing time, is refused with its code", async () => {
@@ -244,8 +281,9 @@ describe("POST /jobs/:id/design-request/cancel", () => {
     expect(res.statusCode).toBe(200);
     expect(call("dr.updateMany")[0].args).toMatchObject({
       where: { postJobId: "p1", workspaceId: "ws-1", status: "sent" },
-      data: { status: "draft", sentAt: null },
+      data: { status: "draft", sentAt: null, figmaUrl: null, designerNote: null },
     });
+    expect(h.notified).toEqual([{ workspaceId: "ws-1", userId: DESIGNER, kind: "task_cancelled", postJobId: "p1", actorId: "marketing-1" }]);
     expect(call("dr.updateMany")[0].args).not.toMatchObject({ data: { brief: expect.anything() } });
     expect(res.json().request).toMatchObject({ status: "draft" });
   });

@@ -306,12 +306,10 @@ export function toPost(job: PostRecord): DashboardPost {
 }
 
 // ── The designer's dashboard ────────────────────────────────────────────────
-// The design team sees the posts waiting for its review (longest first), what happened lately and its templates.
+// The design team sees the tasks Marketing assigned to it, what happened lately and its templates (lib/designTasks.ts).
 // The API sends data; the browser writes the sentences.
 
-/** Rows of the review queue on the designer's dashboard: the ones waiting longest. */
-export const DESIGN_QUEUE_LIMIT = 5;
-/** Events of "Recent activities". */
+/** Events of "Recent activity". */
 export const DESIGN_ACTIVITY_LIMIT = 5;
 
 /** The pillar of a post: the one saved with it, else the one its category belongs to. */
@@ -320,118 +318,4 @@ export function pillarOf(content: Record<string, unknown>): string | null {
   if (saved) return saved;
   const category = normalizeCategory(content.category);
   return category ? pillarFor(category) : null;
-}
-
-/** What a post is made of, enough for the browser to say "Carousel · 5 slides" without the content JSON. */
-export interface PostMedia {
-  /** Pictures the browser can show (see images()). */
-  images: number;
-  /** A video file, or a YouTube video the post points at. */
-  video: boolean;
-  /** Only when the post was made as a Reel or a Story. */
-  mediaType: "reel" | "story" | null;
-  /** Only when the post goes to YouTube. */
-  youtubeType: "short" | "video" | null;
-}
-
-export function mediaOf(content: Record<string, unknown>): PostMedia {
-  const urls = Array.isArray(content.mediaUrls) ? content.mediaUrls : [];
-  return {
-    images: images(content.mediaUrls).length,
-    video: urls.some((u) => typeof u === "string" && VIDEO.test(u)) || text(content.youtubeVideoUrl) !== "",
-    mediaType: content.mediaType === "reel" || content.mediaType === "story" ? content.mediaType : null,
-    youtubeType: content.youtubeType === "short" || content.youtubeType === "video" ? content.youtubeType : null,
-  };
-}
-
-export interface QueuePost {
-  id: string;
-  status: string;
-  approvalStatus: string | null;
-  title: string;
-  thumbnail: string | null;
-  pillar: string | null;
-  media: PostMedia;
-  /** 1 = the first time it was sent; 2 = sent again after a revision. */
-  submitCount: number;
-  /** ISO instant of the last time it was sent for review; null for a post that was waiting before this was recorded. */
-  submittedAt: string | null;
-  /** Who sent it; the author when that was not recorded. */
-  submittedBy: string | null;
-  /** ISO instant, or null when the post has no date. */
-  scheduledFor: string | null;
-}
-
-export interface QueueRecord {
-  id: string;
-  status: string;
-  approvalStatus: string | null;
-  scheduledFor: Date | null;
-  content: string;
-  submittedAt: Date | null;
-  submitCount: number;
-  submittedBy: { name: string } | null;
-  user: { name: string } | null;
-}
-
-export function toQueuePost(job: QueueRecord): QueuePost {
-  const content = contentOf(job.content);
-  return {
-    id: job.id,
-    status: job.status,
-    approvalStatus: job.approvalStatus,
-    title: titleOf(content),
-    thumbnail: firstImage(content.mediaUrls),
-    pillar: pillarOf(content),
-    media: mediaOf(content),
-    submitCount: job.submitCount,
-    submittedAt: job.submittedAt ? job.submittedAt.toISOString() : null,
-    submittedBy: job.submittedBy?.name ?? job.user?.name ?? null,
-    // The MCP and the public API save a post with no date as the epoch: that is "no date", not 1 January 1970
-    scheduledFor: realDate(job.scheduledFor)?.toISOString() ?? null,
-  };
-}
-
-export interface DesignActivity {
-  kind: "submitted" | "approved" | "revision" | "template";
-  /** ISO instant. */
-  at: string;
-  by: string | null;
-  /** The person asking did it themselves ("You approved ..."). */
-  mine: boolean;
-  /** The post's title, or the template's name. */
-  title: string;
-  /** Only for a template: the pillar it was added to. */
-  pillar: string | null;
-}
-
-export interface ActivitySources {
-  submitted: { content: string; submittedAt: Date | null; submittedById: string | null; submittedBy: { name: string } | null; user: { name: string } | null }[];
-  reviewed: { content: string; approvalStatus: string | null; reviewedAt: Date | null; reviewedByUserId: string | null; reviewedBy: { name: string } | null }[];
-  templates: { name: string; pillar: string | null; createdAt: Date; userId: string; user: { name: string } | null }[];
-}
-
-/**
- * The newest events of a workspace since `since`, built from what the rows already hold: nothing logs events, so a post
- * keeps only its last send and its last review (a post sent again forgets the answer it got). Newest first.
- */
-export function designActivities(viewerId: string, src: ActivitySources, since: Date, limit: number): DesignActivity[] {
-  const events: (DesignActivity & { time: number })[] = [];
-  const push = (e: Omit<DesignActivity, "at">, at: Date | null) => {
-    if (at && at >= since) events.push({ ...e, at: at.toISOString(), time: at.getTime() });
-  };
-  for (const r of src.submitted) {
-    push({ kind: "submitted", by: r.submittedBy?.name ?? r.user?.name ?? null, mine: r.submittedById === viewerId, title: titleOf(contentOf(r.content)), pillar: null }, r.submittedAt);
-  }
-  for (const r of src.reviewed) {
-    if (r.approvalStatus !== "approved" && r.approvalStatus !== "rejected") continue;
-    push({ kind: r.approvalStatus === "approved" ? "approved" : "revision", by: r.reviewedBy?.name ?? null, mine: r.reviewedByUserId === viewerId, title: titleOf(contentOf(r.content)), pillar: null }, r.reviewedAt);
-  }
-  for (const t of src.templates) {
-    push({ kind: "template", by: t.user?.name ?? null, mine: t.userId === viewerId, title: t.name, pillar: t.pillar }, t.createdAt);
-  }
-  return events
-    .sort((a, b) => b.time - a.time)
-    .slice(0, limit)
-    .map(({ time: _time, ...event }) => event);
 }

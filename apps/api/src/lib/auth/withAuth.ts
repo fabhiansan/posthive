@@ -95,19 +95,21 @@ export async function requireOwnerRole(userId: string, workspaceId: string): Pro
   return null;
 }
 
-// Roles that manage the workspace and can bypass the design-approval gate:
-// owner/admin = super admin (everything), designer = design team (review + templates).
-export const MANAGE_ROLES = ["owner", "admin", "designer"] as const;
+// Roles that approve posts and bypass the design-approval gate: owner/admin only. The design team (designer) makes the
+// designs Marketing asks for (routes/designTasks.ts) and manages templates; it does not approve content.
+export const MANAGE_ROLES = ["owner", "admin"] as const;
+
+export const MANAGE_FORBIDDEN_MSG = "Only workspace owners and admins can perform this action.";
 
 export function isManageRole(role: string | null | undefined): boolean {
   return role !== null && role !== undefined && (MANAGE_ROLES as readonly string[]).includes(role);
 }
 
-/** Returns 403 payload if the user is not owner/admin/designer, null if allowed. */
+/** Returns 403 payload if the user is not owner/admin, null if allowed. */
 export async function requireManageRole(userId: string, workspaceId: string): Promise<{ error: string; code: string } | null> {
   const role = await getWorkspaceRole(userId, workspaceId);
   if (!isManageRole(role)) {
-    return { error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" };
+    return { error: MANAGE_FORBIDDEN_MSG, code: "FORBIDDEN" };
   }
   return null;
 }

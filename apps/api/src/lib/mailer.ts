@@ -539,3 +539,27 @@ export async function sendPostFailedEmail(
     html,
   });
 }
+
+/**
+ * Marketing hears that the designer marked a design done. The title, the designer's name and the note are text people
+ * typed, so they reach the page escaped; the link goes to the post's editor, where the Figma link is.
+ */
+export async function sendDesignDoneEmail(to: string, a: { postTitle: string; designerName: string; postId: string; note: string | null }): Promise<void> {
+  const title = escapeHtml(a.postTitle);
+  const designer = escapeHtml(a.designerName);
+  const editUrl = `${APP_URL}/jobs/${encodeURIComponent(a.postId)}/edit`;
+  const body = `
+    ${eyebrow("Design done", "#22c55e")}
+    ${heading(`${designer} sent the design for “${title}”.`)}
+    ${bodyText("The Figma link is on the post. Open it to export the design, then send the post for review.")}
+    ${a.note ? infoBox(`<p style="font-size:10px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#7a7a7a;margin:0 0 5px;">Note from ${designer}</p><p style="font-size:14px;color:#ededed;margin:0;">${escapeHtml(a.note)}</p>`) : ""}
+    ${ctaButton(editUrl, "Open the post", "#22c55e", "#0a0a0a")}
+  `;
+  const html = emailShell("linear-gradient(90deg,#22c55e,#4ade80)", body, `You received this because you asked a designer for this design. <a href="${APP_URL}/jobs" style="color:#555;">Open the Content List</a>.`);
+
+  if (!resend) {
+    console.log(`[mailer] Design done email for ${to}: post ${a.postId} by ${a.designerName}`);
+    return;
+  }
+  await resend.emails.send({ from: FROM, to, subject: `${a.designerName} sent the design for “${a.postTitle}” — Posthive`, html });
+}

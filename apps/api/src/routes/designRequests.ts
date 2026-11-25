@@ -13,6 +13,7 @@ import {
 import { safeLink } from "../lib/contentList.js";
 import { realDate } from "../lib/dashboardData.js";
 import { DEADLINE_MESSAGE, deadlineProblem, designRequestSelect, toDesignRequestView } from "../lib/designRequest.js";
+import { notify } from "../lib/notifications.js";
 
 const DESIGNERS_MAX = 100;
 
@@ -80,6 +81,9 @@ export async function designRequestRoutes(app: FastifyInstance): Promise<void> {
       if (job.designRequest?.status === "sent") {
         return reply.status(409).send({ error: "The request is already with the designer. Cancel it to change it.", code: "REQUEST_SENT" });
       }
+      if (job.designRequest?.status === "done") {
+        return reply.status(409).send({ error: "The designer already sent the design for this post.", code: "REQUEST_DONE" });
+      }
 
       const designer = await prisma.workspaceMember.findFirst({
         where: { workspaceId, userId: assigneeId, role: "designer" },
@@ -87,8 +91,9 @@ export async function designRequestRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!designer) return reply.status(400).send({ error: "Pick a designer from this workspace.", code: "INVALID_DESIGNER" });
 
-      // no deadline is fine. A post made by the API with no date holds the epoch: that is no publishing time to check against
-      const problem = due ? deadlineProblem(due, new Date(), realDate(job.scheduledFor)) : null;
+      // A saved brief may have no deadline; a sent request needs one. A post made by the API with no date holds the epoch:
+      // that is no publishing time to check against
+      const problem = due ? deadlineProblem(due, new Date(), realDate(job.scheduledFor)) : send ? "DEADLINE_REQUIRED" : null;
       if (problem) return reply.status(400).send({ error: DEADLINE_MESSAGE[problem], code: problem });
 
       const data = {
@@ -122,6 +127,8 @@ export async function designRequestRoutes(app: FastifyInstance): Promise<void> {
           throw err;
         }
       }
+      // the designer hears about a new task; a saved brief is nobody's task yet
+      if (send) await notify([{ workspaceId, userId: assigneeId, kind: "task_assigned", postJobId: id, actorId: userId }]);
       return reply.send({ request: saved ? toDesignRequestView(saved) : null });
     },
   );
@@ -144,11 +151,14 @@ export async function designRequestRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!job || !isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
 
+      // who the task was with, read before the answer clears it: a designer's saved link and note go with the request
+      const was = await prisma.designRequest.findUnique({ where: { postJobId: id }, select: { assigneeId: true } });
       const { count } = await prisma.designRequest.updateMany({
         where: { postJobId: id, workspaceId, status: "sent" },
-        data: { status: "draft", sentAt: null },
+        data: { status: "draft", sentAt: null, figmaUrl: null, designerNote: null },
       });
       if (count === 0) return reply.status(409).send({ error: "There is no sent request to cancel.", code: "NOT_SENT" });
+      await notify([{ workspaceId, userId: was?.assigneeId, kind: "task_cancelled", postJobId: id, actorId: userId }]);
 
       const saved = await prisma.designRequest.findUnique({ where: { postJobId: id }, select: designRequestSelect(workspaceId) });
       return reply.send({ request: saved ? toDesignRequestView(saved) : null });

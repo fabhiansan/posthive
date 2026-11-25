@@ -30,6 +30,7 @@ import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
 import { promoteRefusal } from "../lib/promoteGate.js";
 import { withoutCanvasKeys } from "../lib/jobEditRules.js";
 import { canvasDesignMetadataProblem, designImageProblems, isCanvasDesignUploadPath } from "../lib/designImage.js";
+import { notify } from "../lib/notifications.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -587,7 +588,7 @@ export async function handleTool(
       }
 
       if (forcedDraft) {
-        throw new Error("Approval required — only workspace admins or designers can approve drafts in this workspace.");
+        throw new Error("Approval required — only workspace owners and admins can approve drafts in this workspace.");
       }
 
       const job = await prisma.postJob.findUnique({
@@ -618,6 +619,9 @@ export async function handleTool(
         },
       });
       await schedulePostJob(updated.id, scheduledFor);
+      if (job.approvalStatus === "pending") {
+        await notify([{ workspaceId, userId: job.submittedById ?? job.userId, kind: "post_approved", postJobId: updated.id, actorId: userId }]);
+      }
 
       return ok({
         id: updated.id,

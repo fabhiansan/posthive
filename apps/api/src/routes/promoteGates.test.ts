@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   updates: [] as unknown[],
   created: [] as Array<{ data: Record<string, unknown> }>,
   queued: [] as unknown[],
+  notified: [] as unknown[],
 }));
 
 vi.mock("../lib/prisma.js", () => ({
@@ -32,6 +33,7 @@ vi.mock("../lib/queue.js", () => ({
   schedulePostJob: vi.fn(async (...a: unknown[]) => { h.queued.push(a); }),
   postJobQueue: {},
 }));
+vi.mock("../lib/notifications.js", () => ({ notify: vi.fn(async (rows: unknown[]) => void h.notified.push(...rows)) }));
 vi.mock("../lib/auth/withApiKey.js", () => ({
   withApiKey: async (req: { apiKeyUser?: unknown }) => {
     req.apiKeyUser = { id: "admin-1", workspaceId: "ws-1", role: "admin", approvalRequired: false, plan: "pro", planStatus: "active" };
@@ -63,11 +65,30 @@ beforeEach(() => {
   h.updates = [];
   h.created = [];
   h.queued = [];
+  h.notified = [];
 });
 
 const FUTURE = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 const restApprove = () => app.inject({ method: "POST", url: "/api/v1/posts/p1/approve", payload: { scheduledFor: FUTURE } });
 const mcpApprove = () => handleTool("approve_draft", { post_id: "p1", scheduled_time: FUTURE }, "admin-1", "ws-1", { role: "admin", approvalRequired: false });
+
+describe("approving a post in review answers the person who sent it (REST and MCP)", () => {
+  const inReview = () => draft({ approvalStatus: "pending", submittedById: "marketing-1" });
+
+  it("tells the sender, and tells nobody when a plain draft is scheduled", async () => {
+    h.job = inReview();
+    expect((await restApprove()).statusCode).toBe(200);
+    await mcpApprove();
+    expect(h.notified).toEqual([
+      { workspaceId: "ws-1", userId: "marketing-1", kind: "post_approved", postJobId: "p1", actorId: "admin-1" },
+      { workspaceId: "ws-1", userId: "marketing-1", kind: "post_approved", postJobId: "p1", actorId: "admin-1" },
+    ]);
+    h.notified = [];
+    h.job = draft();
+    await restApprove();
+    expect(h.notified).toEqual([]);
+  });
+});
 
 describe("REST approve and MCP approve_draft", () => {
   it("schedule a plain draft that has an account", async () => {

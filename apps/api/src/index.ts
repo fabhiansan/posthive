@@ -34,6 +34,8 @@ import { authRoutes } from "./routes/auth.js";
 import { jobRoutes } from "./routes/jobs.js";
 import { jobsListRoutes } from "./routes/jobsList.js";
 import { designRequestRoutes } from "./routes/designRequests.js";
+import { designTaskRoutes } from "./routes/designTasks.js";
+import { notificationRoutes } from "./routes/notifications.js";
 import { importRoutes } from "./routes/import.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { uploadRoutes } from "./routes/upload.js";
@@ -196,6 +198,8 @@ async function main() {
   await app.register(jobRoutes, { storage });
   await app.register(jobsListRoutes);
   await app.register(designRequestRoutes);
+  await app.register(designTaskRoutes);
+  await app.register(notificationRoutes);
   await app.register(importRoutes);
   await app.register(dashboardRoutes);
   await app.register(uploadRoutes, { storage });

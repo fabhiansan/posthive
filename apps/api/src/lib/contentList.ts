@@ -135,7 +135,7 @@ export interface DetailRecord extends ListRecord {
   reviewedBy: { name: string } | null;
   user: { name: string } | null;
   targets: { status: string; error: string | null; account: { platform: string; displayName: string } | null }[];
-  designRequest: { status: string; deadline: Date | null; assignee: { name: string } | null } | null;
+  designRequest: { status: string; deadline: Date | null; doneAt: Date | null; assignee: { name: string } | null } | null;
 }
 
 export interface ActivityEntry {
@@ -168,8 +168,8 @@ export interface PostDetail extends ListItem {
   format: "single" | "carousel" | null;
   /** The link to the customised design (Figma or any https), as Marketing saved it. */
   designFigmaUrl: string | null;
-  /** The request to a designer, when there is one; `deadline` is an ISO instant, or null (it is optional). */
-  designRequest: { status: string; assignee: string | null; deadline: string | null } | null;
+  /** The request to a designer, when there is one; `deadline` is an ISO instant, or null (a saved brief may have none). `doneAt` only for a done one: the designer's link is then the post's `designFigmaUrl`. */
+  designRequest: { status: string; assignee: string | null; deadline: string | null; doneAt: string | null } | null;
 }
 
 /** What is recorded about a post, oldest first: when it came in, who answered its review, what failed. */
@@ -217,7 +217,12 @@ export function toDetail(job: DetailRecord): PostDetail {
     format: content.format === "single" || content.format === "carousel" ? content.format : null,
     designFigmaUrl: safeLink(content.designFigmaUrl),
     designRequest: job.designRequest
-      ? { status: job.designRequest.status, assignee: job.designRequest.assignee?.name ?? null, deadline: job.designRequest.deadline ? job.designRequest.deadline.toISOString() : null }
+      ? {
+          status: job.designRequest.status,
+          assignee: job.designRequest.assignee?.name ?? null,
+          deadline: job.designRequest.deadline ? job.designRequest.deadline.toISOString() : null,
+          doneAt: job.designRequest.status === "done" && job.designRequest.doneAt ? job.designRequest.doneAt.toISOString() : null,
+        }
       : null,
     missing: missingForReview({
       scheduledFor: job.scheduledFor,

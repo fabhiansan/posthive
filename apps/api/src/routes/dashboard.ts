@@ -1,14 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { getUser, getWorkspaceId, getWorkspaceRole, isManageRole, jobVisibilityWhere, withAuth } from "../lib/auth/withAuth.js";
+import { getUser, getWorkspaceId, getWorkspaceRole, jobVisibilityWhere, withAuth } from "../lib/auth/withAuth.js";
 import { STATUS_GROUPS } from "../lib/jobFilters.js";
 import {
   ACTIVITY_DAYS,
   DESIGN_ACTIVITY_LIMIT,
-  DESIGN_QUEUE_LIMIT,
   LIST_LIMIT,
-  designActivities,
   isListKind,
   listWhere,
   monthOf,
@@ -20,11 +18,11 @@ import {
   readyToSchedule,
   tasksWhere,
   toPost,
-  toQueuePost,
   wibKey,
   wibStart,
   type ListKind,
 } from "../lib/dashboardData.js";
+import { DASHBOARD_TASK_LIMIT, TASK_SELECT, countTasks, taskActivities, taskBase, taskOrder, taskTabWhere, toTaskItem } from "../lib/designTasks.js";
 
 const POST_SELECT = {
   id: true,
@@ -41,18 +39,6 @@ const LIVE = [...STATUS_GROUPS.pending, ...STATUS_GROUPS.done];
 /** Most posts a day can list on the dashboard: a busy day, not a whole quarter. */
 const TODAY_LIMIT = 50;
 
-const QUEUE_SELECT = {
-  id: true,
-  status: true,
-  approvalStatus: true,
-  scheduledFor: true,
-  content: true,
-  submittedAt: true,
-  submitCount: true,
-  submittedBy: { select: { name: true } },
-  user: { select: { name: true } },
-} satisfies Prisma.PostJobSelect;
-
 /** A workspace holds one template per content category (16), so this is a safety cap, not a page. */
 const TEMPLATE_LIMIT = 200;
 
@@ -61,10 +47,9 @@ const listOrder = (kind: ListKind): Prisma.PostJobOrderByWithRelationInput[] =>
   kind === "activity" ? [{ updatedAt: "desc" }, { id: "asc" }] : [{ scheduledFor: { sort: "asc", nulls: "last" } }, { id: "asc" }];
 
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
-  // The design team's dashboard: the posts waiting for its review (longest first), the counts around them, what
-  // happened lately and the templates. Owner, admin and designer review; a member has no use for it.
-  // These queries do NOT use jobVisibilityWhere on purpose: a designer is not shown a draft that was sent back,
-  // but "Revision required" has to count them. Nothing here opens such a post, and the content JSON never leaves the server.
+  // The design team's dashboard: the tasks Marketing assigned to THIS designer (soonest deadline first), the counts around
+  // them, what happened lately and the templates. Designer only: approving is the admin's, so an owner or admin has no use
+  // for it. Every task query carries the workspace and the assignee; nothing here opens the content JSON.
   app.get(
     "/dashboard/design",
     { preHandler: [withAuth], config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
@@ -72,55 +57,45 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       const { id: userId } = getUser(req);
       const workspaceId = getWorkspaceId(req);
       const role = await getWorkspaceRole(userId, workspaceId);
-      if (!isManageRole(role)) return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
+      if (role !== "designer") return reply.status(403).send({ error: "The design dashboard is for the design team.", code: "FORBIDDEN" });
 
       const now = new Date();
-      const quarter = quarterOf(wibKey(now));
       const since = new Date(now.getTime() - ACTIVITY_DAYS * 24 * 60 * 60 * 1000);
+      const mine = taskBase(workspaceId, userId);
 
-      const [inReview, approved, queue, submitted, reviewed, templates] = await Promise.all([
-        prisma.postJob.groupBy({
-          by: ["approvalStatus"],
-          where: { workspaceId, status: "draft", approvalStatus: { in: ["pending", "rejected"] } },
-          _count: true,
+      const [counts, open, assigned, answered, templates] = await Promise.all([
+        countTasks(prisma, workspaceId, userId),
+        prisma.designRequest.findMany({
+          where: { ...mine, status: "sent" },
+          orderBy: taskOrder("assigned"),
+          take: DASHBOARD_TASK_LIMIT,
+          select: TASK_SELECT,
         }),
-        prisma.postJob.count({
-          where: { workspaceId, approvalStatus: "approved", reviewedAt: { gte: wibStart(quarter.start), lt: wibStart(quarter.end) } },
-        }),
-        prisma.postJob.findMany({
-          where: { workspaceId, status: "draft", approvalStatus: "pending" },
-          orderBy: [{ submittedAt: { sort: "asc", nulls: "last" } }, { id: "asc" }],
-          take: DESIGN_QUEUE_LIMIT,
-          select: QUEUE_SELECT,
-        }),
-        prisma.postJob.findMany({
-          where: { workspaceId, submittedAt: { gte: since } },
-          orderBy: [{ submittedAt: "desc" }, { id: "asc" }],
+        prisma.designRequest.findMany({
+          where: { ...mine, ...taskTabWhere("all"), sentAt: { gte: since } },
+          orderBy: [{ sentAt: "desc" }, { id: "asc" }],
           take: DESIGN_ACTIVITY_LIMIT,
-          select: { content: true, submittedAt: true, submittedById: true, submittedBy: { select: { name: true } }, user: { select: { name: true } } },
+          select: { sentAt: true, createdBy: { select: { name: true } }, postJob: { select: { content: true } } },
         }),
-        prisma.postJob.findMany({
-          where: { workspaceId, approvalStatus: { in: ["approved", "rejected"] }, reviewedAt: { gte: since } },
-          orderBy: [{ reviewedAt: "desc" }, { id: "asc" }],
+        prisma.designRequest.findMany({
+          where: { ...mine, status: "done", doneAt: { gte: since } },
+          orderBy: [{ doneAt: "desc" }, { id: "asc" }],
           take: DESIGN_ACTIVITY_LIMIT,
-          select: { content: true, approvalStatus: true, reviewedAt: true, reviewedByUserId: true, reviewedBy: { select: { name: true } } },
+          select: { doneAt: true, postJob: { select: { content: true } } },
         }),
         prisma.template.findMany({
-          // a draft is the designers' own: an admin sees the published ones (the same rule as GET /templates)
-          where: { workspaceId, category: { not: null }, ...(role === "designer" ? {} : { published: true }) },
+          where: { workspaceId, category: { not: null } },
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           take: TEMPLATE_LIMIT,
           select: { name: true, pillar: true, published: true, createdAt: true, userId: true, user: { select: { name: true } } },
         }),
       ]);
 
-      const countOf = (status: string) => inReview.find((g) => g.approvalStatus === status)?._count ?? 0;
       return reply.send({
-        pending: countOf("pending"),
-        approved,
-        revision: countOf("rejected"),
-        queue: queue.map(toQueuePost),
-        activities: designActivities(userId, { submitted, reviewed, templates }, since, DESIGN_ACTIVITY_LIMIT),
+        counts,
+        // open tasks only: a done one is waiting for Marketing, not for this designer
+        tasks: open.map(toTaskItem),
+        activities: taskActivities(userId, { assigned, answered, templates }, since, DESIGN_ACTIVITY_LIMIT),
         templates: templates.map((t) => ({ pillar: t.pillar, published: t.published })),
       });
     },

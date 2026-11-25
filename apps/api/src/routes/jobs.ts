@@ -7,7 +7,7 @@ import { prisma } from "../lib/prisma.js";
 const sseConnections = new Map<string, number>();
 const SSE_MAX_PER_USER = 3;
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
-import { withAuth, getUser, getWorkspaceId, getWorkspaceRole, isManageRole, requireManageRole, isContentEditorRole, requireContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN, ACCESS_COOKIE_NAME } from "../lib/auth/withAuth.js";
+import { withAuth, getUser, getWorkspaceId, getWorkspaceRole, isManageRole, requireManageRole, isContentEditorRole, requireContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN, MANAGE_FORBIDDEN_MSG, ACCESS_COOKIE_NAME } from "../lib/auth/withAuth.js";
 import { authProvider } from "../lib/auth/index.js";
 import { enforcePlan } from "../lib/enforcePlan.js";
 import { getPlan } from "../lib/plans.js";
@@ -27,6 +27,7 @@ import { LIMITS } from "../lib/canvas.js";
 import { isRefusal } from "../lib/canvasHttp.js";
 import { resolveDesigns } from "../lib/canvasDesigns.js";
 import { canvasDesignMetadataProblem, designImageProblems, designsOfContent, isCanvasDesignUploadPath } from "../lib/designImage.js";
+import { notify, notifyAdmins } from "../lib/notifications.js";
 
 // The approved Canvas designs on a post (T7): only the id of the approved submission and the picture's address are read from the client.
 // What is stored (and the size in bytes) comes from the server's own records, see lib/canvasDesigns.ts. It is NOT in CONTENT_KEYS: PATCH
@@ -86,7 +87,7 @@ function contentType(pillar: Pillar | null | undefined, category: Category | nul
   return { pillar: derived, category };
 }
 
-// The Figma (or any https) link to the customised design; "" clears it
+// The Figma (or any https) link to the customised design, or the copywriting / supporting-assets link; "" clears it
 const designLink = z.string().trim().max(500).refine((v) => v === "" || (v.startsWith("https://") && safeLink(v) !== null), "Use an https link");
 
 // Content keys PATCH /jobs/:id may change. A key that is not sent keeps its stored value; null or "" clears it.
@@ -94,7 +95,7 @@ const CONTENT_KEYS = [
   "text", "mediaUrls", "mediaType", "youtubeType", "youtubeVideoMode", "youtubeVideoUrl", "youtubeThumbnailUrl",
   "pixelfedSensitive", "pixelfedVisibility", "youtubeVisibility", "youtubeTags", "youtubeMadeForKids",
   "linkedinVisibility", "blueskyLanguage", "blueskyContentWarning", "perAccount",
-  "format", "designFigmaUrl", "canvasInstanceId", "canvasTemplateId",
+  "format", "designFigmaUrl", "designCopy", "assetNotes", "canvasInstanceId", "canvasTemplateId",
 ] as const;
 
 const createJobBody = z.object({
@@ -127,6 +128,8 @@ const createJobBody = z.object({
     format: z.enum(["single", "carousel"]).nullable().optional(),
     designFigmaUrl: designLink.optional(),
     canvasDesigns: canvasDesignsBody.optional(),
+    designCopy: designLink.optional(),
+    assetNotes: designLink.optional(),
   }),
   commentText: z.string().optional(),
   // A draft may have no account yet (the Edit Content page saves one before a channel is picked); scheduling needs one
@@ -474,6 +477,8 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       category: z.enum(CATEGORIES).nullable().optional(),
       format: z.enum(["single", "carousel"]).nullable().optional(),
       designFigmaUrl: designLink.optional(),
+      designCopy: designLink.optional(),
+      assetNotes: designLink.optional(),
       // The Canvas design the post opened from its template; saved when the Studio is opened
       canvasInstanceId: z.string().cuid().nullable().optional(),
       canvasTemplateId: z.string().cuid().nullable().optional(),
@@ -659,10 +664,10 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     const role = await getWorkspaceRole(userId, workspaceId);
     if (!isManageRole(role)) {
-      return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
+      return reply.status(403).send({ error: MANAGE_FORBIDDEN_MSG, code: "FORBIDDEN" });
     }
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, content: true, designRequest: { select: { status: true } }, targets: { select: { id: true, account: { select: { platform: true } } } } } });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, submittedById: true, content: true, designRequest: { select: { status: true } }, targets: { select: { id: true, account: { select: { platform: true } } } } } });
     // Other people's plain drafts are hidden from approvers — only in-review ones can be promoted
     if (!job || !isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only draft jobs can be scheduled" });
@@ -691,6 +696,10 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     });
 
     await schedulePostJob(id, scheduledFor);
+    // approving a post that was in review answers the person who sent it
+    if (job.approvalStatus === "pending") {
+      await notify([{ workspaceId, userId: job.submittedById ?? job.userId, kind: "post_approved", postJobId: id, actorId: userId }]);
+    }
     return reply.send(updated);
   });
 
@@ -705,7 +714,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const forbidden = await requireManageRole(userId, workspaceId);
     if (forbidden) return reply.status(403).send(forbidden);
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true } });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, submittedById: true } });
     if (!job) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft" || job.approvalStatus !== "pending") {
       return reply.status(409).send({ error: "Only posts awaiting review can be rejected" });
@@ -721,6 +730,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       },
       include: { targets: { select: TARGET_SELECT } },
     });
+    await notify([{ workspaceId, userId: job.submittedById ?? job.userId, kind: "post_sent_back", postJobId: id, actorId: userId }]);
     return reply.send(updated);
   });
 
@@ -761,6 +771,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
         data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
         include: { targets: { select: TARGET_SELECT } },
       });
+      await notifyAdmins(workspaceId, "review_submitted", [id], userId);
       return reply.send(updated);
     } catch (err) {
       // P2025: no row matches any more: another send (or the reviewer) got there between the check above and this write
@@ -815,6 +826,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
         where: { id: { in: submit }, workspaceId, status: "draft", OR: SUBMITTABLE, ...NOT_IN_DESIGN },
         data: { approvalStatus: "pending", reviewNote: null, reviewedByUserId: null, reviewedAt: null, ...nextSubmission(userId) },
       });
+      await notifyAdmins(workspaceId, "review_submitted", submit, userId);
     }
     return reply.send({ submitted: submit, skipped });
   });

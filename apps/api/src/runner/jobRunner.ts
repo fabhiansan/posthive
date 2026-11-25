@@ -24,6 +24,7 @@ import { MediaUnavailable, lockForCopy, withUploads } from "../lib/mediaDelete.j
 import { contentMediaUrls } from "../lib/mediaUrl.js";
 import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
+import { notify } from "../lib/notifications.js";
 import { explainPublishError, textLimitProblem } from "../lib/publishError.js";
 import { designImageProblems } from "../lib/designImage.js";
 import { withoutCanvasKeys } from "../lib/jobEditRules.js";
@@ -243,6 +244,8 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
           console.warn(`[runner] failed to send failure email for job ${job.id}:`, err.message);
         });
       }
+      // the bell as well, whether or not there is an e-mail address or a date to put in it
+      if (job.workspaceId) await notify([{ workspaceId: job.workspaceId, userId: job.userId, kind: "post_failed", postJobId: job.id }]);
     }
   }
 

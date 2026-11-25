@@ -13,6 +13,7 @@ import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
 import { attachUploads, lockForCopy, lockUploads, MediaUnavailable, mediaProblem, releaseMedia, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
 import { canvasDesignMetadataProblem, designImageProblems, designsOfContent, isCanvasDesignUploadPath, pruneDesigns } from "../lib/designImage.js";
+import { notify } from "../lib/notifications.js";
 
 const preHandler = [withApiKey];
 
@@ -484,7 +485,7 @@ export async function publicApiRoutes(
 
     // Design-approval gate — member keys cannot self-approve
     if (approvalRequired && !isManageRole(role)) {
-      return reply.status(403).send({ error: "Only workspace admins or designers can approve drafts.", code: "FORBIDDEN" });
+      return reply.status(403).send({ error: "Only workspace owners and admins can approve drafts.", code: "FORBIDDEN" });
     }
 
     const job = await prisma.postJob.findFirst({
@@ -511,6 +512,9 @@ export async function publicApiRoutes(
       },
     });
     await schedulePostJob(updated.id, scheduledFor);
+    if (job.approvalStatus === "pending") {
+      await notify([{ workspaceId, userId: job.submittedById ?? job.userId, kind: "post_approved", postJobId: updated.id, actorId: req.apiKeyUser!.id }]);
+    }
 
     return reply.send({
       id: updated.id,

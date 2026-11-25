@@ -47,7 +47,9 @@ model User {
   submittedJobs      PostJob[]           @relation("PostJobSubmittedBy")
   designRequestsAssigned DesignRequest[] @relation("DesignRequestAssignee")
   designRequestsCreated  DesignRequest[] @relation("DesignRequestCreatedBy")
-  loginEvents        LoginEvent[]
+  notifications      Notification[]      @relation("NotificationRecipient")
+  notificationsCaused Notification[]     @relation("NotificationActor")
+  loginEvents       LoginEvent[]
   recoveryCodes      RecoveryCode[]
   totpChallenges     TotpChallenge[]
   authSessions       AuthSession[]
@@ -102,6 +104,7 @@ model Workspace {
   designSubmissions    DesignSubmission[]
   designReviewRequests DesignReviewRequest[]
   designRequests       DesignRequest[]
+  notifications        Notification[]
 
   // Back-ref for users whose activeWorkspace points here
   activeForUsers User[] @relation("UserActiveWorkspace")
@@ -271,6 +274,7 @@ model PostJob {
 
   targets       PostJobTarget[]
   designRequest DesignRequest?
+  notifications Notification[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -579,8 +583,9 @@ model DesignReviewRequest {
 
 // Marketing's request to a designer for the design of one post (Path B of the Edit Content page): who, by when, and the
 // brief. Not the Canvas DesignReviewRequest (that is a designer's answer to a Canvas submission). "draft" is a saved brief
-// Marketing can still change; "sent" is locked until Marketing cancels it. The assignee is nullable so deleting a user
-// keeps the brief; a designer who left the workspace stays here and the API reports them as no longer active.
+// Marketing can still change; "sent" is locked until Marketing cancels it; "done" is the designer's answer (the Figma link),
+// locked for both sides. The assignee is nullable so deleting a user keeps the brief; a designer who left the workspace stays
+// here and the API reports them as no longer active.
 model DesignRequest {
   id           String    @id @default(cuid())
   workspaceId  String
@@ -592,14 +597,40 @@ model DesignRequest {
   deadline     DateTime? // optional; an instant (WIB wall clock in the UI), before the post's publishing time
   brief        String
   referenceUrl String?
-  status       String    @default("draft") // draft | sent
+  status       String    @default("draft") // draft | sent | done
   sentAt       DateTime?
+  // The designer's side. figmaUrl + designerNote are the designer's own while "sent" (a saved draft, never shown to
+  // Marketing) and the answer once "done"; Marketing and the public views read them only from a done request.
+  figmaUrl      String?
+  designerNote  String?
+  doneAt        DateTime?
   createdById  String?
   createdBy    User?     @relation("DesignRequestCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@index([workspaceId, assigneeId, status])
+}
+
+// One line in a person's notification drawer. Only the facts are stored (who it is for, what happened, which post, who did
+// it); the title, picture and note are read from the post when the drawer opens, so a renamed post is renamed here too.
+// kind: task_assigned | task_cancelled | design_done | review_submitted | post_approved | post_sent_back | post_failed
+model Notification {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  kind        String
+  postJobId   String?
+  postJob     PostJob?  @relation(fields: [postJobId], references: [id], onDelete: Cascade)
+  actorId     String?
+  actor       User?     @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, workspaceId, createdAt])
+  @@index([userId, workspaceId, readAt])
 }
 
 // Anonymous + pre-login visitor session — one row per browser session.
