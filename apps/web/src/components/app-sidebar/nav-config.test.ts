@@ -27,7 +27,7 @@ describe("nav config", () => {
 
   it("the pages that do not exist yet are rows without a link", () => {
     const soon = ALL.filter((i) => i.href === null).map((i) => i.label);
-    expect(soon).toEqual(["My task", "Media library", "Help & support"]);
+    expect(soon).toEqual(["My task", "Media library", "Help & support"]); // Marketing's My task is not built; the design team's is
   });
 
   it("the footer holds only help and settings, so the links above stay on a laptop screen", () => {
@@ -83,7 +83,7 @@ describe("navGroupsFor / footerItemsFor", () => {
       ["Overview", ["Dashboard"]],
       ["Design workspace", ["Master Template", "My task"]],
     ]);
-    expect(hrefsOf("designer")).toEqual(["/dashboard", "/templates", "/profile"]);
+    expect(hrefsOf("designer")).toEqual(["/dashboard", "/templates", "/tasks", "/profile"]);
     expect(labelsOf("designer")).toEqual(["Dashboard", "Master Template", "My task", "Help & support", "Setting & integration"]);
   });
 
@@ -93,9 +93,16 @@ describe("navGroupsFor / footerItemsFor", () => {
     expect(hrefsOf("designer")).not.toContain("/jobs");
   });
 
-  it("My task waits for the 'assign to designer' step of add/edit content: a dimmed row, not a link", () => {
-    const row = DESIGN_GROUPS.flatMap((g) => g.items).find((i) => i.label === "My task");
-    expect(row?.href).toBeNull();
+  it("the design team's My task is the page of its design requests; Marketing's is still a dimmed row", () => {
+    expect(DESIGN_GROUPS.flatMap((g) => g.items).find((i) => i.label === "My task")?.href).toBe("/tasks");
+    expect(NAV_GROUPS.flatMap((g) => g.items).find((i) => i.label === "My task")?.href).toBeNull();
+  });
+
+  it("/tasks is the design team's page (and the owner's and admin's by the rule that lets them everywhere), not Marketing's", () => {
+    expect(canAccessPage("/tasks", "designer")).toBe(true);
+    expect(canAccessPage("/tasks/ckabc123", "designer")).toBe(true);
+    expect(canAccessPage("/tasks", "member")).toBe(false);
+    expect(isActiveHref("/tasks/ckabc123", "/tasks")).toBe(true);
   });
 
   it("only a designer, and an unknown role, gets the design team's groups; the others keep theirs", () => {
@@ -119,7 +126,7 @@ describe("navGroupsFor / footerItemsFor", () => {
 
   it("an unknown role gets the narrowest view and cannot reach the owner pages", () => {
     for (const odd of [undefined, null, "superuser"]) {
-      expect(hrefsOf(odd as string)).toEqual(["/dashboard", "/templates", "/profile"]);
+      expect(hrefsOf(odd as string)).toEqual(["/dashboard", "/templates", "/tasks", "/profile"]);
     }
   });
 

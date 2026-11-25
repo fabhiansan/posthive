@@ -229,7 +229,7 @@ describe("a deadline as the person reads it (WIB)", () => {
 describe("the design request on the page", () => {
   const request = (patch: Partial<DesignRequestView> = {}): DesignRequestView => ({
     id: "dr1", status: "sent", assignee: { id: "u1", name: "Rina Sari", avatarUrl: null, active: true },
-    deadline: "2026-03-04T10:00:00.000Z", brief: "5 slides", referenceUrl: null, sentAt: "2026-03-01T01:00:00.000Z", updatedAt: "2026-03-01T01:00:00.000Z", ...patch,
+    deadline: "2026-03-04T10:00:00.000Z", brief: "5 slides", referenceUrl: null, sentAt: "2026-03-01T01:00:00.000Z", updatedAt: "2026-03-01T01:00:00.000Z", doneAt: null, figmaUrl: null, designerNote: null, ...patch,
   });
 
   it("says who has it and by when, with the time; a deleted account is said so", () => {

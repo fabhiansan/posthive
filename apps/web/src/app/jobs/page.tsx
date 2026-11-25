@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { CalendarDaysIcon, CloudUploadIcon, KanbanIcon, ListIcon, PlusIcon, Table2Icon } from "lucide-react";
@@ -57,6 +57,18 @@ export default function ContentListPage() {
 
   // Opening, ticking, sending, deleting, editing and reviewing a post: the same for the dashboard's table
   const actions = useContentActions({ rows: items, reload });
+
+  // The notification bell is also on this page: a new target can arrive without a remount.
+  const openId = query.get("open");
+  const openPost = actions.open;
+  useEffect(() => {
+    if (!openId) return;
+    openPost(openId);
+    // Consume only the notification target so a later click on the same notification works too.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("open");
+    window.history.replaceState(null, "", url);
+  }, [openId, openPost]);
 
   function pick(next: ListFilter) {
     setFilter(next);

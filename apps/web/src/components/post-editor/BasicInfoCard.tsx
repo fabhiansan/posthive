@@ -16,6 +16,7 @@ import { approvalLabel, captionLimit } from "@/lib/content-list";
 import { wibDateKey } from "@/lib/datetime";
 import {
   FORMAT_OPTIONS,
+  designLinkProblem,
   formatLine,
   legacyNotes,
   withMainCaption,
@@ -40,6 +41,18 @@ type Props = {
 const Req = () => <span className="text-red-600" aria-hidden="true"> *</span>;
 
 const LABEL = "type-body-sb-xs text-muted";
+
+/** A link the designer is given. A plan import may have left plain text here: it shows as it is, and only a change to it has to be a link. */
+function LinkField({ label, value, was, onChange, placeholder }: { label: string; value: string; was: string; onChange: (v: string) => void; placeholder: string }) {
+  const problem = value !== was ? designLinkProblem(value) : null;
+  return (
+    <label className="block">
+      <span className={LABEL}>{label}</span>
+      <Input value={value} maxLength={500} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-1.5" aria-invalid={problem ? true : undefined} />
+      {problem && <span role="alert" className="mt-1.5 block type-body-r-xs text-red-600">{problem}</span>}
+    </label>
+  );
+}
 
 /** Card A of the Edit Content page: what the post says, what it is, when it goes out and where. */
 export function BasicInfoCard({ form, set, stored, post, accounts, canConnect, locked }: Props) {
@@ -118,6 +131,12 @@ export function BasicInfoCard({ form, set, stored, post, accounts, canConnect, l
             <TimeInput24 value={form.time} onChange={(time) => set({ time })} className="mt-1.5" label="Publishing" />
           </div>
         </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <LinkField label="Copywriting link (optional)" value={form.designCopy} was={stored.designCopy ?? ""} onChange={(designCopy) => set({ designCopy })} placeholder="https://docs.google.com/…" />
+          <LinkField label="Supporting assets link (optional)" value={form.assetNotes} was={stored.assetNotes ?? ""} onChange={(assetNotes) => set({ assetNotes })} placeholder="https://drive.google.com/…" />
+        </div>
+        <p className="-mt-3 type-body-r-xs text-muted">The designer opens these from their task. A plan import fills them in.</p>
 
         <PlatformCards accounts={accounts} accountIds={form.accountIds} onChange={(accountIds) => set({ accountIds })} canConnect={canConnect} disabled={locked} />
       </fieldset>

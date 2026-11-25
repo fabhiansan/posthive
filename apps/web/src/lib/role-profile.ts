@@ -27,10 +27,10 @@ export const ROLE_PROFILE: Record<AppRole, RoleProfile> = {
   },
   designer: {
     label: "Design team",
-    duty: "Reviews designs",
+    duty: "Makes the designs",
     worksWith: "Marketing Team",
-    can: "Review and approve post designs, create and edit templates",
-    cannot: "Create, import or publish posts",
+    can: "Work the design tasks Marketing sends, create and edit templates",
+    cannot: "Create, import, approve or publish posts",
   },
   admin: {
     label: "Admin",

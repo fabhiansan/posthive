@@ -34,6 +34,9 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: h.replace, push
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
+vi.mock("@/lib/useNotifications", () => ({
+  useNotifications: () => ({ unread: 0, items: null, loading: false, error: null, load: vi.fn(), markRead: vi.fn(), markAllRead: vi.fn() }),
+}));
 
 import ProfilePage from "./page";
 
@@ -151,7 +154,7 @@ describe("My Profile: what it shows", () => {
     h.role = "designer";
     render(<ProfilePage />);
     expect(screen.getByText("Role: Design team")).toBeTruthy();
-    expect(screen.getAllByText("Reviews designs").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Makes the designs").length).toBeGreaterThan(0);
     expect(screen.queryByText("Approves & publishes")).toBeNull();
     expect(screen.getByText("Marketing Team")).toBeTruthy();
   });

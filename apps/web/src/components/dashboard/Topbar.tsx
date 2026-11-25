@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { BellIcon, CalendarIcon, LightbulbIcon, SearchIcon } from "lucide-react";
+import { CalendarIcon, LightbulbIcon, SearchIcon } from "lucide-react";
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,14 +36,7 @@ export function TopbarActions({ fullName, avatarUrl, today }: ActionsProps) {
         </TooltipTrigger>
         <TooltipContent>Tips</TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="secondary" size="icon" aria-label="Notifications" className="rounded-full bg-surface">
-            <BellIcon />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Notifications</TooltipContent>
-      </Tooltip>
+      <NotificationBell />
 
       <Badge variant="outline" className="h-10 gap-2 bg-surface px-3.5 type-body-m-xs">
         <CalendarIcon aria-hidden="true" />

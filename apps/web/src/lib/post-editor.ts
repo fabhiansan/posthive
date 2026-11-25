@@ -49,6 +49,9 @@ export interface PostForm {
    */
   canvasDesigns: PostDesign[];
   designFigmaUrl: string;
+  /** The copywriting link and the supporting-assets link: what the designer is given to work from. A plan import may hold plain text here. */
+  designCopy: string;
+  assetNotes: string;
   perAccount: PerAccount;
 }
 
@@ -62,6 +65,8 @@ export interface StoredContent {
   mediaUrls?: string[];
   canvasDesigns?: unknown;
   designFigmaUrl?: string;
+  designCopy?: string;
+  assetNotes?: string;
   canvasInstanceId?: string | null;
   canvasTemplateId?: string | null;
   sourceRow?: number;
@@ -80,7 +85,7 @@ export function parseContent(content: string): StoredContent {
 
 export const EMPTY_FORM: PostForm = {
   title: "", text: "", pillar: null, category: null, format: "", date: "", time: "09:00",
-  accountIds: [], mediaUrls: [], canvasDesigns: [], designFigmaUrl: "", perAccount: {},
+  accountIds: [], mediaUrls: [], canvasDesigns: [], designFigmaUrl: "", designCopy: "", assetNotes: "", perAccount: {},
 };
 
 export function formFromJob(job: Pick<Job, "scheduledFor" | "content" | "targets">): PostForm {
@@ -100,6 +105,8 @@ export function formFromJob(job: Pick<Job, "scheduledFor" | "content" | "targets
     mediaUrls: Array.isArray(c.mediaUrls) ? c.mediaUrls : [],
     canvasDesigns: pruneDesigns(designsOf(c.canvasDesigns), Array.isArray(c.mediaUrls) ? c.mediaUrls : []),
     designFigmaUrl: c.designFigmaUrl ?? "",
+    designCopy: typeof c.designCopy === "string" ? c.designCopy : "",
+    assetNotes: typeof c.assetNotes === "string" ? c.assetNotes : "",
     perAccount: c.perAccount ?? {},
   };
 }
@@ -137,6 +144,8 @@ export function changedFields(initial: PostForm, form: PostForm): Record<string,
   // a post with no designs before and after sends none (a plain reorder or upload is not about designs)
   if ((designs.length > 0 || before.length > 0) && (picturesChanged || JSON.stringify(designs) !== JSON.stringify(before))) out.canvasDesigns = designs;
   if (form.designFigmaUrl !== initial.designFigmaUrl) out.designFigmaUrl = form.designFigmaUrl;
+  if (form.designCopy !== initial.designCopy) out.designCopy = form.designCopy;
+  if (form.assetNotes !== initial.assetNotes) out.assetNotes = form.assetNotes;
   if (JSON.stringify(form.perAccount) !== JSON.stringify(initial.perAccount)) out.perAccount = form.perAccount;
   return out;
 }
@@ -161,6 +170,8 @@ export function createBody(form: PostForm, draft: boolean): Record<string, unkno
       ...(form.format ? { format: form.format } : {}),
       ...(designsToSend(form).length > 0 ? { canvasDesigns: designsToSend(form) } : {}),
       ...(form.designFigmaUrl ? { designFigmaUrl: form.designFigmaUrl } : {}),
+      ...(form.designCopy ? { designCopy: form.designCopy } : {}),
+      ...(form.assetNotes ? { assetNotes: form.assetNotes } : {}),
       ...(Object.keys(form.perAccount).length > 0 ? { perAccount: form.perAccount } : {}),
     },
   };
@@ -185,16 +196,18 @@ export function editBlock(post: { status: string }, who: { canEditContent: boole
 
 // ── Design request (Path B) ─────────────────────────────────────────────────
 
-export type DeadlineProblem = "DEADLINE_PAST" | "DEADLINE_AFTER_PUBLISH";
+export type DeadlineProblem = "DEADLINE_REQUIRED" | "DEADLINE_PAST" | "DEADLINE_AFTER_PUBLISH";
 
 export const DEADLINE_TEXT: Record<DeadlineProblem, string> = {
+  DEADLINE_REQUIRED: "Add a design deadline before sending the request to the designer.",
   DEADLINE_PAST: "The design deadline must be later than now.",
   DEADLINE_AFTER_PUBLISH: "The design deadline must be before the publishing date and time.",
 };
 
 /**
- * The same rule as the API's deadlineProblem. The deadline is optional (the caller asks only when one is set); it must be
- * after now and strictly before the moment the post goes out. `publishAt` is null while the post has no date.
+ * The same rule as the API's deadlineProblem. A saved brief may have no deadline but a SENT request needs one (the caller
+ * asks only when one is set); it must be after now and strictly before the moment the post goes out. `publishAt` is null
+ * while the post has no date.
  */
 export function deadlineProblem(deadline: Date, now: Date, publishAt: Date | null): DeadlineProblem | null {
   if (deadline.getTime() <= now.getTime()) return "DEADLINE_PAST";
@@ -220,6 +233,15 @@ export function requestLine(r: { assignee: { name: string } | string | null; dea
   return `${name ? shortName(name) : "Designer removed"} · ${r.deadline ? `due ${wibWhen(new Date(r.deadline))}` : "no deadline"}`;
 }
 
+/** "Design requested · Rina S. · due …", or "Design done · Rina S." once the designer sent it: the one line the status strip, the preview and the drawer share. */
+export function designLine(r: { status: string; assignee: { name: string } | string | null; deadline: string | null; doneAt?: string | null }): string {
+  if (r.status === "done") {
+    const name = typeof r.assignee === "string" ? r.assignee : r.assignee?.name;
+    return `Design done · ${name ? shortName(name) : "Designer removed"}${r.doneAt ? ` · ${wibWhen(new Date(r.doneAt))}` : ""}`;
+  }
+  return `Design requested · ${requestLine(r)}`;
+}
+
 /** Which path the post is on, worked out and never stored: a request means B, else a published template for the category means A. */
 export function pathOf(request: DesignRequestView | null | undefined, hasTemplate: boolean): "A" | "B" | null {
   if (request) return "B";
@@ -242,9 +264,15 @@ export function submitBlock(args: {
 }
 
 /** Why a save is off right now (null: nothing stops it): a field the server would refuse, so the person is told before, not after. */
-export function saveBlock(form: PostForm): string | null {
+export function saveBlock(form: PostForm, initial: PostForm = EMPTY_FORM): string | null {
   const link = designLinkProblem(form.designFigmaUrl);
-  return link ? `Fix the design link first. ${link}` : null;
+  if (link) return `Fix the design link first. ${link}`;
+  // a plan import may leave plain text in these two ("ask Rina"): it is only refused when the person changed it into something that is not a link
+  for (const [name, value, was] of [["copywriting", form.designCopy, initial.designCopy], ["supporting assets", form.assetNotes, initial.assetNotes]] as const) {
+    const problem = value !== was ? designLinkProblem(value) : null;
+    if (problem) return `Fix the ${name} link first. ${problem}`;
+  }
+  return null;
 }
 
 /** Why Schedule Post is off right now (null: nothing stops it). */

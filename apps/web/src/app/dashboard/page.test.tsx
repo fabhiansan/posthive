@@ -818,32 +818,32 @@ describe("dashboard page: the design team's dashboard", () => {
   // Tuesday 17 Nov 2026, 12:00 in WIB
   const NOW = new Date("2026-11-17T05:00:00Z");
 
-  const queued = (patch: Partial<ApiDesignDashboard["queue"][number]> = {}): ApiDesignDashboard["queue"][number] => ({
-    id: "q1",
-    status: "draft",
-    approvalStatus: "pending",
+  const task = (patch: Partial<ApiDesignDashboard["tasks"][number]> = {}): ApiDesignDashboard["tasks"][number] => ({
+    postId: "q1",
     title: "Braga's Backcasting 2026",
     thumbnail: "/uploads/a.png",
     pillar: "Promotional",
-    media: { images: 5, video: false, mediaType: null, youtubeType: null },
-    submitCount: 2,
-    submittedAt: "2026-11-14T02:00:00.000Z", // three days ago
-    submittedBy: "Dewi Kusuma",
+    format: "carousel",
+    status: "assigned",
+    assignedBy: "Rina Anggraini",
+    deadline: "2026-11-20T10:00:00.000Z", // three days ahead
+    sentAt: "2026-11-14T02:00:00.000Z",
+    doneAt: null,
     scheduledFor: "2026-11-21T02:00:00.000Z",
+    channels: ["linkedin"],
+    brief: "Carousel 5 slides",
     ...patch,
   });
 
   const design = (patch: Partial<ApiDesignDashboard> = {}): ApiDesignDashboard => ({
-    pending: 9,
-    approved: 46,
-    revision: 3,
-    queue: [
-      queued(),
-      queued({ id: "q2", title: "Environmental Data", media: { images: 1, video: false, mediaType: null, youtubeType: null }, submitCount: 1, submittedAt: "2026-11-17T00:00:00.000Z", submittedBy: "Putri Anggraini", scheduledFor: "2026-11-18T07:00:00.000Z", pillar: "Educational" }),
+    counts: { assigned: 3, progress: 2, done: 4, waiting: 2 },
+    tasks: [
+      task(),
+      task({ postId: "q2", title: "Environmental Data", format: "single", status: "progress", assignedBy: "Putri Anggraini", deadline: "2026-11-17T09:00:00.000Z", pillar: "Educational" }),
     ],
     activities: [
-      { kind: "submitted", at: "2026-11-17T02:12:00.000Z", by: "Putri Anggraini", mine: false, title: "When Environmental Data Leads", pillar: null },
-      { kind: "approved", at: "2026-11-17T01:55:00.000Z", by: "Dewi Kusuma", mine: true, title: "Behind the Scenes", pillar: null },
+      { kind: "assigned", at: "2026-11-17T02:12:00.000Z", by: "Rina Anggraini", mine: false, title: "When Environmental Data Leads", pillar: null },
+      { kind: "sent", at: "2026-11-17T01:55:00.000Z", by: null, mine: true, title: "Behind the Scenes", pillar: null },
     ],
     templates: [
       { pillar: "Promotional", published: true },
@@ -865,13 +865,14 @@ describe("dashboard page: the design team's dashboard", () => {
 
   beforeEach(() => {
     h.role = "designer";
+    h.push.mockReset();
     vi.setSystemTime(NOW);
   });
 
   it("asks only for its own numbers: the marketing dashboard's queries are never made", async () => {
     serveDesign();
     render(<DashboardPage />);
-    await screen.findByText("Pending Design Approvals");
+    await screen.findByText("Tasks assigned to you");
     expect(calls("/dashboard/design")).toHaveLength(1);
     expect(h.apiFetch.mock.calls.filter((c) => c[0] === "/dashboard")).toHaveLength(0);
     expect(calls("/jobs/calendar")).toHaveLength(0);
@@ -883,64 +884,73 @@ describe("dashboard page: the design team's dashboard", () => {
       serve(dashboard());
       const { unmount } = render(<DashboardPage />);
       await screen.findByText("Plan Marketing");
-      expect(screen.queryByText("Pending Design Approvals"), role).toBeNull();
+      expect(screen.queryByText("Tasks assigned to you"), role).toBeNull();
       unmount();
     }
   });
 
-  it("greets by name and says how many designs wait and how many templates are still in Draft", async () => {
+  it("greets by name and says how many posts are assigned, how many are started and how many templates are still in Draft", async () => {
     serveDesign();
     render(<DashboardPage />);
-    await screen.findByText("Pending Design Approvals");
+    await screen.findByText("Tasks assigned to you");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Good afternoon, Putri");
-    expect(screen.getByText("9 designs from the Marketing Team are waiting for your review · 1 template still in Draft.")).toBeTruthy();
+    expect(screen.getByText("5 posts from Marketing are assigned to you · 2 in progress · 1 template still in Draft.")).toBeTruthy();
   });
 
-  it("the four cards: pending, approved this quarter, sent back, and templates with how many are published", async () => {
+  it("the four cards: assigned, in progress, done and waiting for Marketing, and templates with how many are published", async () => {
     serveDesign();
     render(<DashboardPage />);
-    await screen.findByText("Pending Design Approvals");
+    await screen.findByText("Tasks assigned to you");
     const card = (name: string) => screen.getByRole("heading", { name }).closest("[data-slot=card]") as HTMLElement;
-    expect(card("Pending Approvals").textContent).toContain("9");
-    expect(card("Pending Approvals").textContent).toContain("Designs waiting for your review");
-    expect(card("Approved Designs").textContent).toContain("46");
-    expect(card("Approved Designs").textContent).toContain("Approved this quarter");
-    expect(card("Revision Required").textContent).toContain("3");
-    expect(card("Revision Required").textContent).toContain("Sent back to Marketing");
+    expect(card("Assigned to me").textContent).toContain("5");
+    expect(card("Assigned to me").textContent).toContain("Posts from Marketing");
+    expect(card("In progress").textContent).toContain("2");
+    expect(card("Done · waiting for Marketing").textContent).toContain("2");
     expect(card("Total Templates").textContent).toContain("3");
     expect(card("Total Templates").textContent).toContain("2 published · 1 draft");
   });
 
-  it("a row says what the design is: title and round, pillar, format, who sent it, how long it waited, when it goes out", async () => {
+  it("there is no approval on the design team's dashboard any more", async () => {
+    serveDesign();
+    render(<DashboardPage />);
+    await screen.findByText("Tasks assigned to you");
+    for (const gone of [/Pending Approvals/, /Pending Design Approvals/, /Review design/, /Revision Required/, /Approved Designs/]) expect(screen.queryByText(gone), String(gone)).toBeNull();
+  });
+
+  it("a row says what the task is: title, pillar, format, who assigned it, how long is left, the deadline and the status", async () => {
     serveDesign();
     render(<DashboardPage />);
     const row = within(await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" }));
-    expect(row.getByText("v2 · revision round 2")).toBeTruthy();
     expect(row.getByText("Promotional")).toBeTruthy();
-    expect(row.getByText("Carousel · 5 slides")).toBeTruthy();
-    expect(row.getByText("Dewi K.")).toBeTruthy();
-    expect(row.getByText("DK")).toBeTruthy();
-    expect(row.getByText("3 d")).toBeTruthy();
-    expect(row.getByText("Sat 21 Nov")).toBeTruthy();
-    expect(row.getByText("09:00 · in 4 days")).toBeTruthy();
-    expect(row.getByText("Pending review")).toBeTruthy();
-    expect(row.getByRole("button", { name: /Review design/ })).toBeTruthy();
+    expect(row.getByText("Carousel")).toBeTruthy();
+    expect(row.getByText("Rina A.")).toBeTruthy();
+    expect(row.getByText("RA")).toBeTruthy();
+    expect(row.getByText("in 3 d")).toBeTruthy();
+    expect(row.getByText("Fri, 20 Nov 2026")).toBeTruthy();
+    expect(row.getByText("17:00 WIB")).toBeTruthy();
+    expect(row.getByText("Assigned")).toBeTruthy();
+    expect(row.getByRole("button", { name: /Open task/ })).toBeTruthy();
   });
 
-  it("a design that waited two days or more is red, a fresh one is not; a design due tomorrow is red on its date line", async () => {
+  it("a task due within a day is red, a later one is not", async () => {
     serveDesign();
     render(<DashboardPage />);
-    const late = within(await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" }));
-    const fresh = within(screen.getByRole("row", { name: "Open Environmental Data" }));
-    expect(late.getByText("3 d").className).toContain("text-red-500");
-    expect(fresh.getByText("5 h").className).not.toContain("text-red-500");
-    expect(fresh.getByText("14:00 · tomorrow").className).toContain("text-red-500");
-    expect(late.getByText("09:00 · in 4 days").className).not.toContain("text-red-500");
-    expect(fresh.getByText("Single image")).toBeTruthy();
-    expect(fresh.getByText("v1 · first submission")).toBeTruthy();
+    const later = within(await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" }));
+    const soon = within(screen.getByRole("row", { name: "Open Environmental Data" }));
+    expect(later.getByText("in 3 d").className).not.toContain("text-red-500");
+    expect(soon.getByText("in 4 h").className).toContain("text-red-500");
+    expect(soon.getByText("In progress")).toBeTruthy();
+    expect(soon.getByText("Single image")).toBeTruthy();
   });
 
-  it("the rows come in the order the server sent: longest waiting first", async () => {
+  it("a task with no deadline says so, in both date columns", async () => {
+    serveDesign(design({ tasks: [task({ deadline: null })] }));
+    render(<DashboardPage />);
+    const row = within(await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" }));
+    expect(row.getAllByText("No deadline")).toHaveLength(2);
+  });
+
+  it("the rows come in the order the server sent: soonest deadline first", async () => {
     serveDesign();
     render(<DashboardPage />);
     await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" });
@@ -948,67 +958,49 @@ describe("dashboard page: the design team's dashboard", () => {
     expect(titles).toEqual(["Open Braga's Backcasting 2026", "Open Environmental Data"]);
   });
 
-  it("the footer says how many of those waiting are shown, how many were sent back, and how many were approved", async () => {
+  it("the footer says how many are shown, and how many done are waiting for Marketing", async () => {
     serveDesign();
     render(<DashboardPage />);
-    expect(await screen.findByText("Showing 2 of 9 designs waiting · 3 sent back for revision · 46 approved this quarter")).toBeTruthy();
+    expect(await screen.findByText("Showing 2 of 5 tasks assigned to you · 2 done are waiting for Marketing")).toBeTruthy();
   });
 
-  it("Review design opens the review dialog of that post at once, without opening the drawer, and does not also open the row", async () => {
-    serveDesign(design(), (path) => {
-      if (path === "/jobs/q1") return { id: "q1", status: "draft", approvalStatus: "pending" };
-      if (path === "/accounts") return [];
-      if (path === "/templates") return { templates: [] };
-      throw new Error(`unexpected ${path}`);
-    });
-    render(<DashboardPage />);
-    await userEvent.click(await screen.findByRole("button", { name: "Review design: Braga's Backcasting 2026" }));
-    expect((await screen.findByRole("dialog", { name: "review dialog" })).textContent).toBe("q1");
-    expect(calls("/jobs/q1/detail")).toHaveLength(0);
-  });
-
-  it("a row opens the post's drawer", async () => {
-    serveDesign(design(), (path) => {
-      if (path === "/jobs/q1/detail") return { id: "q1", status: "draft", approvalStatus: "pending", scheduledFor: null, title: "Braga's Backcasting 2026", caption: "", channels: [], sourceRow: null, link: null, designCopy: "", category: null, pillar: null, owner: null, accounts: [], captionLength: 0, commentText: null, media: [], reviewNote: null, source: null, activity: [], mine: false, missing: [] };
-      throw new Error(`unexpected ${path}`);
-    });
+  it("a row, and the Open task button inside it, open the task page; the button does not open it twice", async () => {
+    serveDesign();
     render(<DashboardPage />);
     await userEvent.click(await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" }));
-    expect(await screen.findByRole("heading", { name: "Braga's Backcasting 2026" })).toBeTruthy();
+    expect(h.push).toHaveBeenCalledWith("/tasks/q1");
+    h.push.mockReset();
+    await userEvent.click(screen.getByRole("button", { name: "Open task: Braga's Backcasting 2026" }));
+    expect(h.push).toHaveBeenCalledTimes(1);
+    expect(h.push).toHaveBeenCalledWith("/tasks/q1");
   });
 
-  it("Enter on the row opens it; Enter on the button inside it is the button's, not the row's", async () => {
-    serveDesign(design(), (path) => {
-      if (path === "/jobs/q1") return { id: "q1", status: "draft", approvalStatus: "pending" };
-      if (path === "/accounts") return [];
-      if (path === "/templates") return { templates: [] };
-      throw new Error(`unexpected ${path}`);
-    });
-    render(<DashboardPage />);
-    const button = await screen.findByRole("button", { name: "Review design: Braga's Backcasting 2026" });
-    button.focus();
-    await userEvent.keyboard("{Enter}");
-    expect(await screen.findByRole("dialog", { name: "review dialog" })).toBeTruthy();
-    expect(calls("/jobs/q1/detail")).toHaveLength(0);
-  });
-
-  it("View all opens the Content List on the In Review tab, and Open Template Library opens the templates", async () => {
+  it("Enter on the row opens the task", async () => {
     serveDesign();
     render(<DashboardPage />);
-    await screen.findByText("Pending Design Approvals");
-    expect(screen.getByRole("link", { name: "View all" }).getAttribute("href")).toBe("/jobs?filter=review");
+    const row = await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" });
+    row.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(h.push).toHaveBeenCalledWith("/tasks/q1");
+  });
+
+  it("View all opens My task, and Open Template Library opens the templates", async () => {
+    serveDesign();
+    render(<DashboardPage />);
+    await screen.findByText("Tasks assigned to you");
+    expect(screen.getByRole("link", { name: "View all" }).getAttribute("href")).toBe("/tasks");
     expect(screen.getByRole("link", { name: "Open Template Library" }).getAttribute("href")).toBe("/templates");
   });
 
-  it("recent activities: what happened, by whom, and when, and the ones the designer did say You", async () => {
+  it("recent activity: a task assigned, a design the designer sent (You), and when", async () => {
     serveDesign();
     render(<DashboardPage />);
     await screen.findByText("Recent Activities");
     const list = within(screen.getByRole("list", { name: "Recent activities" }));
-    expect(list.getByText("New design submitted by Marketing")).toBeTruthy();
-    expect(list.getByText("Putri A. submitted “When Environmental Data Leads” · 09:12")).toBeTruthy();
-    expect(list.getByText("Design approved")).toBeTruthy();
-    expect(list.getByText("You approved “Behind the Scenes” · 08:55")).toBeTruthy();
+    expect(list.getByText("New task assigned")).toBeTruthy();
+    expect(list.getByText("Rina A. assigned “When Environmental Data Leads” to you · 09:12")).toBeTruthy();
+    expect(list.getByText("Design sent to Marketing")).toBeTruthy();
+    expect(list.getByText("You sent the Figma link for “Behind the Scenes” · 08:55")).toBeTruthy();
     expect(screen.getByText("Last 7 days")).toBeTruthy();
   });
 
@@ -1022,32 +1014,23 @@ describe("dashboard page: the design team's dashboard", () => {
     expect(panel.getByText("Shared with Marketing")).toBeTruthy();
   });
 
-  it("nothing waiting: the table says so and every number is zero, not blank", async () => {
-    serveDesign(design({ pending: 0, queue: [], activities: [], templates: [] }));
+  it("nothing assigned: the table says so and every number is zero, not blank", async () => {
+    serveDesign(design({ counts: { assigned: 0, progress: 0, done: 0, waiting: 0 }, tasks: [], activities: [], templates: [] }));
     render(<DashboardPage />);
-    expect(await screen.findByText("Nothing is waiting for your review.")).toBeTruthy();
+    expect(await screen.findByText("Nothing is waiting for your design.")).toBeTruthy();
     expect(screen.getByText("No activity in the last 7 days.")).toBeTruthy();
-    expect(screen.getByText("No designs from the Marketing Team are waiting for your review.")).toBeTruthy();
-    expect(screen.getByText("Showing 0 of 0 designs waiting · 3 sent back for revision · 46 approved this quarter")).toBeTruthy();
+    expect(screen.getByText("No posts from Marketing are assigned to you.")).toBeTruthy();
+    expect(screen.getByText("Showing 0 of 0 tasks assigned to you")).toBeTruthy();
   });
 
   it("a picture that cannot be loaded falls back to an icon square, not a broken image", async () => {
     serveDesign();
     render(<DashboardPage />);
     const row = await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" });
-    const img = row.querySelector("img")!;
-    expect(img.getAttribute("src")).toBe("/uploads/a.png");
+    const img = row.querySelector('img[src="/uploads/a.png"]')!;
+    expect(img).toBeTruthy();
     img.dispatchEvent(new Event("error"));
-    await waitFor(() => expect(row.querySelector("img")).toBeNull());
-  });
-
-  it("a post with no picture and no date is drawn without either", async () => {
-    serveDesign(design({ queue: [queued({ thumbnail: null, scheduledFor: null, submittedAt: null, submittedBy: null, media: { images: 0, video: false, mediaType: null, youtubeType: null } })] }));
-    render(<DashboardPage />);
-    const row = within(await screen.findByRole("row", { name: "Open Braga's Backcasting 2026" }));
-    expect(row.getByText("No media yet")).toBeTruthy();
-    expect(row.getByText("Not scheduled")).toBeTruthy();
-    expect(row.getAllByText("—").length).toBeGreaterThanOrEqual(2); // who sent it, and how long it waited
+    await waitFor(() => expect(row.querySelector('img[src="/uploads/a.png"]')).toBeNull());
   });
 
   it("when the numbers cannot be loaded it says so, offers to try again, and draws no zeroes", async () => {
@@ -1055,19 +1038,19 @@ describe("dashboard page: the design team's dashboard", () => {
     render(<DashboardPage />);
     expect(await screen.findByText("Couldn't load the dashboard")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Try again/ })).toBeTruthy();
-    expect(screen.queryByText("Pending Approvals")).toBeNull();
+    expect(screen.queryByText("Assigned to me")).toBeNull();
   });
 
   it("shows a loading state first", async () => {
     serveDesign();
     render(<DashboardPage />);
     expect(screen.getByLabelText("Loading the dashboard").getAttribute("aria-busy")).toBe("true");
-    await screen.findByText("Pending Design Approvals");
+    await screen.findByText("Tasks assigned to you");
     expect(screen.queryByLabelText("Loading the dashboard")).toBeNull();
   });
 
   it("a long title is cut to one line with an ellipsis, so every row is as tall as the others; the whole title stays in its tooltip", async () => {
-    serveDesign(design({ queue: [queued({ title: "A".repeat(200), submittedBy: "Averyveryveryverylongfirstname Lastname" })] }));
+    serveDesign(design({ tasks: [task({ title: "A".repeat(200), assignedBy: "Averyveryveryverylongfirstname Lastname" })] }));
     render(<DashboardPage />);
     const row = await screen.findByRole("row", { name: `Open ${"A".repeat(200)}` });
     expect(row.closest(".overflow-x-auto")).toBeTruthy();

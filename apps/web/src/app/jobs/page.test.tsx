@@ -23,6 +23,9 @@ vi.mock("@/components/Toast", () => ({ useToast: () => h.toast }));
 vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null }));
 // The dialogs have their own tests; here only that the page hands them the right post
 vi.mock("@/components/ReviewDialog", () => ({ ReviewDialog: ({ job }: { job: { id: string } }) => <div role="dialog" aria-label="review dialog">{job.id}</div> }));
+vi.mock("@/lib/useNotifications", () => ({
+  useNotifications: () => ({ unread: 0, items: null, loading: false, error: null, load: vi.fn(), markRead: vi.fn(), markAllRead: vi.fn() }),
+}));
 
 import ContentListPage from "./page";
 
@@ -861,9 +864,31 @@ describe("Content List page: Kanban view", () => {
   });
 });
 
-describe("Content List page: a link that opens a tab (?filter=)", () => {
+describe("Content List page: links that open a post or a status tab", () => {
   const open = (search: string) => window.history.replaceState(null, "", `/jobs${search}`);
   afterEach(() => open(""));
+
+  it("opens an off-page post and lets notifications reopen it or open another without remounting", async () => {
+    serve();
+    open("?filter=draft&open=p37");
+    const { rerender } = render(<ContentListPage />);
+    await within(await screen.findByRole("dialog")).findByRole("button", { name: "Edit Content" });
+    expect(h.apiFetch).toHaveBeenCalledWith("/jobs/p37/detail");
+    expect(window.location.search).toBe("?filter=draft");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    open("?filter=draft&open=p37");
+    rerender(<ContentListPage />);
+    await within(await screen.findByRole("dialog")).findByRole("button", { name: "Edit Content" });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    open("?filter=draft&open=p48");
+    rerender(<ContentListPage />);
+    await within(await screen.findByRole("dialog")).findByRole("button", { name: "Edit Content" });
+    expect(h.apiFetch).toHaveBeenCalledWith("/jobs/p48/detail");
+  });
 
   it("the designer's View all opens In Review at once: the first request already asks for it, with no request for All first", async () => {
     h.perms = { canEditContent: false, canReview: true, canSubmitOwn: false };

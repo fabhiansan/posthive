@@ -144,7 +144,7 @@ export function usePostEditor(jobId: string | null) {
   const category = normalizeCategory(form.category);
   const template = category && templates ? templatesByCategory(templates).get(category) ?? null : null;
 
-  const link = saveBlock(form);
+  const link = saveBlock(form, initial);
   const primaryBlock =
     link ??
     (actions.primary?.kind === "submit"

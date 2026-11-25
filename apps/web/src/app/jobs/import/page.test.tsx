@@ -11,6 +11,10 @@ vi.mock("@/context/AuthContext", () => ({ useAuth: () => ({ user: { name: "Putri
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }), useParams: () => ({}), usePathname: () => "/jobs/import" }));
+vi.mock("@/lib/useNotifications", () => ({
+  useNotifications: () => ({ unread: 0, items: null, loading: false, error: null, load: vi.fn(), markRead: vi.fn(), markAllRead: vi.fn() }),
+}));
 
 import ImportPlanPage from "./page";
 

@@ -21,8 +21,8 @@ describe("role predicates (docs/role-access-matrix.md)", () => {
     expect(ROLES.filter(canEditContent)).toEqual(["owner", "admin", "member"]);
   });
 
-  it("who can approve or reject: owner, admin and the design team, not marketing", () => {
-    expect(ROLES.filter(canReview)).toEqual(["owner", "admin", "designer"]);
+  it("who can approve or reject: owner and admin only. The design team makes designs, marketing makes content", () => {
+    expect(ROLES.filter(canReview)).toEqual(["owner", "admin"]);
   });
 
   it("who manages templates: the design team only", () => {
@@ -112,11 +112,11 @@ describe("permissionsFor", () => {
   it("gives all of it for each role", () => {
     expect(permissionsFor("owner")).toEqual({ canEditContent: true, canReview: true, canManageTemplates: false, canSubmitOwn: false });
     expect(permissionsFor("admin")).toEqual({ canEditContent: true, canReview: true, canManageTemplates: false, canSubmitOwn: false });
-    expect(permissionsFor("designer")).toEqual({ canEditContent: false, canReview: true, canManageTemplates: true, canSubmitOwn: false });
+    expect(permissionsFor("designer")).toEqual({ canEditContent: false, canReview: false, canManageTemplates: true, canSubmitOwn: false });
     expect(permissionsFor("member")).toEqual({ canEditContent: true, canReview: false, canManageTemplates: false, canSubmitOwn: false });
   });
 
-  it("canSubmitOwn: only when the workspace needs approval AND the person cannot approve", () => {
+  it("canSubmitOwn: only when the workspace needs approval AND the person makes content but cannot approve", () => {
     const flag = (role: string | undefined, approvalRequired?: boolean) => permissionsFor(role, { approvalRequired }).canSubmitOwn;
     expect(flag("member", true)).toBe(true);
     expect(flag("member", false)).toBe(false);
@@ -124,11 +124,12 @@ describe("permissionsFor", () => {
     for (const r of ["owner", "admin", "designer"]) expect(flag(r, true), r).toBe(false);
   });
 
-  // compose used to decide this as: approvalRequired && !["owner","admin","designer"].includes(role ?? "")
-  it("an unknown role goes through review when the workspace needs it, like compose always did", () => {
-    expect(permissionsFor(undefined, { approvalRequired: true }).canSubmitOwn).toBe(true);
-    expect(permissionsFor("superuser", { approvalRequired: true }).canSubmitOwn).toBe(true);
-    expect(permissionsFor(undefined, { approvalRequired: false }).canSubmitOwn).toBe(false);
+  // the server decides too: isContentEditorRole(null) is false there, so a role that is not a content editor makes no post to send
+  it("an unknown role makes no content, so it has no review to go through; the design team never submits", () => {
+    for (const role of [undefined, "superuser", "designer"]) {
+      expect(permissionsFor(role, { approvalRequired: true }).canSubmitOwn, String(role)).toBe(false);
+    }
+    expect(permissionsFor("member", { approvalRequired: true }).canSubmitOwn).toBe(true);
   });
 });
 
@@ -153,7 +154,7 @@ function as(role: string | null, opts: { approvalRequired?: boolean; sessionRole
 
 describe("usePermissions", () => {
   it("reads the workspace role", () => {
-    expect(as("designer")).toMatchObject({ canReview: true, canEditContent: false, canManageTemplates: true });
+    expect(as("designer")).toMatchObject({ canReview: false, canEditContent: false, canManageTemplates: true });
   });
 
   it("falls back to the session role when there is no workspace yet", () => {

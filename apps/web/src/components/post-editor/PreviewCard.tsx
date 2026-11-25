@@ -8,7 +8,7 @@ import { assetUrl } from "@/lib/api";
 import { platformLabel } from "@/lib/platforms";
 import { EDITOR_PLATFORMS, formatLine, isVideoUrl, type PostForm } from "@/lib/post-editor";
 import type { DesignRequestView } from "@/lib/jobTypes";
-import { requestLine } from "@/lib/post-editor";
+import { designLine, requestLine } from "@/lib/post-editor";
 
 type Props = {
   form: PostForm;
@@ -31,7 +31,7 @@ export function PreviewCard({ form, accounts, workspaceName, templateName, reque
   const images = form.mediaUrls.filter((u) => !isVideoUrl(u));
   const media: UploadedImage[] = images.map((url, i) => ({ url, previewUrl: assetUrl(url), name: `File ${i + 1}` }));
   const channels = tabs.map(platformLabel).join(" · ");
-  const design = images.length > 0 ? `${images.length} ${images.length === 1 ? "file" : "files"}` : request ? `Requested · ${requestLine(request)}` : "—";
+  const design = images.length > 0 ? `${images.length} ${images.length === 1 ? "file" : "files"}` : request ? (request.status === "done" ? designLine(request) : `Requested · ${requestLine(request)}`) : "—";
 
   return (
     <Card className="gap-4 border-0 p-5" role="region" aria-labelledby="preview-heading">

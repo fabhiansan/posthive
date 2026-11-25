@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { LockIcon, Undo2Icon } from "lucide-react";
+import { CircleCheckIcon, ExternalLinkIcon, LockIcon, Undo2Icon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DatePicker } from "@/components/DatePicker";
 import { InlineAlert } from "@/components/InlineAlert";
@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { wibDateKey } from "@/lib/datetime";
 import { cancelDesignRequest, listDesigners, saveDesignRequest, type Designer } from "@/lib/jobActions";
 import type { DesignRequestView } from "@/lib/jobTypes";
+import { shortName } from "@/lib/dashboard-format";
 import { DEADLINE_TEXT, deadlineParts, deadlineProblem, requestLine, scheduledOf, wibWhen } from "@/lib/post-editor";
 
 type Props = {
@@ -32,15 +33,20 @@ type Props = {
 const LABEL = "type-body-sb-xs text-muted";
 const Req = () => <span className="text-red-600" aria-hidden="true"> *</span>;
 
-/** Path B: ask a designer for the design. A saved brief can still change; a sent request is locked until Marketing cancels it. */
+/**
+ * Path B: ask a designer for the design. A saved brief can still change; a sent request is locked until Marketing cancels it;
+ * once the designer marks it done it is locked for good and shows the Figma link they sent.
+ */
 export function DesignRequestForm({ request, publishAt, ensurePost, onChange, onDirtyChange, disabled }: Props) {
   const toast = useToast();
   const sent = request?.status === "sent";
+  const answered = request?.status === "done";
 
   const [designers, setDesigners] = useState<Designer[] | null>(null);
   const [designersFailed, setDesignersFailed] = useState(false);
   const [assigneeId, setAssigneeId] = useState(request?.assignee?.id ?? "");
-  // The deadline is optional: a WIB date and a time, both empty when there is none. The time shows once a date is picked.
+  // A WIB date and a time, both empty when there is none. The time shows once a date is picked. A saved brief may have no
+  // deadline; sending it needs one.
   const [deadlineDate, setDeadlineDate] = useState(() => deadlineParts(request?.deadline).date);
   const [deadlineTime, setDeadlineTime] = useState(() => deadlineParts(request?.deadline).time);
   const [brief, setBrief] = useState(request?.brief ?? "");
@@ -63,17 +69,17 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
   }, [saved]);
 
   useEffect(() => {
-    if (sent) return;
+    if (sent || answered) return;
     let live = true;
     listDesigners().then((d) => live && setDesigners(d)).catch(() => live && setDesignersFailed(true));
     return () => {
       live = false;
     };
-  }, [sent]);
+  }, [sent, answered]);
 
   const due = deadlineDate ? scheduledOf({ date: deadlineDate, time: deadlineTime }) : null;
   const dueIso = due ? due.toISOString() : null;
-  const dirty = !sent && (assigneeId !== (request?.assignee?.id ?? "") || dueIso !== (request?.deadline ?? null) || brief !== (request?.brief ?? "") || referenceUrl !== (request?.referenceUrl ?? ""));
+  const dirty = !sent && !answered && (assigneeId !== (request?.assignee?.id ?? "") || dueIso !== (request?.deadline ?? null) || brief !== (request?.brief ?? "") || referenceUrl !== (request?.referenceUrl ?? ""));
   useEffect(() => {
     onDirtyChange(dirty);
     return () => onDirtyChange(false);
@@ -81,8 +87,9 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
 
   const publish = publishAt ? new Date(publishAt) : null;
   const problem = due ? deadlineProblem(due, new Date(), publish) : null;
-  // a designer and a brief are all it takes: the deadline is optional
+  // a designer and a brief are enough to save; sending also needs a deadline (the designer works to it)
   const complete = assigneeId !== "" && brief.trim() !== "";
+  const sendable = complete && due !== null;
   const left = useMemo(() => (request?.assignee && !request.assignee.active ? request.assignee : null), [request]);
 
   async function save(send: boolean) {
@@ -109,6 +116,41 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
       throw e;
     }
     toast.danger("Design request cancelled. You can change it and send it again.");
+  }
+
+  if (answered && request) {
+    return (
+      <div className="flex flex-col gap-3 rounded-xl bg-green-50 p-4">
+        <h3 className="flex items-center gap-2 type-body-sb-m text-fg">
+          <CircleCheckIcon aria-hidden="true" className="size-4 text-green-700" />
+          Path B · Design done
+        </h3>
+        <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-[auto_1fr]">
+          <dt className={LABEL}>Designer</dt>
+          <dd className="type-body-r-s text-fg">
+            {request.assignee ? shortName(request.assignee.name) : "Designer removed"}
+            {request.doneAt ? ` · sent ${wibWhen(new Date(request.doneAt))}` : ""}
+          </dd>
+          <dt className={LABEL}>Figma link</dt>
+          <dd className="min-w-0 type-body-r-s">
+            {request.figmaUrl ? (
+              <a href={request.figmaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex max-w-full items-center gap-1.5 text-brand-800 underline underline-offset-2">
+                <span className="truncate">{request.figmaUrl}</span>
+                <ExternalLinkIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="sr-only">(opens in a new tab)</span>
+              </a>
+            ) : (
+              "—"
+            )}
+          </dd>
+          <dt className={LABEL}>Note</dt>
+          <dd className="type-body-r-s whitespace-pre-wrap break-words text-fg">{request.designerNote || "No note"}</dd>
+          <dt className={LABEL}>Your brief</dt>
+          <dd className="type-body-r-s whitespace-pre-wrap break-words text-fg">{request.brief}</dd>
+        </dl>
+        <p className="type-body-r-xs text-muted">The Figma link is saved on this post. Open it to export the design, upload it below, then submit for review. This request is locked.</p>
+      </div>
+    );
   }
 
   if (sent && request) {
@@ -186,7 +228,7 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
             </NativeSelect>
           </label>
           <div>
-            <span className={LABEL}>Design deadline (optional)</span>
+            <span className={LABEL}>Design deadline<Req /></span>
             <div className="mt-1.5 flex flex-col gap-2">
               <DatePicker
                 value={deadlineDate}
@@ -203,7 +245,7 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
             {problem ? (
               <p role="alert" className="mt-1.5 type-body-r-xs text-red-600">{DEADLINE_TEXT[problem]}</p>
             ) : (
-              <p className="mt-1.5 type-body-r-xs text-muted">Optional. It must be before the post goes out{publish ? `: ${wibWhen(publish)}` : ""}.</p>
+              <p className="mt-1.5 type-body-r-xs text-muted">Needed to send it. It must be before the post goes out{publish ? `: ${wibWhen(publish)}` : ""}.</p>
             )}
           </div>
         </div>
@@ -220,14 +262,14 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
       </fieldset>
 
       <p className="rounded-xl bg-surface px-3.5 py-2.5 type-body-r-xs text-muted">
-        After sending, this request is locked and the designer sees it in their tasks (coming next). Changes come back to Marketing first.
+        After sending, this request is locked and the designer sees it in their tasks. They send the Figma link back when it is done.
       </p>
 
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="secondary" disabled={disabled || busy !== null || !complete || problem !== null} onClick={() => void save(false)}>
           {busy === "save" ? "Saving…" : "Save brief"}
         </Button>
-        <Button disabled={disabled || busy !== null || !complete || problem !== null || designers?.length === 0} onClick={() => void save(true)}>
+        <Button disabled={disabled || busy !== null || !sendable || problem !== null || designers?.length === 0} onClick={() => void save(true)}>
           {busy === "send" ? "Sending…" : "Send Design Request"}
         </Button>
       </div>

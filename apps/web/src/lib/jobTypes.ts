@@ -14,7 +14,7 @@ export interface JobTarget {
 /** A request from Marketing to a designer for the design of one post (Path B). `deadline` is an ISO instant, or null: it is optional. */
 export interface DesignRequestView {
   id: string;
-  status: string; // draft = a saved brief | sent = with the designer, locked
+  status: string; // draft = a saved brief | sent = with the designer, locked | done = the designer sent the design, locked
   /** `active` is false once they left the design team; null once their account is gone. */
   assignee: { id: string; name: string; avatarUrl: string | null; active: boolean } | null;
   deadline: string | null;
@@ -22,6 +22,10 @@ export interface DesignRequestView {
   referenceUrl: string | null;
   sentAt: string | null;
   updatedAt: string;
+  /** The designer's answer, only once the request is done; until then the link and note are the designer's own draft. */
+  doneAt: string | null;
+  figmaUrl: string | null;
+  designerNote: string | null;
 }
 
 export interface Job {

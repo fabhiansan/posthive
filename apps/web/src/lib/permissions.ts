@@ -3,7 +3,8 @@
 
 export type AppRole = "owner" | "admin" | "designer" | "member";
 
-const REVIEW_ROLES: readonly AppRole[] = ["owner", "admin", "designer"];
+// Approving is the owner's and the admin's. The design team makes the designs Marketing asks for (/tasks) and manages templates.
+const REVIEW_ROLES: readonly AppRole[] = ["owner", "admin"];
 const CONTENT_ROLES: readonly AppRole[] = ["owner", "admin", "member"];
 
 function isAppRole(role: string | null | undefined): role is AppRole {
@@ -43,8 +44,8 @@ export interface Permissions {
   canReview: boolean;
   canManageTemplates: boolean;
   /**
-   * The design-review flow applies to this person: the workspace requires approval and they
-   * cannot approve. Their posts go "to review" instead of straight to the schedule.
+   * The design-review flow applies to this person: the workspace requires approval, they make content and
+   * they cannot approve. Their posts go "to review" instead of straight to the schedule.
    */
   canSubmitOwn: boolean;
 }
@@ -58,7 +59,7 @@ export function permissionsFor(
     canEditContent: canEditContent(role),
     canReview: canReview(role),
     canManageTemplates: canManageTemplates(role),
-    canSubmitOwn: approvalRequired && !canReview(role),
+    canSubmitOwn: approvalRequired && canEditContent(role) && !canReview(role),
   };
 }
 
@@ -75,6 +76,7 @@ const PAGE_ACCESS: Record<string, readonly AppRole[]> = {
   "/dashboard": ["owner", "admin", "designer", "member"],
   "/jobs": ["owner", "admin", "designer", "member"],
   "/templates": ["owner", "admin", "designer", "member"],
+  "/tasks": ["owner", "admin", "designer"],
   "/compose": ["owner", "admin", "member"],
   "/jobs/import": ["owner", "admin", "member"],
   "/analytics": ["owner", "admin", "member"],

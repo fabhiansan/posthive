@@ -124,14 +124,13 @@ describe("AppSidebar: links by role", () => {
     expect(labels().some((l) => l.startsWith("Media library"))).toBe(false);
   });
 
-  it("a designer's My task and Help & support are dimmed 'Soon' rows", () => {
+  it("a designer's My task is a link to /tasks; only Help & support is a dimmed 'Soon' row", () => {
     h.workspace = { id: "w1", name: "Postly Studio", role: "designer", isActive: true };
     render(<Shell />);
-    for (const name of ["My task", "Help & support"]) {
-      const row = screen.getByText(name).closest("[data-sidebar=menu-button]") as HTMLElement;
-      expect(row.getAttribute("aria-disabled"), name).toBe("true");
-    }
-    expect(screen.getAllByText("Soon")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "My task" }).getAttribute("href")).toBe("/tasks");
+    const help = screen.getByText("Help & support").closest("[data-sidebar=menu-button]") as HTMLElement;
+    expect(help.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getAllByText("Soon")).toHaveLength(1);
   });
 
   it("pages that do not exist yet are dimmed rows with 'Soon', not links", () => {

@@ -73,8 +73,8 @@ export interface PostDetail extends ListItem {
   format: "single" | "carousel" | null;
   /** The link to the customised design that Marketing saved. */
   designFigmaUrl: string | null;
-  /** The request to a designer, when there is one; `deadline` is an ISO instant, or null (it is optional). */
-  designRequest: { status: string; assignee: string | null; deadline: string | null } | null;
+  /** The request to a designer, when there is one; `deadline` is an ISO instant, or null (a saved brief may have none). `doneAt` only for a done one. */
+  designRequest: { status: string; assignee: string | null; deadline: string | null; doneAt: string | null } | null;
 }
 
 // ── The six statuses ────────────────────────────────────────────────────────

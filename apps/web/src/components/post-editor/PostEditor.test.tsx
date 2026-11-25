@@ -54,7 +54,7 @@ const STORED = { title: "When Data Leads", text: "Caption here.", pillar: "Educa
 
 const request = (patch: Partial<DesignRequestView> = {}): DesignRequestView => ({
   id: "dr1", status: "sent", assignee: { id: "ckaaaaaaaaaaaaaaaaaaaaaaa", name: "Rina Sari", avatarUrl: null, active: true },
-  deadline: "2030-03-04T10:00:00.000Z", brief: "Five slides, serious tone.", referenceUrl: null, sentAt: "2030-03-01T01:00:00.000Z", updatedAt: "2030-03-01T01:00:00.000Z", ...patch,
+  deadline: "2030-03-04T10:00:00.000Z", brief: "Five slides, serious tone.", referenceUrl: null, sentAt: "2030-03-01T01:00:00.000Z", updatedAt: "2030-03-01T01:00:00.000Z", doneAt: null, figmaUrl: null, designerNote: null, ...patch,
 });
 
 const job = (patch: Record<string, unknown> = {}) => ({
@@ -242,31 +242,39 @@ describe("Edit Content: Path B, the design request", () => {
     await userEvent.click(await screen.findByRole("button", { name: day }));
   };
 
-  it("both buttons stay off until a designer and a brief are there; the deadline is not needed", async () => {
+  it("Save brief needs a designer and a brief; Send Design Request also needs a deadline", async () => {
     await openPathB();
     expect(button("Save brief").disabled).toBe(true);
     await userEvent.selectOptions(await screen.findByRole("combobox", { name: /Designer/ }), "ckaaaaaaaaaaaaaaaaaaaaaaa");
     expect(button("Save brief").disabled).toBe(true); // still no brief
     await userEvent.type(screen.getByLabelText(/Brief for designer/), "Five slides, serious tone.");
     expect(button("Save brief").disabled).toBe(false);
-    expect(button("Send Design Request").disabled).toBe(false);
+    expect(button("Send Design Request").disabled).toBe(true); // no deadline yet
+    await pickDeadlineDay(/March 4th, 2030/);
+    await waitFor(() => expect(button("Send Design Request").disabled).toBe(false));
+    expect(button("Save brief").disabled).toBe(false);
   });
 
-  it("the deadline is optional: Save brief and Send Design Request without one send deadline: null", async () => {
+  it("a brief can be saved with no deadline (it sends deadline: null); the deadline is marked as needed to send", async () => {
     await openPathB();
     await fillDesignerAndBrief();
-    expect(screen.getByText(/Optional\. It must be before the post goes out: Thu, 7 Mar 2030, 08:00 WIB\./)).toBeTruthy();
+    expect(screen.getByText(/Needed to send it\. It must be before the post goes out: Thu, 7 Mar 2030, 08:00 WIB\./)).toBeTruthy();
+    expect(screen.getByText("Design deadline").textContent).toContain("*");
     expect(screen.queryByLabelText("Deadline hour")).toBeNull(); // the time shows once a day is picked
 
     await userEvent.click(button("Save brief"));
     await waitFor(() => expect(calls("/jobs/p1/design-request", "PUT")).toHaveLength(1));
     expect(bodyOf("/jobs/p1/design-request", "PUT")).toEqual({ assigneeId: "ckaaaaaaaaaaaaaaaaaaaaaaa", deadline: null, brief: "Five slides, serious tone.", referenceUrl: "", send: false });
     expect(h.toast.success).toHaveBeenCalledWith("Brief saved.");
+  });
 
+  it("with a deadline Send Design Request sends the request, and the form becomes the locked summary", async () => {
+    await openPathB();
+    await fillDesignerAndBrief();
+    await pickDeadlineDay(/March 4th, 2030/);
     await userEvent.click(button("Send Design Request"));
-    await waitFor(() => expect(calls("/jobs/p1/design-request", "PUT")).toHaveLength(2));
-    expect(JSON.parse(calls("/jobs/p1/design-request", "PUT")[1][1].body)).toMatchObject({ send: true, deadline: null });
-    // the request came back sent: the form is the locked summary now
+    await waitFor(() => expect(calls("/jobs/p1/design-request", "PUT")).toHaveLength(1));
+    expect(bodyOf("/jobs/p1/design-request", "PUT")).toMatchObject({ send: true, deadline: "2030-03-04T02:00:00.000Z" });
     expect(await screen.findByText("Path B · Design request sent")).toBeTruthy();
   });
 
@@ -356,6 +364,49 @@ describe("Edit Content: Path B, the design request", () => {
     render(<PostEditor jobId="p1" />);
     await ready();
     expect(await screen.findByText(/publishing time is now before the design deadline/)).toBeTruthy();
+  });
+
+  it("a request the designer answered shows the Figma link and the note, is locked, and has no Cancel; Submit is not blocked by it", async () => {
+    current = job({
+      designRequest: request({ status: "done", doneAt: "2030-03-03T08:00:00.000Z", figmaUrl: "https://www.figma.com/design/Xk3aPq/env", designerNote: "Slide 3 uses the new map" }),
+      content: JSON.stringify({ ...STORED, designFigmaUrl: "https://www.figma.com/design/Xk3aPq/env" }),
+    });
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    expect(await screen.findByText("Path B · Design done")).toBeTruthy();
+    const link = screen.getByRole("link", { name: /figma\.com\/design\/Xk3aPq\/env/ });
+    expect(link.getAttribute("href")).toBe("https://www.figma.com/design/Xk3aPq/env");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(screen.getByText("Slide 3 uses the new map")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send Design Request" })).toBeNull();
+    expect(screen.getAllByText(/Design done · Rina S\./).length).toBeGreaterThan(0);
+    expect(button("Submit for Review").disabled).toBe(false);
+  });
+
+  it("the copywriting and the supporting-assets links are in the basics, filled from the post; changing one sends that key alone", async () => {
+    current = job({ content: JSON.stringify({ ...STORED, designCopy: "https://docs.google.com/doc", assetNotes: "ask Rina on Slack" }) });
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    const copy = screen.getByLabelText(/Copywriting link/) as HTMLInputElement;
+    const assets = screen.getByLabelText(/Supporting assets link/) as HTMLInputElement;
+    expect(copy.value).toBe("https://docs.google.com/doc");
+    expect(assets.value).toBe("ask Rina on Slack"); // plain text from a plan stays as it is, and is not an error until it is changed
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await userEvent.clear(copy);
+    await userEvent.type(copy, "https://docs.google.com/new");
+    await userEvent.click(button("Save as Draft"));
+    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
+    expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ designCopy: "https://docs.google.com/new" });
+  });
+
+  it("a link that is changed into something that is not an https link is refused before it is sent", async () => {
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    await userEvent.type(screen.getByLabelText(/Supporting assets link/), "not a link");
+    expect((await screen.findByRole("alert")).textContent).toContain("https://");
+    expect(button("Save as Draft").disabled).toBe(true);
   });
 
   it("an empty designer list says so and Send stays off", async () => {

@@ -33,6 +33,7 @@ type Props = {
    * equal buttons: for a dialog that shows what it acts on (the template dialogs).
    */
   layout?: "inline" | "stacked";
+  size?: "compact";
   /** Replace the tone's icon. */
   icon?: ReactNode;
   /** Keep the confirm button off until what the dialog asks for (a password, a typed name) is there. */
@@ -60,6 +61,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   tone = "danger",
   layout = "inline",
+  size,
   icon,
   confirmDisabled = false,
   onConfirm,
@@ -85,7 +87,7 @@ export function ConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
-      <AlertDialogContent className={cn(stacked && "gap-0 p-0 data-[size=default]:sm:max-w-120")}>
+      <AlertDialogContent className={cn(stacked && "gap-0 p-0 data-[size=default]:sm:max-w-120", size === "compact" && "w-[min(26rem,calc(100%-2rem))] p-5")}>
         <div className={cn(stacked ? "flex flex-col gap-4 p-6" : "flex items-start gap-4")}>
           <AlertDialogMedia
             className={cn(

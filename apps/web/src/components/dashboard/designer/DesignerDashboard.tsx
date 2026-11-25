@@ -5,36 +5,31 @@ import { RefreshCwIcon } from "lucide-react";
 import { InlineAlert } from "@/components/InlineAlert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useContentActions } from "@/components/content-list/useContentActions";
 import { Topbar } from "@/components/dashboard/Topbar";
 import { useAuth } from "@/context/AuthContext";
 import { BRAND } from "@/lib/brand";
 import { firstName, greetingFor } from "@/lib/dashboard-format";
-import { designSubtitle, templateTotals, type ApiDesignDashboard } from "@/lib/designer-dashboard";
+import { templateTotals, type ApiDesignDashboard } from "@/lib/designer-dashboard";
+import { dashboardSubtitle } from "@/lib/design-tasks";
 import { useDashboard } from "@/lib/useDashboard";
 import { DesignActivities } from "./DesignActivities";
-import { DesignQueue } from "./DesignQueue";
 import { DesignStat } from "./DesignStat";
+import { DesignTasks } from "./DesignTasks";
 import { TemplatePillars } from "./TemplatePillars";
 
-const NO_QUEUE: ApiDesignDashboard["queue"] = [];
-
 /**
- * The dashboard of the design team (docs/design/designer-dashboard.png): the designs waiting for review, the counts around
- * them, what happened lately and the templates. For now every design of the workspace waiting for review is listed, not only
- * the ones assigned to this designer: "assign to designer" in add/edit content is not built yet.
+ * The dashboard of the design team (docs/design/designer/dashboard.png): the tasks Marketing assigned to this designer, the
+ * counts around them, what happened lately and the templates. Approving is the admin's, so nothing here waits for a review.
  */
 export function DesignerDashboard() {
   const { user } = useAuth();
   const now = useMemo(() => new Date(), []);
   const { data, loading, error, reload } = useDashboard<ApiDesignDashboard>("/dashboard/design");
-  // "Review design" opens the same review dialog as the drawer's Review button; an answer asks the numbers again
-  const actions = useContentActions({ rows: data?.queue ?? NO_QUEUE, reload });
 
   const first = firstName(user?.name);
   const templates = data ? templateTotals(data.templates) : null;
   let subtitle = "Loading your workspace…";
-  if (data && templates) subtitle = designSubtitle(data.pending, templates.draft);
+  if (data && templates) subtitle = dashboardSubtitle(data.counts, templates.draft);
   else if (!loading) subtitle = "We couldn't load your workspace.";
 
   return (
@@ -78,21 +73,13 @@ export function DesignerDashboard() {
           <>
             {/* grid-cols-1 is minmax(0, 1fr): without it the single column is as wide as its widest content and the page scrolls sideways */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <DesignStat value={data.pending} label="Pending Approvals" note="Designs waiting for your review" />
-              <DesignStat value={data.approved} label="Approved Designs" note="Approved this quarter" tone="good" />
-              <DesignStat value={data.revision} label="Revision Required" note="Sent back to Marketing" tone="bad" />
+              <DesignStat value={data.counts.assigned + data.counts.progress} label="Assigned to me" note="Posts from Marketing" />
+              <DesignStat value={data.counts.progress} label="In progress" note="Figma work started" tone="good" />
+              <DesignStat value={data.counts.waiting} label="Done · waiting for Marketing" note="Sent, not yet in review" tone="warn" />
               <DesignStat value={templates.total} label="Total Templates" note={`${templates.published} published · ${templates.draft} draft`} />
             </div>
 
-            <DesignQueue
-              posts={data.queue}
-              pending={data.pending}
-              revision={data.revision}
-              approved={data.approved}
-              now={now}
-              onOpen={actions.open}
-              onReview={actions.review}
-            />
+            <DesignTasks tasks={data.tasks} counts={data.counts} now={now} />
 
             {/* the two cards are as tall as each other, as in the design */}
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_--spacing(105)]">
@@ -102,8 +89,6 @@ export function DesignerDashboard() {
           </>
         )}
       </div>
-
-      {actions.layer}
     </div>
   );
 }

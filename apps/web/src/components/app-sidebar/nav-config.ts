@@ -65,9 +65,8 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 /**
- * The design team's sidebar (docs/design/designer-dashboard.png): its dashboard, the Master Template library and its tasks.
- * "My task" waits for the "assign to designer" step of add/edit content, so it is a dimmed "Soon" row for now.
- * Content list and Media library are not here; a designer reaches the list through "View all" on the dashboard.
+ * The design team's sidebar (docs/design/designer): its dashboard, the Master Template library and its tasks (the design
+ * requests Marketing sent it). Content list and Media library are not here.
  */
 export const DESIGN_GROUPS: NavGroup[] = [
   {
@@ -78,7 +77,7 @@ export const DESIGN_GROUPS: NavGroup[] = [
     label: "Design workspace",
     items: [
       { label: "Master Template", href: "/templates", icon: LayoutTemplate },
-      { label: "My task", href: null, icon: ListChecks },
+      { label: "My task", href: "/tasks", icon: ListChecks },
     ],
   },
 ];
@@ -123,7 +122,7 @@ export function footerItemsFor(role: string | null | undefined): NavItem[] {
   return FOOTER_ITEMS.map((i) => (i.href !== null && !canAccessPage(i.href, role) ? { ...i, href: PROFILE_HREF } : i));
 }
 
-const ALL_HREFS = [...NAV_GROUPS.flatMap((g) => g.items), ...MANAGE_GROUP.items, ...FOOTER_ITEMS, ADD_ACCOUNT]
+const ALL_HREFS = [...NAV_GROUPS.flatMap((g) => g.items), ...DESIGN_GROUPS.flatMap((g) => g.items), ...MANAGE_GROUP.items, ...FOOTER_ITEMS, ADD_ACCOUNT]
   .map((i) => i.href)
   .concat(PROFILE_HREF)
   .filter((h): h is string => h !== null);

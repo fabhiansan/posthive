@@ -25,7 +25,7 @@ import {
   type PostDetail,
 } from "@/lib/content-list";
 import { CONTENT_STATUS } from "@/lib/content-status";
-import { requestLine } from "@/lib/post-editor";
+import { designLine } from "@/lib/post-editor";
 import { formatPlanDate } from "@/lib/import-rows";
 import { wibDateKey } from "@/lib/datetime";
 import { platformLabel } from "@/lib/platforms";
@@ -96,7 +96,7 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
   // Told only to the person who sends posts for review: why their draft has only two buttons
   const hint =
     post && canEdit && canSubmitOwn && withDesigner && post.designRequest
-      ? `Design requested · ${requestLine(post.designRequest)}. Cancel the request in the editor to send this post on.`
+      ? `${designLine(post.designRequest)}. Cancel the request in the editor to send this post on.`
       : post && canEdit && canSubmitOwn && filter === "rejected"
       ? "Revision requested. Edit the content to send it for review again."
       : post && canEdit && canSubmitOwn && unsent && !complete
@@ -300,8 +300,8 @@ function DesignSection({ post, template, category }: { post: PostDetail; templat
           </p>
         )}
         {post.designRequest && (
-          <p className="rounded-xl bg-brand-100 px-4 py-3 type-body-r-s text-brand-800">
-            Design requested · {requestLine(post.designRequest)}
+          <p className={post.designRequest.status === "done" ? "rounded-xl bg-green-50 px-4 py-3 type-body-r-s text-green-700" : "rounded-xl bg-brand-100 px-4 py-3 type-body-r-s text-brand-800"}>
+            {designLine(post.designRequest)}
             {post.designRequest.status === "draft" ? " (brief saved, not sent yet)" : ""}
           </p>
         )}
