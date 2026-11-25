@@ -401,6 +401,26 @@ export interface SubmissionDetail extends SubmissionEntry {
 }
 export const getSubmission = (id: string, number: number) => apiFetch<{ submission: SubmissionDetail }>(`${instancePath(id)}/submissions/${number}`);
 
+/** One APPROVED version of one of my designs, as Add Content offers it. Only approved ones are listed: a draft, a pending review or "changes requested" never is. */
+export interface ApprovedDesign {
+  submissionId: string;
+  instanceId: string;
+  /** The version: 1, 2, 3 per design. */
+  number: number;
+  name: string;
+  submittedAt: string;
+  approvedAt: string | null;
+  archived: boolean;
+}
+/** `cursor` is the opaque text the server gave; it is only meaningful to the person and the workspace it was issued to. */
+export const listApprovedDesigns = (cursor?: string | null) => apiFetch<{ designs: ApprovedDesign[]; nextCursor: string | null }>(`/canvas/approved${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+/** The picture of an approved design, stored unchanged: it is a PNG of the design's own size, or the server refuses it. */
+export function uploadDesignImage(submissionId: string, png: Blob) {
+  const body = new FormData();
+  body.append("file", png, "design.png");
+  return apiFetch<{ url: string; bytes: number }>(`/canvas/submissions/${encodeURIComponent(submissionId)}/image`, { method: "POST", body });
+}
+
 export interface ReviewQueueEntry {
   id: string;
   status: ReviewStatus;

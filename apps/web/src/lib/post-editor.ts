@@ -10,6 +10,7 @@ import { APP_TZ_LABEL, formatTime, fromWibInput, toWibInput, wibDateKey } from "
 import type { DesignRequestView, Job } from "./jobTypes";
 import { platformLabel } from "./platforms";
 import { missingForReview, type MissingField } from "./submitReadiness";
+import { designsOf, pruneDesigns, type PostDesign } from "./designImage";
 
 /** The channels the page is made for (docs/content-types.md). Any other channel a post has is kept and only named. */
 export const EDITOR_PLATFORMS = ["linkedin", "instagram"] as const;
@@ -42,6 +43,11 @@ export interface PostForm {
   time: string;
   accountIds: string[];
   mediaUrls: string[];
+  /**
+   * The approved Canvas designs among the pictures (each one's picture is also in `mediaUrls`; the server keeps it that way). What the
+   * server checked and measured comes back in the post: `bytes` is its own, a request never carries one.
+   */
+  canvasDesigns: PostDesign[];
   designFigmaUrl: string;
   perAccount: PerAccount;
 }
@@ -54,6 +60,7 @@ export interface StoredContent {
   category?: string | null;
   format?: string | null;
   mediaUrls?: string[];
+  canvasDesigns?: unknown;
   designFigmaUrl?: string;
   canvasInstanceId?: string | null;
   canvasTemplateId?: string | null;
@@ -73,7 +80,7 @@ export function parseContent(content: string): StoredContent {
 
 export const EMPTY_FORM: PostForm = {
   title: "", text: "", pillar: null, category: null, format: "", date: "", time: "09:00",
-  accountIds: [], mediaUrls: [], designFigmaUrl: "", perAccount: {},
+  accountIds: [], mediaUrls: [], canvasDesigns: [], designFigmaUrl: "", perAccount: {},
 };
 
 export function formFromJob(job: Pick<Job, "scheduledFor" | "content" | "targets">): PostForm {
@@ -91,6 +98,7 @@ export function formFromJob(job: Pick<Job, "scheduledFor" | "content" | "targets
     time: when ? when.slice(11, 16) : "09:00",
     accountIds: job.targets.map((t) => t.accountId),
     mediaUrls: Array.isArray(c.mediaUrls) ? c.mediaUrls : [],
+    canvasDesigns: pruneDesigns(designsOf(c.canvasDesigns), Array.isArray(c.mediaUrls) ? c.mediaUrls : []),
     designFigmaUrl: c.designFigmaUrl ?? "",
     perAccount: c.perAccount ?? {},
   };
@@ -98,6 +106,9 @@ export function formFromJob(job: Pick<Job, "scheduledFor" | "content" | "targets
 
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
 const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((v) => b.includes(v));
+
+/** The designs as a request carries them: the id and the picture, only for pictures the form still has. */
+const designsToSend = (f: Pick<PostForm, "canvasDesigns" | "mediaUrls">) => pruneDesigns(f.canvasDesigns, f.mediaUrls).map(({ submissionId, mediaUrl }) => ({ submissionId, mediaUrl }));
 
 /** The publishing instant of the form, or null while the day is empty. */
 export const scheduledOf = (f: Pick<PostForm, "date" | "time">): Date | null => (f.date ? fromWibInput(`${f.date}T${f.time || "09:00"}`) : null);
@@ -117,7 +128,14 @@ export function changedFields(initial: PostForm, form: PostForm): Record<string,
   if (form.format !== initial.format) out.format = form.format === "" ? null : form.format;
   if (form.date && (form.date !== initial.date || form.time !== initial.time)) out.scheduledFor = scheduledOf(form)!.toISOString();
   if (!sameSet(form.accountIds, initial.accountIds)) out.accountIds = form.accountIds;
-  if (!sameList(form.mediaUrls, initial.mediaUrls)) out.mediaUrls = form.mediaUrls;
+  const picturesChanged = !sameList(form.mediaUrls, initial.mediaUrls);
+  if (picturesChanged) out.mediaUrls = form.mediaUrls;
+  // The designs are sent whenever they or the pictures changed, always as the FULL list pruned to the pictures the post will have (the
+  // server replaces its list with it). Only the id and the picture are sent: what the server measured is never sent back.
+  const designs = designsToSend(form);
+  const before = designsToSend(initial);
+  // a post with no designs before and after sends none (a plain reorder or upload is not about designs)
+  if ((designs.length > 0 || before.length > 0) && (picturesChanged || JSON.stringify(designs) !== JSON.stringify(before))) out.canvasDesigns = designs;
   if (form.designFigmaUrl !== initial.designFigmaUrl) out.designFigmaUrl = form.designFigmaUrl;
   if (JSON.stringify(form.perAccount) !== JSON.stringify(initial.perAccount)) out.perAccount = form.perAccount;
   return out;
@@ -141,6 +159,7 @@ export function createBody(form: PostForm, draft: boolean): Record<string, unkno
       ...(form.title.trim() ? { title: form.title } : {}),
       ...(form.pillar || form.category ? { pillar: form.pillar, category: form.category } : {}),
       ...(form.format ? { format: form.format } : {}),
+      ...(designsToSend(form).length > 0 ? { canvasDesigns: designsToSend(form) } : {}),
       ...(form.designFigmaUrl ? { designFigmaUrl: form.designFigmaUrl } : {}),
       ...(Object.keys(form.perAccount).length > 0 ? { perAccount: form.perAccount } : {}),
     },

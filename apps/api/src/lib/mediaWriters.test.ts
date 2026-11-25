@@ -62,6 +62,7 @@ describe("every writer of a row that can hold a media address", () => {
       "routes/accounts.ts": "a disconnected account avatar",
       "routes/profilePhoto.ts": "a user profile photo",
       "routes/canvas.ts": "a private Canvas asset whose row was never written",
+      "routes/canvasDesigns.ts": "the picture of an approved design, removed only when ITS OWN Upload row could not be written in the same request (nothing can reference it yet)",
     };
     expect(direct.filter((r) => !(r in ALLOWED)).sort()).toEqual([]);
   });

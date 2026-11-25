@@ -31,9 +31,21 @@ describe("StatusChip and ReviewChips", () => {
     }
   });
 
-  it("a design never submitted shows nothing at all", () => {
-    const { container } = render(<ReviewChips review={review()} />);
-    expect(container.innerHTML).toBe("");
+  it("a design never submitted is a DESIGN draft: that chip only, no review answer, no 'Unsubmitted changes'", () => {
+    render(<ReviewChips review={review()} />);
+    const chip = screen.getByText("Design draft");
+    expect(chip.closest("[title]")?.getAttribute("title")).toMatch(/not a post|It is not a post/);
+    expect(screen.queryByText(/In review|Approved|Changes requested|Replaced|Unsubmitted changes|Archived/)).toBeNull();
+  });
+
+  it("a design that was submitted, or archived, is not called a draft", () => {
+    for (const status of ["pending", "approved", "changes_requested"] as const) {
+      render(<ReviewChips review={review({ latestReviewStatus: status })} />);
+      expect(screen.queryByText("Design draft")).toBeNull();
+      cleanup();
+    }
+    render(<ReviewChips review={review()} archived />);
+    expect(screen.queryByText("Design draft")).toBeNull();
   });
 
   it.each(["pending", "approved", "changes_requested"] as const)("%s with no new work: the chip only", (status) => {

@@ -13,6 +13,7 @@ import { ExportMenu } from "./ExportMenu";
 import { FieldInspector, type FieldView } from "./FieldInspector";
 import { FieldsPanel, type FieldRow } from "./FieldsPanel";
 import { ReviewAction } from "./ReviewAction";
+import { SaveDraftAction } from "./SaveDraftAction";
 import { needsBanner, SaveBanner, SaveStatus } from "./SaveStatus";
 import { Toolbar } from "./Toolbar";
 import { useAutosave } from "./useAutosave";
@@ -223,6 +224,7 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
         actions={
           <>
             <span className="hidden type-body-r-xs text-muted xl:inline">Based on revision {instance.baseRevision.number}</span>
+            <SaveDraftAction flush={autosave.flush} disabled={autosave.info.state === "archived" || autosave.info.state === "deleted"} />
             <ReviewAction designId={instance.id} review={review} flush={autosave.flush} />
             <ExportMenu width={effective.width} height={effective.height} busy={exporting} onExport={onExport} />
           </>

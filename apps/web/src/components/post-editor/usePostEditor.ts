@@ -170,9 +170,13 @@ export function usePostEditor(jobId: string | null) {
   async function create(): Promise<string> {
     const sent = form;
     const created = await apiFetch<{ id: string }>("/jobs", { method: "POST", body: JSON.stringify(createBody(sent, true)) });
-    setJob(await fetchJob(created.id));
+    const saved = await fetchJob(created.id);
+    setJob(saved);
     setCreatedId(created.id);
-    setInitial(sent);
+    // the designs as the SERVER stored them (it measured each picture): the warning about a channel needs that size
+    const designs = formFromJob(saved).canvasDesigns;
+    setInitial({ ...sent, canvasDesigns: designs });
+    setForm((f) => ({ ...f, canvasDesigns: designs }));
     window.history.replaceState(null, "", `/jobs/${created.id}/edit`);
     return created.id;
   }
@@ -182,8 +186,11 @@ export function usePostEditor(jobId: string | null) {
     if (!postId) return ensurePost();
     const body = changedFields(initial, form);
     if (Object.keys(body).length > 0) {
-      await apiFetch(`/jobs/${postId}`, { method: "PATCH", body: JSON.stringify(body) });
-      setInitial(form);
+      const saved = await apiFetch<{ content: string }>(`/jobs/${postId}`, { method: "PATCH", body: JSON.stringify(body) });
+      // adopt the designs the server stored (their measured sizes); every other field stays as the person has it
+      const designs = saved?.content ? formFromJob({ content: saved.content, scheduledFor: null, targets: [] }).canvasDesigns : form.canvasDesigns;
+      setInitial({ ...form, canvasDesigns: designs });
+      setForm((f) => ({ ...f, canvasDesigns: designs }));
     }
     return postId;
   }

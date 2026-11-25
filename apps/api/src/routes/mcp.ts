@@ -25,10 +25,11 @@ import { withApiKey, canUseApi } from "../lib/auth/withApiKey.js";
 import { isManageRole, isContentEditorRole, isDraftVisibleTo, jobVisibilityWhere, CONTENT_EDITOR_FORBIDDEN_MSG, type DraftVisibilityJob } from "../lib/auth/withAuth.js";
 import { designReference, findExternalTemplate, listExternalTemplates } from "../lib/templates.js";
 import { firstSubmission } from "../lib/submitStamp.js";
-import { attachUploads, lockForCopy, withUploads } from "../lib/mediaDelete.js";
+import { attachUploads, lockForCopy, lockUploads, MediaUnavailable, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
 import { promoteRefusal } from "../lib/promoteGate.js";
 import { withoutCanvasKeys } from "../lib/jobEditRules.js";
+import { canvasDesignMetadataProblem, designImageProblems, isCanvasDesignUploadPath } from "../lib/designImage.js";
 
 async function withMcpGate(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const user = req.apiKeyUser!;
@@ -458,6 +459,8 @@ export async function handleTool(
       // the wrapper below turns it into the tool's error text
       const mediaUrls = args.media_urls === undefined ? [] : mediaUrlList(args.media_urls);
       if (mediaUrls === null || mediaUrls.length > 10) throw new Error("media_urls must be an array of at most 10 uploaded file URLs");
+      const metadataProblem = canvasDesignMetadataProblem({ mediaUrls });
+      if (metadataProblem) throw new Error(metadataProblem);
       const contentPayload = JSON.stringify({
         text: args.content,
         mediaUrls,
@@ -589,18 +592,20 @@ export async function handleTool(
 
       const job = await prisma.postJob.findUnique({
         where: { id: postId },
-        include: { designRequest: { select: { status: true } }, targets: { select: { id: true }, take: 1 } },
+        include: { designRequest: { select: { status: true } }, targets: { select: { id: true, account: { select: { platform: true } } } } },
       });
       if (!job || job.workspaceId !== workspaceId) throw new Error("Post not found");
       if (job.status !== "draft") {
         throw new Error(`Post status is '${job.status}' — only drafts can be approved`);
       }
-      // the design is with the designer, or there is no account to post to
-      const refused = promoteRefusal(job);
-      if (refused) throw new Error(refused.body.error);
       if (!isManageRole(ctx.role) && job.userId !== userId) {
         throw new Error("You can only approve your own drafts.");
       }
+      // the design is with the designer, or there is no account to post to
+      const refused = promoteRefusal(job);
+      if (refused) throw new Error(refused.body.error);
+      const designProblems = designImageProblems(job.content, job.targets.map((t) => t.account.platform));
+      if (designProblems.length > 0) throw new Error(designProblems.join(" "));
 
       const updated = await prisma.postJob.update({
         where: { id: postId },
@@ -664,15 +669,31 @@ export async function handleTool(
         throw new Error("Provide at least one field to update");
       }
 
-      const updated = await prisma.postJob.update({
-        where: { id: postId },
-        data: {
-          ...updateData,
-          ...(forcedDraft && job.status === "draft" && (job.approvalStatus === "pending" || job.approvalStatus === "rejected")
-            ? { approvalStatus: null, reviewNote: null, reviewedByUserId: null, reviewedAt: null }
-            : {}),
+      const finalContent = (updateData.content as string | undefined) ?? job.content;
+      const metadataProblem = canvasDesignMetadataProblem(finalContent);
+      if (metadataProblem) throw new Error(metadataProblem);
+      const held = new Set(contentMediaUrls(job.content));
+      const finalMedia = contentMediaUrls(finalContent);
+      const canvasUrls = finalMedia.filter(isCanvasDesignUploadPath);
+      const updated = await withUploads(
+        canvasUrls.length > 0 ? finalMedia : [],
+        async (tx) => {
+          await attachUploads(tx, finalMedia, { userId, keep: held });
+          if (canvasUrls.length > 0) {
+            const rows = await lockUploads(tx, canvasUrls);
+            if (canvasUrls.some((url) => !rows.has(url))) throw new MediaUnavailable();
+          }
         },
-      });
+        (db) => db.postJob.update({
+          where: { id: postId },
+          data: {
+            ...updateData,
+            ...(forcedDraft && job.status === "draft" && (job.approvalStatus === "pending" || job.approvalStatus === "rejected")
+              ? { approvalStatus: null, reviewNote: null, reviewedByUserId: null, reviewedAt: null }
+              : {}),
+          },
+        }),
+      );
       return ok({ id: updated.id, status: updated.status, scheduledFor: updated.scheduledFor });
     }
 

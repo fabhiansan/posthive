@@ -6,10 +6,11 @@ const h = vi.hoisted(() => ({
   job: null as null | Record<string, unknown>,
   updates: [] as unknown[],
   created: [] as Array<{ data: Record<string, unknown> }>,
+  missingCanvas: false,
 }));
 
-vi.mock("../lib/prisma.js", () => ({
-  prisma: {
+vi.mock("../lib/prisma.js", () => {
+  const db = {
     account: { findMany: vi.fn(async () => [{ id: "acc-1" }]) },
     postJob: {
       findUnique: vi.fn(async () => h.job),
@@ -22,12 +23,17 @@ vi.mock("../lib/prisma.js", () => ({
         return { id: "p1", status: h.job?.status, scheduledFor: null };
       }),
     },
-  },
-}));
+    upload: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn(db),
+    $queryRaw: vi.fn(async () => h.missingCanvas ? [] : [{ url: "/uploads/canvas-designs/s1/p.png", userId: "head-of-marketing", claimedAt: new Date() }]),
+  };
+  return { prisma: db };
+});
 vi.mock("../lib/queue.js", () => ({ schedulePostJob: vi.fn() }));
 vi.mock("../lib/auth/withApiKey.js", () => ({ withApiKey: async () => {}, canUseApi: () => true }));
 
 import { handleTool } from "./mcp.js";
+import { schedulePostJob } from "../lib/queue.js";
 
 const stored = (patch: Record<string, unknown> = {}) => ({
   id: "p1",
@@ -47,6 +53,8 @@ beforeEach(() => {
   h.job = null;
   h.updates = [];
   h.created = [];
+  h.missingCanvas = false;
+  vi.mocked(schedulePostJob).mockClear();
 });
 
 describe("update_post: a colleague edits the head of marketing's draft", () => {
@@ -95,6 +103,49 @@ describe("update_post: a colleague edits the head of marketing's draft", () => {
     h.job = stored({ status: "pending" });
     await expect(update({ role: "admin", approvalRequired: true })).resolves.toBeTruthy();
   });
+
+  it("a text-only edit locks the final Canvas picture and refuses if its Upload row disappeared", async () => {
+    const url = "/uploads/canvas-designs/s1/p.png";
+    h.job = stored({ content: JSON.stringify({ text: "Caption", mediaUrls: [url], canvasDesigns: [{ submissionId: "s1", mediaUrl: url, bytes: 1200 }] }) });
+    await expect(handleTool("update_post", { post_id: "p1", content: "Edited" }, "admin", "ws-1", { role: "admin", approvalRequired: false })).resolves.toBeTruthy();
+    expect(h.updates).toHaveLength(1);
+    h.updates = [];
+    h.missingCanvas = true;
+    await expect(handleTool("update_post", { post_id: "p1", content: "Stale" }, "admin", "ws-1", { role: "admin", approvalRequired: false })).rejects.toThrow(/removed|uploaded/);
+    expect(h.updates).toHaveLength(0);
+  });
+});
+
+describe("approve_draft: an approved Canvas design must be compatible with every final target", () => {
+  const future = () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  const withDesign = (platform: string) => stored({
+    content: JSON.stringify({ text: "Caption", mediaUrls: ["/uploads/canvas-designs/s1/p.png"], canvasDesigns: [{ submissionId: "s1", mediaUrl: "/uploads/canvas-designs/s1/p.png", bytes: 1200 }] }),
+    designRequest: null,
+    targets: [{ id: "t1", account: { platform } }],
+  });
+  const approve = () => handleTool("approve_draft", { post_id: "p1", scheduled_time: future() }, "admin", "ws-1", { role: "admin", approvalRequired: false });
+
+  it("refuses Instagram before updating or queueing the post", async () => {
+    h.job = withDesign("instagram");
+    await expect(approve()).rejects.toThrow(/Instagram.*JPEG/);
+    expect(h.updates).toHaveLength(0);
+    expect(schedulePostJob).not.toHaveBeenCalled();
+  });
+
+  it("allows a compatible target and queues it", async () => {
+    h.job = withDesign("linkedin");
+    await expect(approve()).resolves.toBeTruthy();
+    expect(h.updates).toHaveLength(1);
+    expect(schedulePostJob).toHaveBeenCalledWith("p1", expect.any(Date));
+  });
+
+  it("checks ownership before revealing whether another member's draft is incompatible", async () => {
+    h.job = { ...withDesign("instagram"), userId: "someone-else" };
+    await expect(handleTool("approve_draft", { post_id: "p1", scheduled_time: future() }, "colleague", "ws-1", { role: "member", approvalRequired: false }))
+      .rejects.toThrow("You can only approve your own drafts.");
+    expect(h.updates).toHaveLength(0);
+    expect(schedulePostJob).not.toHaveBeenCalled();
+  });
 });
 
 describe("create_post: a post that goes to review is its first send", () => {
@@ -111,5 +162,11 @@ describe("create_post: a post that goes to review is its first send", () => {
     await create({ role: "owner", approvalRequired: true });
     expect(h.created[0].data).toMatchObject({ approvalStatus: null });
     expect(h.created[0].data).not.toHaveProperty("submittedAt");
+  });
+
+  it("create refuses a Canvas-design URL without validated metadata", async () => {
+    await expect(handleTool("create_post", { content: "Caption", account_ids: ["acc-1"], media_urls: ["/uploads/canvas-designs/s1/p.png"] }, "colleague", "ws-1", { role: "member", approvalRequired: false }))
+      .rejects.toThrow(/without its design details/);
+    expect(h.created).toHaveLength(0);
   });
 });

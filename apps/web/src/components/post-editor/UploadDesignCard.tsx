@@ -1,32 +1,45 @@
 "use client";
 
 import { useRef, useState, type DragEvent } from "react";
-import { CloudUploadIcon, FileVideoIcon, LinkIcon, XIcon } from "lucide-react";
+import { CloudUploadIcon, FileVideoIcon, LinkIcon, PaletteIcon, XIcon } from "lucide-react";
+import { InlineAlert } from "@/components/InlineAlert";
 import { Spinner } from "@/components/Spinner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { apiFetch, assetUrl } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { designImageProblems, pruneDesigns, type PostDesign } from "@/lib/designImage";
 import { IMAGE_TYPES, MAX_FILES, MAX_IMAGE_MB, designLinkProblem, imageProblem, isVideoUrl, type PostFormat } from "@/lib/post-editor";
+import { ApprovedDesignPicker, DESIGN_DISCLOSURE } from "./ApprovedDesignPicker";
 
 type Props = {
   format: PostFormat | "";
   mediaUrls: string[];
+  /** The approved Canvas designs among the pictures; the pictures and the designs always change together. */
+  canvasDesigns: PostDesign[];
+  /** The channels of the post, for the warning about a design a channel cannot take. */
+  platforms: readonly string[];
   designFigmaUrl: string;
-  onMedia: (urls: string[]) => void;
+  onMedia: (change: { mediaUrls: string[]; canvasDesigns: PostDesign[] }) => void;
   onFigma: (url: string) => void;
   onBusy: (busy: boolean) => void;
   disabled?: boolean;
 };
 
-/** Card C: the finished design as PNG or JPG (one file per slide of a carousel), and optionally the Figma link to its source. */
-export function UploadDesignCard({ format, mediaUrls, designFigmaUrl, onMedia, onFigma, onBusy, disabled }: Props) {
+/**
+ * Card C: the finished design as PNG or JPG (one file per slide of a carousel), an APPROVED Canvas design of the person's own, and
+ * optionally the Figma link to its source.
+ */
+export function UploadDesignCard({ format, mediaUrls, canvasDesigns, platforms, designFigmaUrl, onMedia, onFigma, onBusy, disabled }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [working, setWorking] = useState(false);
   const [problems, setProblems] = useState<string[]>([]);
   const [touched, setTouched] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const designUrls = new Set(canvasDesigns.map((d) => d.mediaUrl));
+  const designProblems = designImageProblems(canvasDesigns, platforms);
   const single = format === "single";
   const images = mediaUrls.filter((u) => !isVideoUrl(u));
   const link = touched ? designLinkProblem(designFigmaUrl) : null;
@@ -63,13 +76,22 @@ export function UploadDesignCard({ format, mediaUrls, designFigmaUrl, onMedia, o
       }
     }
     setProblems([...found]);
-    if (added.length > 0) onMedia(single ? [...mediaUrls.filter(isVideoUrl), ...added] : [...mediaUrls, ...added]);
+    if (added.length > 0) change(single ? [...mediaUrls.filter(isVideoUrl), ...added] : [...mediaUrls, ...added]);
     setWorking(false);
     onBusy(false);
     if (input.current) input.current.value = "";
   }
 
-  const remove = (url: string) => onMedia(mediaUrls.filter((u) => u !== url));
+  /** The pictures and the designs change in ONE patch, so a design never outlives its picture (the server prunes the same way). */
+  const change = (urls: string[], designs: PostDesign[] = canvasDesigns) => onMedia({ mediaUrls: urls, canvasDesigns: pruneDesigns(designs, urls) });
+  const remove = (url: string) => change(mediaUrls.filter((u) => u !== url));
+  const attached = ({ submissionId, url, bytes }: { submissionId: string; url: string; bytes: number }) => {
+    const design = { submissionId, mediaUrl: url, bytes };
+    // the same rule as an upload: a single image takes one picture (the videos of the old editor stay), a carousel adds a slide
+    if (single) change([...mediaUrls.filter(isVideoUrl), url], [design]);
+    else if (images.length < MAX_FILES) change([...mediaUrls, url], [...canvasDesigns, design]);
+    else setProblems([`A post takes ${MAX_FILES} files at most. Remove one first.`]);
+  };
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     setOver(false);
@@ -94,14 +116,31 @@ export function UploadDesignCard({ format, mediaUrls, designFigmaUrl, onMedia, o
         <p className="type-body-r-xs text-muted">
           PNG or JPG · up to {MAX_IMAGE_MB} MB · {single ? "one file" : "carousel = one file per slide"}
         </p>
-        <Button variant="secondary" size="sm" disabled={disabled || working} onClick={() => input.current?.click()}>Browse files</Button>
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button variant="secondary" size="sm" disabled={disabled || working} onClick={() => input.current?.click()}>Browse files</Button>
+          <Button variant="secondary" size="sm" disabled={disabled || working} onClick={() => setPicking(true)}>
+            <PaletteIcon /> Use approved design
+          </Button>
+        </div>
         <input ref={input} type="file" accept={IMAGE_TYPES.join(",")} multiple={!single} hidden aria-label="Choose design files" onChange={(e) => void upload(Array.from(e.target.files ?? []))} />
       </div>
+      <ApprovedDesignPicker open={picking} onClose={() => setPicking(false)} onAttach={attached} />
 
       {problems.length > 0 && (
         <ul role="alert" className="space-y-1 type-body-r-xs text-red-600">
           {problems.map((p) => <li key={p}>{p}</li>)}
         </ul>
+      )}
+
+      {canvasDesigns.length > 0 && (
+        <p className="type-body-r-xs text-muted">{DESIGN_DISCLOSURE}</p>
+      )}
+      {designProblems.length > 0 && (
+        <InlineAlert tone="warning" title="An approved design can't go to every channel you picked">
+          <ul className="list-disc space-y-1 pl-4">
+            {designProblems.map((p) => <li key={p}>{p}</li>)}
+          </ul>
+        </InlineAlert>
       )}
 
       {mediaUrls.length > 0 && (
@@ -121,6 +160,7 @@ export function UploadDesignCard({ format, mediaUrls, designFigmaUrl, onMedia, o
                   <img src={assetUrl(url)} alt={`File ${n}`} loading="lazy" className="size-full object-cover" />
                 )}
                 {!video && !single && <span className="absolute bottom-1 left-1 rounded-md bg-neutral-900/70 px-1.5 type-body-sb-xxs text-white">{n}</span>}
+                {designUrls.has(url) && <span className="absolute right-1 bottom-1 rounded-md bg-neutral-900/70 px-1.5 type-body-sb-xxs text-white">Canvas</span>}
                 <Button variant="secondary" size="icon-sm" aria-label={video ? "Remove the video" : `Remove file ${n}`} disabled={disabled} onClick={() => remove(url)} className="absolute top-1 right-1 size-6">
                   <XIcon />
                 </Button>

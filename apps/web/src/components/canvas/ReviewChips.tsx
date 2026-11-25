@@ -31,9 +31,15 @@ export function StatusChip({ status }: { status: ReviewStatus }) {
  */
 export function ReviewChips({ review, archived = false }: { review: ReviewSummary; archived?: boolean }) {
   const { latestReviewStatus: status, hasChangesSinceSubmitted: changed } = review;
-  if (!status && !archived) return null;
+  // A design that was never submitted is a DESIGN draft (saved as the person works, reopened from My designs). Not a post draft.
+  const draft = !status && !archived;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
+      {draft && (
+        <Badge variant="plain" title="A Canvas design draft: saved, not submitted for review. It is not a post.">
+          <PencilIcon /> Design draft
+        </Badge>
+      )}
       {status && <StatusChip status={status} />}
       {changed && !archived && (
         <Badge variant="plain">

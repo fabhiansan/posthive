@@ -123,8 +123,10 @@ export function PostEditor({ jobId = null }: { jobId?: string | null }) {
                 <UploadDesignCard
                   format={form.format}
                   mediaUrls={form.mediaUrls}
+                  canvasDesigns={form.canvasDesigns}
+                  platforms={accounts.filter((a) => form.accountIds.includes(a.id)).map((a) => a.platform)}
                   designFigmaUrl={form.designFigmaUrl}
-                  onMedia={(mediaUrls) => set({ mediaUrls })}
+                  onMedia={(change) => set(change)}
                   onFigma={(designFigmaUrl) => set({ designFigmaUrl })}
                   onBusy={editor.setUploading}
                   disabled={locked}

@@ -40,6 +40,7 @@ import { reviewSummary } from "../lib/canvasReview.js";
 import { latestForInstances, latestSubmission } from "../lib/canvasReviewDb.js";
 import { userLimit } from "../lib/userRateLimit.js";
 import { canvasReviewRoutes } from "./canvasReview.js";
+import { canvasDesignRoutes } from "./canvasDesigns.js";
 
 const STORAGE_UNSUPPORTED = {
   error: "Canvas image assets need local storage (STORAGE_PROVIDER=local). R2 and Supabase private storage is not supported yet.",
@@ -617,4 +618,5 @@ export async function canvasRoutes(app: FastifyInstance, { storage, gate }: { st
   });
 
   await canvasReviewRoutes(app);
+  await canvasDesignRoutes(app, { storage });
 }

@@ -25,6 +25,7 @@ import { contentMediaUrls } from "../lib/mediaUrl.js";
 import { getPlan } from "../lib/plans.js";
 import { sendPostFailedEmail } from "../lib/mailer.js";
 import { explainPublishError, textLimitProblem } from "../lib/publishError.js";
+import { designImageProblems } from "../lib/designImage.js";
 import { withoutCanvasKeys } from "../lib/jobEditRules.js";
 import type { PostResult, CommentResult } from "../adapters/types.js";
 
@@ -128,7 +129,10 @@ export async function runJob(job: PostJob & { targets: FullTarget[] }): Promise<
         blueskyContentWarning: content.blueskyContentWarning,
       };
       const effectiveComment = override?.commentText !== undefined ? override.commentText : job.commentText;
-      return runTarget(target, effectiveContent, effectiveComment, job.dryRun);
+      // An approved Canvas design this channel cannot take (T7) is a failure with the reason, never a silent bad upload. The app's own routes
+      // refuse it earlier; this is the backstop for a post that got here another way (the public API, MCP, a channel changed afterwards).
+      const designProblem = designImageProblems(content, [target.account.platform]).join(" ") || null;
+      return runTarget(target, effectiveContent, effectiveComment, job.dryRun, designProblem);
     })
   );
 
@@ -293,7 +297,8 @@ async function runTarget(
   target: FullTarget,
   content: EffectiveContent,
   commentText: string | null,
-  dryRun: boolean
+  dryRun: boolean,
+  designProblem: string | null = null
 ): Promise<void> {
   const adapter = getAdapter(target.account.platform);
 
@@ -312,6 +317,10 @@ async function runTarget(
     const tooLong = textLimitProblem(target.account.platform, content.text);
     if (tooLong) {
       await setTargetStatus(target.id, "post_failed", { error: tooLong });
+      return;
+    }
+    if (designProblem) {
+      await setTargetStatus(target.id, "post_failed", { error: designProblem });
       return;
     }
 

@@ -216,10 +216,14 @@ type Sel = Record<string, unknown>;
 const pickRow = (row: object, select: Sel) => Object.fromEntries(Object.entries(select).filter(([, on]) => on).map(([k]) => [k, (row as Record<string, unknown>)[k] ?? null]));
 const sub = (spec: unknown) => (spec as { select: Sel }).select;
 
-type SubWhere = { instanceId?: string; workspaceId?: string; number?: number | { lt: number }; baseRevision?: { designId: string } };
+type SubWhere = { id?: string; instanceId?: string; workspaceId?: string; number?: number | { lt: number }; baseRevision?: { designId: string }; instance?: Record<string, unknown>; review?: { status: string } };
 const subMatches = (s: SubmissionRow, w: SubWhere): boolean => {
-  for (const k of Object.keys(w)) if (!["instanceId", "workspaceId", "number", "baseRevision"].includes(k)) throw new Error(`the test double does not understand \`${k}\` in a submission where`);
+  for (const k of Object.keys(w)) if (!["id", "instanceId", "workspaceId", "number", "baseRevision", "instance", "review"].includes(k)) throw new Error(`the test double does not understand \`${k}\` in a submission where`);
   return (
+    (w.id === undefined || s.id === w.id) &&
+    // a relation filter (T7's approved list): every key must equal the instance's own value
+    (w.instance === undefined || Object.entries(w.instance).every(([k, v]) => (h.designs.find((d) => d.id === s.instanceId) as unknown as Record<string, unknown> | undefined)?.[k] === v)) &&
+    (w.review === undefined || h.reviews.some((r) => r.submissionId === s.id && r.status === w.review!.status)) &&
     (w.instanceId === undefined || s.instanceId === w.instanceId) &&
     (w.workspaceId === undefined || s.workspaceId === w.workspaceId) &&
     (w.number === undefined || (typeof w.number === "number" ? s.number === w.number : s.number < w.number.lt)) &&
@@ -253,14 +257,16 @@ type ReviewWhere = {
   status?: string | { in: string[] };
   pendingInstanceId?: string;
   createdAt?: Date | { lt: Date };
+  submission?: SubWhere;
   AND?: ReviewWhere[];
   OR?: ReviewWhere[];
 };
 const reviewMatches = (r: ReviewRow, w: ReviewWhere): boolean => {
-  for (const k of Object.keys(w)) if (!["id", "workspaceId", "status", "pendingInstanceId", "createdAt", "AND", "OR"].includes(k)) throw new Error(`the test double does not understand \`${k}\` in a review where`);
+  for (const k of Object.keys(w)) if (!["id", "workspaceId", "status", "pendingInstanceId", "createdAt", "submission", "AND", "OR"].includes(k)) throw new Error(`the test double does not understand \`${k}\` in a review where`);
   refuseNul(typeof w.id === "string" ? w.id : undefined);
   const at = r.createdAt.getTime();
   return (
+    (w.submission === undefined || h.submissions.some((s) => s.id === r.submissionId && subMatches(s, w.submission!))) &&
     (w.id === undefined || (typeof w.id === "string" ? r.id === w.id : r.id < w.id.lt)) &&
     (w.workspaceId === undefined || r.workspaceId === w.workspaceId) &&
     (w.status === undefined || (typeof w.status === "string" ? r.status === w.status : w.status.in.includes(r.status))) &&
@@ -654,6 +660,7 @@ async function build(s: LocalDiskStorage | object): Promise<FastifyInstance> {
 }
 
 beforeAll(async () => {
+  process.env.ENCRYPTION_KEY = "ab".repeat(32); // the approved-designs list signs its cursor with a key derived from it (T7)
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "canvas-routes-"));
   storage = new LocalDiskStorage(dir);
   app = await build(storage);
@@ -4007,5 +4014,111 @@ describe("rate limiting of the Canvas routes", () => {
   it("both PUTs go through the JSON-only guard (before they read a body)", async () => {
     const routes = await describeRoutes(false);
     for (const put of ["PUT /canvas/designs/:id", "PUT /canvas/instances/:id"]) expect(routes.get(put)?.pre, put).toContain("jsonOnly");
+  });
+
+  it("the two approved-design routes are gated like every other Canvas route, with the approved limits", async () => {
+    const routes = await describeRoutes(false);
+    for (const [route, max] of [["GET /canvas/approved", 120], ["POST /canvas/submissions/:id/image", 10]] as const) {
+      const r = routes.get(route);
+      expect(r, route).toBeDefined();
+      expect(r!.pre, route).toContain("canvasWithAuth");
+      expect(r!.pre, route).toContain("contentEditorOnly");
+      expect(r!.keyed, route).toBe(true);
+      expect(r!.hook, route).toBe("preHandler");
+      expect(r!.max, route).toBe(max);
+    }
+  });
+});
+
+// ── Save as draft: a Canvas DESIGN draft is the saved instance itself (PM requirement, T7) ───────────────────────────
+// No new state and no second store: the design is saved as the person works, reopened from the same list, and it becomes a
+// submission only when the person submits. A draft is never approved, never pending, and never offered to Add Content.
+describe("a saved Canvas design draft: save, leave, resume, update, submit", () => {
+  const approvedList = () => app.inject({ method: "GET", url: "/canvas/approved" });
+  const approvedNumbers = async () => ((await approvedList()).json().designs as { number: number }[]).map((d) => d.number);
+
+  it("saving creates NO submission and NO review; the design is reopened with exactly what was saved, and updating bumps the version", async () => {
+    const { id } = await seedMine([{ nodeId: "head", text: "Draft v1" }]); // customize + the first save
+    expect(h.submissions).toHaveLength(0);
+    expect(h.reviews).toHaveLength(0);
+    // leave: a new request later reads the saved state back
+    const reopened = (await getInstance(id)).json().instance;
+    expect(reopened.version).toBe(2);
+    expect(reopened.overrides).toEqual([{ nodeId: "head", text: "Draft v1" }]);
+    expect(reopened.review).toMatchObject({ latestReviewStatus: null, hasChangesSinceSubmitted: false }); // never submitted: what the "Design draft" chip is drawn from
+    // resume: edit again, save again
+    expect((await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Draft v2" }] })).json()).toEqual({ version: 3 });
+    expect((await getInstance(id)).json().instance.overrides).toEqual([{ nodeId: "head", text: "Draft v2" }]);
+    expect(h.submissions).toHaveLength(0); // still no submission
+    expect(h.reviews).toHaveLength(0);
+    // it is listed among my designs
+    const mine = (await app.inject({ method: "GET", url: "/canvas/instances" })).json().instances as { id: string }[];
+    expect(mine.map((d) => d.id)).toContain(id);
+  });
+
+  it("a draft is NOT offered to Add Content, and neither is a pending submission, until the design team approves it", async () => {
+    const { id } = await seedMine();
+    expect(await approvedNumbers()).toEqual([]); // saved, never submitted
+    expect((await submit(id, { version: 2 })).statusCode).toBe(201);
+    expect(await approvedNumbers()).toEqual([]); // submitted, pending
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "request_changes", comment: "Shorter" });
+    asMarketing();
+    expect(await approvedNumbers()).toEqual([]); // changes requested
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Shorter" }] });
+    await submit(id, { version: 3 });
+    asDesigner();
+    await decide(h.reviews[1].id, { decision: "approve" });
+    asMarketing();
+    expect(await approvedNumbers()).toEqual([2]); // only the approved version, not the one that asked for changes
+  });
+
+  it("an approved design edited afterwards: the approved version stays selectable, the unsubmitted edit is not offered", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "approve" });
+    asMarketing();
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "Edited after approval" }] }); // a new working version: a draft again
+    expect(h.submissions).toHaveLength(1); // saving added nothing
+    expect(await approvedNumbers()).toEqual([1]);
+    const shown = (await getInstance(id)).json().instance.review;
+    expect(shown).toMatchObject({ latestReviewStatus: "approved", hasChangesSinceSubmitted: true });
+  });
+
+  it("every approved version stays selectable after a newer one is approved; a superseded one never was", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 }); // v1
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "approve" });
+    asMarketing();
+    await putInstance(id, { version: 2, overrides: [{ nodeId: "head", text: "B" }] });
+    await submit(id, { version: 3 }); // v2, then replaced before anyone decided
+    await putInstance(id, { version: 3, overrides: [{ nodeId: "head", text: "C" }] });
+    await submit(id, { version: 4 }); // v3 supersedes v2
+    asDesigner();
+    await decide(h.reviews[2].id, { decision: "approve" });
+    asMarketing();
+    expect(h.reviews.map((r) => r.status)).toEqual(["approved", "superseded", "approved"]);
+    expect(await approvedNumbers()).toEqual([3, 1]); // v1 and v3; the superseded v2 was never approved
+  });
+
+  it("another person's drafts and submissions are never listed, and a saved draft of mine is only mine to open", async () => {
+    const { id } = await seedMine();
+    await submit(id, { version: 2 });
+    asDesigner();
+    await decide(h.reviews[0].id, { decision: "approve" });
+    h.userId = "user-2"; // another member of the same workspace
+    h.role = "member";
+    expect(await approvedNumbers()).toEqual([]);
+    expect((await getInstance(id)).statusCode).toBe(404);
+  });
+
+  it("a failed save changes nothing the person could later mistake for a saved draft (the version conflict leaves the stored design as it was)", async () => {
+    const { id } = await seedMine([{ nodeId: "head", text: "Saved" }]);
+    const res = await putInstance(id, { version: 1, overrides: [{ nodeId: "head", text: "Stale" }] }); // an old tab
+    expect(res.statusCode).toBe(409);
+    expect((await getInstance(id)).json().instance.overrides).toEqual([{ nodeId: "head", text: "Saved" }]);
+    expect(h.submissions).toHaveLength(0);
   });
 });

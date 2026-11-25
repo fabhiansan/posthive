@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, type RefObject } from "react";
 import type { CanvasDocument, CanvasStageHandle } from "posthive-canvas";
 import { Button } from "@/components/ui/button";
 import { editorFonts } from "@/lib/canvas";
@@ -14,11 +14,13 @@ const ZOOM_STEP = 1.25;
  * The Konva engine comes in as a prop because it loads in the browser only. `images` are the decoded images the design draws
  * (a missing one is a grey box, as in the editor).
  */
-export function ReadOnlyStage({ engine, doc, images }: { engine: CanvasEngine; doc: CanvasDocument; images: ReadonlyMap<string, HTMLImageElement> }) {
+export function ReadOnlyStage({ engine, doc, images, stageRef }: { engine: CanvasEngine; doc: CanvasDocument; images: ReadonlyMap<string, HTMLImageElement>; stageRef?: RefObject<CanvasStageHandle | null> }) {
   const { CanvasStage } = engine;
   // A ref object, never state: CanvasStage makes a new handle on every render, and a state setter as its ref would re-render this
   // component on every commit, forever ("Maximum update depth exceeded"). The editors hold the handle the same way.
-  const handle = useRef<CanvasStageHandle>(null);
+  // `stageRef` lets a caller that must draw the design to a picture (Add Content) reach the same handle.
+  const own = useRef<CanvasStageHandle>(null);
+  const handle = stageRef ?? own;
   const fonts = useMemo(() => editorFonts(), []);
   return (
     <div className="relative size-full min-h-64 overflow-hidden rounded-xl border border-border bg-background">

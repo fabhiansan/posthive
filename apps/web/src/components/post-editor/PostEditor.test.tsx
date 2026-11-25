@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   workspace: { id: "ws-1", name: "Braga Geo", role: "member", approvalRequired: true },
   createInstance: vi.fn(),
   getInstance: vi.fn(),
+  // what the approved-design picker hands back when the stub attaches (the picker itself has its own test file)
+  attach: { submissionId: "sub1", url: "/uploads/canvas-designs/sub1/p.png", bytes: 2_000_000 },
 }));
 
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch, assetUrl: (u: string) => u, API_BASE: "http://api" }));
@@ -28,6 +30,11 @@ vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null
 vi.mock("@/components/templates/TemplatesHeader", () => ({ TemplatesHeader: ({ title }: { title: string }) => <h1>{title}</h1> }));
 vi.mock("@/lib/canvas", () => ({ createInstance: h.createInstance, getInstance: h.getInstance }));
 vi.mock("@/lib/track", () => ({ trackEvent: vi.fn() }));
+vi.mock("./ApprovedDesignPicker", () => ({
+  DESIGN_DISCLOSURE: "DISCLOSURE: the picture itself cannot be checked.",
+  ApprovedDesignPicker: ({ open, onAttach, onClose }: { open: boolean; onAttach: (a: typeof h.attach) => void; onClose: () => void }) =>
+    open ? <button onClick={() => { onAttach(h.attach); onClose(); }}>Stub: attach design</button> : null,
+}));
 
 import { PostEditor } from "./PostEditor";
 
@@ -544,6 +551,115 @@ describe("Edit Content: what the review found", () => {
     await userEvent.upload(screen.getByLabelText("Choose design files"), files);
     expect(await screen.findByText("A post takes 10 files at most. Only the first 1 are used.")).toBeTruthy();
     expect(calls("/upload")).toHaveLength(1);
+  });
+});
+
+describe("an approved Canvas design on the post", () => {
+  const DESIGN = { submissionId: "sub1", mediaUrl: "/uploads/canvas-designs/sub1/p.png" };
+  const attach = async () => {
+    await userEvent.click(await screen.findByRole("button", { name: /Use approved design/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Stub: attach design" }));
+  };
+
+  it("attaching sends the picture AND the design in one save: only the id and the picture, never the size", async () => {
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    await attach();
+    await userEvent.click(button("Save as Draft"));
+    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
+    // format is "single": the design replaces the picture
+    expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [DESIGN] });
+  });
+
+  it("a carousel keeps its slides and adds the design as one more", async () => {
+    current = job({ content: JSON.stringify({ ...STORED, format: "carousel", mediaUrls: ["/uploads/a.png", "/uploads/b.png"] }) });
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    await attach();
+    await userEvent.click(button("Save as Draft"));
+    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
+    expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ mediaUrls: ["/uploads/a.png", "/uploads/b.png", DESIGN.mediaUrl], canvasDesigns: [DESIGN] });
+  });
+
+  it("removing the design's picture sends the pictures and an EMPTY design list, so no stale reference is left", async () => {
+    current = job({ content: JSON.stringify({ ...STORED, mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [{ ...DESIGN, bytes: 2_000_000 }] }) });
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    expect(screen.getByText("Canvas")).toBeTruthy(); // the picture is marked as a Canvas design
+    await userEvent.click(screen.getByRole("button", { name: "Remove file 1" }));
+    await userEvent.click(button("Save as Draft"));
+    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
+    expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ mediaUrls: [], canvasDesigns: [] });
+  });
+
+  it("a post that already holds a design saves an unrelated edit WITHOUT resending it", async () => {
+    current = job({ content: JSON.stringify({ ...STORED, mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [{ ...DESIGN, bytes: 2_000_000 }] }) });
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    await userEvent.type(screen.getByLabelText(/Content title/), "!");
+    await userEvent.click(button("Save as Draft"));
+    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
+    expect(Object.keys(bodyOf("/jobs/p1", "PATCH"))).toEqual(["title"]);
+  });
+
+  it("a new post sends the design with its picture when it is created", async () => {
+    render(<PostEditor />);
+    await screen.findByRole("heading", { name: "Add Content" });
+    await attach();
+    await userEvent.type(screen.getByLabelText(/Content title/), "T");
+    await userEvent.click(button("Save as Draft"));
+    await waitFor(() => expect(calls("/jobs", "POST")).toHaveLength(1));
+    expect(bodyOf("/jobs", "POST").content).toMatchObject({ mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [DESIGN] });
+  });
+
+  it("says before publishing that Instagram cannot take it, names the reason, and the warning goes away with the channel", async () => {
+    current = job({ targets: [{ id: "t1", accountId: "acc-ig", status: "pending", platformPostId: null, error: null, attempts: 0, account: null }] });
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    await attach();
+    const alert = await screen.findByText("An approved design can't go to every channel you picked");
+    expect(alert).toBeTruthy();
+    expect(screen.getByText(/Instagram publishes JPEG pictures only.*does not convert/)).toBeTruthy();
+    expect(screen.getByText(/DISCLOSURE/)).toBeTruthy();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Instagram: @braga.geo" }));
+    expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
+  });
+
+  it("no warning for a channel with no known problem, and none without a design", async () => {
+    render(<PostEditor jobId="p1" />); // LinkedIn, 2 MB: under its 5 MB
+    await ready();
+    expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
+    await attach();
+    expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
+  });
+
+  it("after a save it adopts the size the SERVER measured, so a warning cannot depend on a number the browser made up", async () => {
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      const method = init?.method ?? "GET";
+      if (path === "/accounts") return ACCOUNTS;
+      if (path === "/templates") return { templates };
+      if (path === "/jobs/p1" && method === "GET") return current;
+      if (path === "/jobs/p1" && method === "PATCH") {
+        // a server that stores what it measured: the save answers with it AND the reload that follows reads it back
+        const content = JSON.stringify({ ...STORED, mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [{ ...DESIGN, bytes: 6_000_000 }] });
+        current = job({ content });
+        return { content };
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    render(<PostEditor jobId="p1" />); // LinkedIn: 5 MB limit
+    await ready();
+    await attach(); // the browser's own number (2 MB) is under the limit
+    expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
+    await userEvent.click(button("Save as Draft"));
+    expect(await screen.findByText(/LinkedIn accepts pictures up to 5\.00 MB.*6\.00 MB/)).toBeTruthy(); // the server measured 6 MB
+  });
+
+  it("is not offered when the post is locked", async () => {
+    h.perms = { canEditContent: false, canReview: false, canManageTemplates: false, canSubmitOwn: false, loading: false };
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    expect((screen.getByRole("button", { name: /Use approved design/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

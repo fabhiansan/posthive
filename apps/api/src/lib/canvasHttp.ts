@@ -37,7 +37,7 @@ export const jsonOnly = async (req: FastifyRequest, reply: FastifyReply) => {
 // queried. Without this a NUL in the path reaches PostgreSQL, which refuses it (error 22021), and the caller gets a 500.
 // Always after the auth (and role) checks on purpose: a stranger learns nothing about what an id looks like. Real ids
 // (cuid, uuid) all match LIMITS.id.
-export const wellFormedId = (what: "Design" | "Asset" | "Template" | "Review") => async (req: FastifyRequest, reply: FastifyReply) => {
+export const wellFormedId = (what: "Design" | "Asset" | "Template" | "Review" | "Submission") => async (req: FastifyRequest, reply: FastifyReply) => {
   if (!LIMITS.id.test((req.params as { id: string }).id)) return reply.status(404).send({ error: `${what} not found` });
 };
 

@@ -13,7 +13,7 @@ import { enforcePlan } from "../lib/enforcePlan.js";
 import { getPlan } from "../lib/plans.js";
 import type { StorageAdapter } from "../lib/storage.js";
 import { adapters } from "../adapters/index.js";
-import { attachUploads, mediaProblem, releaseMedia, withUploads } from "../lib/mediaDelete.js";
+import { attachUploads, lockUploads, MediaUnavailable, mediaProblem, releaseMedia, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls, mediaUrlList, toStoredUrl } from "../lib/mediaUrl.js";
 import { bucketJobCounts, jobFilterWhere } from "../lib/jobFilters.js";
 import { CANVAS_KEYS, canEditJob, sameContent, shouldResetReview } from "../lib/jobEditRules.js";
@@ -23,6 +23,21 @@ import { firstSubmission, nextSubmission } from "../lib/submitStamp.js";
 import { CATEGORIES, PILLARS, pillarFor, type Category, type Pillar } from "../lib/contentTypes.js";
 import { safeLink } from "../lib/contentList.js";
 import { IN_DESIGN, NOT_IN_DESIGN, designRequestSelect, toDesignRequestView } from "../lib/designRequest.js";
+import { LIMITS } from "../lib/canvas.js";
+import { isRefusal } from "../lib/canvasHttp.js";
+import { resolveDesigns } from "../lib/canvasDesigns.js";
+import { canvasDesignMetadataProblem, designImageProblems, designsOfContent, isCanvasDesignUploadPath } from "../lib/designImage.js";
+
+// The approved Canvas designs on a post (T7): only the id of the approved submission and the picture's address are read from the client.
+// What is stored (and the size in bytes) comes from the server's own records, see lib/canvasDesigns.ts. It is NOT in CONTENT_KEYS: PATCH
+// resolves it together with mediaUrls so that it can never name a picture the post no longer has.
+const canvasDesignsBody = z.array(z.object({ submissionId: z.string().regex(LIMITS.id), mediaUrl: z.string().max(2048) })).max(10);
+
+/** A post that is about to move toward publishing cannot carry an approved design a channel cannot take: say which and why (409), never publish it silently. */
+const incompatible = (content: unknown, platforms: Iterable<string>) => {
+  const problems = designImageProblems(content, platforms);
+  return problems.length === 0 ? null : { status: 409, body: { error: problems.join(" "), code: "DESIGN_IMAGE_INCOMPATIBLE", problems } };
+};
 
 
 /**
@@ -111,6 +126,7 @@ const createJobBody = z.object({
     category: z.enum(CATEGORIES).nullable().optional(),
     format: z.enum(["single", "carousel"]).nullable().optional(),
     designFigmaUrl: designLink.optional(),
+    canvasDesigns: canvasDesignsBody.optional(),
   }),
   commentText: z.string().optional(),
   // A draft may have no account yet (the Edit Content page saves one before a channel is picked); scheduling needs one
@@ -151,7 +167,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (!draft && accountIds.length === 0) {
       return reply.status(400).send({ error: "Pick at least one account" });
     }
-    const { pillar, category, ...postContent } = content;
+    const { pillar, category, canvasDesigns: sentDesigns, ...postContent } = content;
     const type = pillar !== undefined || category !== undefined ? contentType(pillar, category) : null;
     if (type && "error" in type) return reply.status(400).send({ error: type.error });
     // The address of an upload may arrive with the API's own origin in front (the docs show it): stored, it is always the path the upload gave
@@ -160,6 +176,12 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     postContent.mediaUrls = listed;
     if (postContent.youtubeThumbnailUrl) postContent.youtubeThumbnailUrl = toStoredUrl(postContent.youtubeThumbnailUrl);
     if (postContent.youtubeVideoUrl) postContent.youtubeVideoUrl = toStoredUrl(postContent.youtubeVideoUrl);
+    // Approved Canvas designs: checked on the server from its own records, and only for pictures the post really has (a subset of mediaUrls)
+    const resolved = await resolveDesigns({ sent: sentDesigns ?? [], stored: [], mediaUrls: postContent.mediaUrls, userId, workspaceId, db: prisma, storage });
+    if (isRefusal(resolved)) return reply.status(resolved.status).send(resolved.body);
+    const storedContent = resolved.designs.length > 0 ? { ...postContent, canvasDesigns: resolved.designs } : postContent;
+    const metadataProblem = canvasDesignMetadataProblem(storedContent);
+    if (metadataProblem) return reply.status(400).send({ error: metadataProblem, code: "DESIGN_METADATA_REQUIRED" });
 
     // Approval gate — member posts in approval-enabled workspaces stay drafts
     // awaiting design review; scheduledFor is kept as the requested time.
@@ -189,10 +211,14 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     // Verify accounts belong to this workspace
     const accounts = await prisma.account.findMany({
       where: { id: { in: accountIds }, workspaceId },
-      select: { id: true },
+      select: { id: true, platform: true },
     });
     if (accounts.length !== accountIds.length) {
       return reply.status(400).send({ error: "One or more accountIds not found" });
+    }
+    if (!draft) {
+      const blocked = incompatible(storedContent, accounts.map((a) => a.platform));
+      if (blocked) return reply.status(blocked.status).send(blocked.body);
     }
 
     // Wrap plan-limit check + job creation in a transaction with an advisory lock
@@ -221,7 +247,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
           approvalStatus: needsReview ? "pending" : null,
           ...(needsReview ? firstSubmission(userId) : {}),
           // Pillar is derived from the category, never trusted from the client
-          content: JSON.stringify(type ? { ...postContent, ...type } : postContent),
+          content: JSON.stringify(type ? { ...storedContent, ...type } : storedContent),
           commentText: commentText ?? null,
           dryRun,
           userId,
@@ -451,6 +477,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       // The Canvas design the post opened from its template; saved when the Studio is opened
       canvasInstanceId: z.string().cuid().nullable().optional(),
       canvasTemplateId: z.string().cuid().nullable().optional(),
+      canvasDesigns: canvasDesignsBody.optional(),
     }).safeParse(req.body);
     if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
     if (body.data.mediaUrls) {
@@ -466,7 +493,7 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
 
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
-      select: { status: true, content: true, commentText: true, approvalStatus: true, userId: true, targets: { select: { accountId: true } } },
+      select: { status: true, content: true, commentText: true, approvalStatus: true, userId: true, targets: { select: { accountId: true, account: { select: { platform: true } } } } },
     });
     if (!job) return reply.status(404).send({ error: "Job not found" });
     const role = await getWorkspaceRole(userId, workspaceId);
@@ -492,12 +519,35 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     const changes: Record<string, unknown> = {};
     for (const key of CONTENT_KEYS) if (body.data[key] !== undefined) changes[key] = body.data[key];
     if (body.data.title !== undefined) changes.title = body.data.title.trim();
+    // Approved Canvas designs, resolved against the FINAL picture list: an entry never outlives its picture, and a new one is checked on the
+    // server. What the post already holds is kept as it is (the author's own design may be a colleague's draft). The final media set is
+    // computed for EVERY edit so a text-only write cannot resurrect a picture a concurrent edit removed.
+    const current = (() => { try { return JSON.parse(job.content) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })();
+    const finalMedia = body.data.mediaUrls ?? (Array.isArray(current.mediaUrls) ? current.mediaUrls.filter((u): u is string => typeof u === "string").map((u) => toStoredUrl(u)) : []);
+    if (body.data.mediaUrls !== undefined || body.data.canvasDesigns !== undefined) {
+      const stored = designsOfContent(current);
+      const resolved = await resolveDesigns({ sent: body.data.canvasDesigns, stored, mediaUrls: finalMedia, userId, workspaceId, db: prisma, storage });
+      if (isRefusal(resolved)) return reply.status(resolved.status).send(resolved.body);
+      if (JSON.stringify(resolved.designs) !== JSON.stringify(stored)) changes.canvasDesigns = resolved.designs;
+    }
     if (Object.keys(changes).length > 0 || typeChanged) {
       const existing = JSON.parse(job.content) as Record<string, unknown>;
-      updateData.content = JSON.stringify({ ...existing, ...changes, ...(type ?? {}) });
+      const merged: Record<string, unknown> = { ...existing, ...changes, ...(type ?? {}) };
+      if (Array.isArray(merged.canvasDesigns) && merged.canvasDesigns.length === 0) delete merged.canvasDesigns; // no design left: no key left
+      updateData.content = JSON.stringify(merged);
     }
+    const metadataProblem = canvasDesignMetadataProblem(updateData.content ?? job.content);
+    if (metadataProblem) return reply.status(409).send({ error: metadataProblem, code: "DESIGN_METADATA_REQUIRED" });
     if (body.data.commentText !== undefined) {
       updateData.commentText = body.data.commentText || null;
+    }
+    // A scheduled or queued post is already moving toward publishing: an edit may not add a design a channel cannot take
+    if (job.status !== "draft" && (updateData.content !== undefined || body.data.accountIds !== undefined)) {
+      const platforms = body.data.accountIds
+        ? (await prisma.account.findMany({ where: { id: { in: body.data.accountIds }, workspaceId }, select: { platform: true } })).map((a) => a.platform)
+        : job.targets.flatMap((t) => (t.account ? [t.account.platform] : []));
+      const blocked = incompatible((updateData.content as string | undefined) ?? job.content, platforms);
+      if (blocked) return reply.status(blocked.status).send(blocked.body);
     }
 
     // Only a real content change (not the date, not a re-save of the same values)
@@ -520,8 +570,9 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     // hold an address that predates these rules, and a draft is kept by the team, so a kept file may be a colleague's); a NEW one must be an
     // upload of this person that still exists, or an outside address where outside addresses are allowed (the YouTube video link).
     const held = new Set(contentMediaUrls(job.content).map((u) => toStoredUrl(u)));
+    const canvasUrls = finalMedia.filter(isCanvasDesignUploadPath);
     const attached = [
-      ...(body.data.mediaUrls ?? []),
+      ...(body.data.mediaUrls !== undefined || canvasUrls.length > 0 ? finalMedia : []),
       ...(body.data.youtubeThumbnailUrl ? [body.data.youtubeThumbnailUrl] : []),
       ...(body.data.youtubeVideoUrl ? [body.data.youtubeVideoUrl] : []),
     ];
@@ -530,7 +581,15 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     try {
       updated = await withUploads(
         attached,
-        (tx) => attachUploads(tx, attached, { userId, keep: held, external }),
+        async (tx) => {
+          await attachUploads(tx, attached, { userId, keep: held, external });
+          // A metadata-only edit still locks the final pictures. A Canvas picture must still have its Upload row once the lock is held;
+          // otherwise a concurrent remove could delete it after resolveDesigns read it and this write would resurrect a dangling reference.
+          if (canvasUrls.length > 0) {
+            const rows = await lockUploads(tx, canvasUrls);
+            if (canvasUrls.some((url) => !rows.has(url))) throw new MediaUnavailable();
+          }
+        },
         (db) => db.postJob.update({ where: { id }, data: updateData }),
       );
     } catch (err) {
@@ -603,13 +662,16 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       return reply.status(403).send({ error: "Only workspace admins or designers can perform this action.", code: "FORBIDDEN" });
     }
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, designRequest: { select: { status: true } }, targets: { select: { id: true }, take: 1 } } });
+    const job = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, content: true, designRequest: { select: { status: true } }, targets: { select: { id: true, account: { select: { platform: true } } } } } });
     // Other people's plain drafts are hidden from approvers — only in-review ones can be promoted
     if (!job || !isDraftVisibleTo(role, userId, job)) return reply.status(404).send({ error: "Job not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: "Only draft jobs can be scheduled" });
     // The design is with the designer, or there is no account to post to (approving a post already in review is unaffected)
     const refused = promoteRefusal(job);
     if (refused) return reply.status(refused.status).send(refused.body);
+    // Approving also publishes: an approved Canvas design a channel cannot take is refused here, with the reason
+    const designBlocked = incompatible(job.content, job.targets.flatMap((t) => (t.account ? [t.account.platform] : [])));
+    if (designBlocked) return reply.status(designBlocked.status).send(designBlocked.body);
 
     const blocked = await enforcePlan(userId, workspaceId, "scheduling");
     if (blocked) return reply.status(402).send(blocked);
@@ -690,6 +752,8 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
     if (missing.length > 0) {
       return reply.status(422).send({ error: `Complete the required fields first: ${missing.join(", ")}.`, code: "INCOMPLETE", missing });
     }
+    const designBlocked = incompatible(job.content, readinessInput(job).targetPlatforms);
+    if (designBlocked) return reply.status(designBlocked.status).send(designBlocked.body);
 
     try {
       const updated = await prisma.postJob.update({
@@ -739,7 +803,9 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
         skipped.push({ id, title, reason: "Design requested: waiting for the designer" });
       } else {
         const missing = missingForReview(readinessInput(job));
+        const designProblems = designImageProblems(job.content, readinessInput(job).targetPlatforms);
         if (missing.length > 0) skipped.push({ id, title, reason: "Missing required fields", missing });
+        else if (designProblems.length > 0) skipped.push({ id, title, reason: designProblems.join(" ") });
         else submit.push(id);
       }
     }

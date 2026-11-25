@@ -55,7 +55,7 @@ afterAll(async () => {
 const CONTENT = { title: "T", text: "Caption", canvasInstanceId: "ckaaaaaaaaaaaaaaaaaaaaaaa", canvasTemplateId: "ckbbbbbbbbbbbbbbbbbbbbbbb" };
 const draft = (patch: Record<string, unknown> = {}) => ({
   id: "p1", workspaceId: "ws-1", userId: "admin-1", status: "draft", approvalStatus: null, content: JSON.stringify(CONTENT), commentText: null,
-  scheduledFor: new Date("2030-01-01T00:00:00Z"), designRequest: null, targets: [{ id: "t1", accountId: "acc-1" }], ...patch,
+  scheduledFor: new Date("2030-01-01T00:00:00Z"), designRequest: null, targets: [{ id: "t1", accountId: "acc-1", account: { platform: "linkedin" } }], ...patch,
 });
 
 beforeEach(() => {

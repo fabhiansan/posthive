@@ -137,6 +137,13 @@ describe("runJob: a post that does not go out says why in words a person can use
   };
   const failedWith = () => h.targetWrites.find((w) => w.status === "post_failed")?.error as string | undefined;
 
+  it("the T7 backstop: an approved Canvas design is refused for Instagram before the adapter is called", async () => {
+    const design = { submissionId: "s1", mediaUrl: "/uploads/canvas-designs/s1/p.png", bytes: 1200 };
+    await runJob(job({ text: "Caption", mediaUrls: [design.mediaUrl], canvasDesigns: [design] }));
+    expect(h.createPost).not.toHaveBeenCalled();
+    expect(failedWith()).toMatch(/Instagram.*JPEG/);
+  });
+
   it("the report: LinkedIn answers 426 NONEXISTENT_VERSION, and the drawer gets a sentence, not the JSON", async () => {
     h.createPost.mockRejectedValueOnce(new Error('LinkedIn post failed: {"status":426,"code":"NONEXISTENT_VERSION","message":"Requested version 20251101 is not active"}'));
     await runJob(withPlatform("linkedin", "Hello"));

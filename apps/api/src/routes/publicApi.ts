@@ -10,8 +10,9 @@ import { withoutCanvasKeys } from "../lib/jobEditRules.js";
 import { schedulePostJob, postJobQueue } from "../lib/queue.js";
 import { compressForPlatform } from "../lib/compress.js";
 import { ALLOWED_IMAGE_TYPES, type StorageAdapter } from "../lib/storage.js";
-import { attachUploads, lockForCopy, mediaProblem, withUploads } from "../lib/mediaDelete.js";
+import { attachUploads, lockForCopy, lockUploads, MediaUnavailable, mediaProblem, releaseMedia, withUploads } from "../lib/mediaDelete.js";
 import { contentMediaUrls, mediaUrlList } from "../lib/mediaUrl.js";
+import { canvasDesignMetadataProblem, designImageProblems, designsOfContent, isCanvasDesignUploadPath, pruneDesigns } from "../lib/designImage.js";
 
 const preHandler = [withApiKey];
 
@@ -89,6 +90,8 @@ export async function publicApiRoutes(
     // Only files uploaded through POST /api/v1/upload by this key's owner may be attached (the docs: "Image URLs from POST /upload")
     const images = body.images === undefined ? undefined : mediaUrlList(body.images);
     if (images === null) return reply.status(400).send({ error: "images must be an array of at most 10 URLs" });
+    const metadataProblem = canvasDesignMetadataProblem({ mediaUrls: images ?? [] });
+    if (metadataProblem) return reply.status(400).send({ error: metadataProblem, code: "DESIGN_METADATA_REQUIRED" });
 
     const isDraft = body.draft === true;
 
@@ -282,7 +285,10 @@ export async function publicApiRoutes(
       perAccount?: Record<string, { text?: string; commentText?: string }> | Array<{ accountId: string; text?: string; commentText?: string }>;
     };
 
-    const job = await prisma.postJob.findFirst({ where: { id, workspaceId } });
+    const job = await prisma.postJob.findFirst({
+      where: { id, workspaceId },
+      include: { targets: { select: { account: { select: { platform: true } } } } },
+    });
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "pending")
       return reply.status(409).send({ error: `Cannot update a post with status "${job.status}"` });
@@ -308,6 +314,22 @@ export async function publicApiRoutes(
 
     if (body.youtubeType && !["short", "video"].includes(body.youtubeType))
       return reply.status(400).send({ error: "youtubeType must be 'short' or 'video'" });
+
+    // Validate a target change before any content write. The final platforms are needed for the T7 compatibility gate below.
+    let nextAccountIds: string[] | undefined;
+    let nextPlatforms: string[] | undefined;
+    if (body.accountIds !== undefined) {
+      if (!Array.isArray(body.accountIds) || body.accountIds.length === 0)
+        return reply.status(400).send({ error: "accountIds must be a non-empty array" });
+      const valid = await prisma.account.findMany({
+        where: { id: { in: body.accountIds }, workspaceId },
+        select: { id: true, platform: true },
+      });
+      if (valid.length !== body.accountIds.length)
+        return reply.status(400).send({ error: "One or more accountIds are invalid" });
+      nextAccountIds = body.accountIds;
+      nextPlatforms = valid.map((a) => a.platform);
+    }
 
     const updateData: Record<string, unknown> = {};
 
@@ -337,7 +359,7 @@ export async function publicApiRoutes(
         mediaType?: string; youtubeType?: string;
         perAccount?: Record<string, { text?: string; commentText?: string }>;
       };
-      updateData.content = JSON.stringify({
+      const merged: Record<string, unknown> = {
         ...existing,
         ...(body.content !== undefined ? { text: body.content } : {}),
         ...(images !== undefined ? { mediaUrls: images } : {}),
@@ -345,19 +367,44 @@ export async function publicApiRoutes(
         ...(body.mediaType !== undefined ? { mediaType: body.mediaType } : {}),
         ...(body.youtubeType !== undefined ? { youtubeType: body.youtubeType } : {}),
         ...(body.perAccount !== undefined ? { perAccount: normalizePerAccount(body.perAccount) } : {}),
-      });
+      };
+      // Replacing the pictures must not leave an approved-design entry (T7) that names a picture the post no longer has
+      if (images !== undefined && "canvasDesigns" in merged) {
+        const kept = pruneDesigns(designsOfContent(merged), images);
+        if (kept.length > 0) merged.canvasDesigns = kept;
+        else delete merged.canvasDesigns;
+      }
+      updateData.content = JSON.stringify(merged);
     }
+
+    // A public-API edit/retarget is a publishing path too: refuse an approved Canvas design a final channel cannot take BEFORE any write.
+    const finalContent = (updateData.content as string | undefined) ?? job.content;
+    const metadataProblem = canvasDesignMetadataProblem(finalContent);
+    if (metadataProblem) return reply.status(409).send({ error: metadataProblem, code: "DESIGN_METADATA_REQUIRED" });
+    const finalPlatforms = nextPlatforms ?? job.targets.map((t) => t.account.platform);
+    const designProblems = designImageProblems(finalContent, finalPlatforms);
+    if (designProblems.length > 0)
+      return reply.status(409).send({ error: designProblems.join(" "), code: "DESIGN_IMAGE_INCOMPATIBLE", problems: designProblems });
 
     if (body.commentText !== undefined)
       updateData.commentText = body.commentText || null;
 
+    // Every content write locks its FINAL media set, even a text-only edit, so stale whole-content JSON cannot resurrect a deleted picture.
+    const held = new Set(contentMediaUrls(job.content));
+    const finalMedia = contentMediaUrls(finalContent);
+    const canvasUrls = finalMedia.filter(isCanvasDesignUploadPath);
+    const lockedMedia = images !== undefined || canvasUrls.length > 0 ? finalMedia : [];
     let updated;
     try {
-      // what the post already holds is only locked; a new picture must be an upload of this key's owner that still exists
-      const held = new Set(contentMediaUrls(job.content));
       updated = await withUploads(
-        images ?? [],
-        (tx) => attachUploads(tx, images ?? [], { userId, keep: held }),
+        lockedMedia,
+        async (tx) => {
+          await attachUploads(tx, lockedMedia, { userId, keep: held });
+          if (canvasUrls.length > 0) {
+            const rows = await lockUploads(tx, canvasUrls);
+            if (canvasUrls.some((url) => !rows.has(url))) throw new MediaUnavailable();
+          }
+        },
         (db) => db.postJob.update({ where: { id }, data: updateData }),
       );
     } catch (err) {
@@ -366,19 +413,20 @@ export async function publicApiRoutes(
       throw err;
     }
 
-    if (body.accountIds !== undefined) {
-      if (!Array.isArray(body.accountIds) || body.accountIds.length === 0)
-        return reply.status(400).send({ error: "accountIds must be a non-empty array" });
-      const valid = await prisma.account.findMany({
-        where: { id: { in: body.accountIds }, workspaceId },
-        select: { id: true },
-      });
-      if (valid.length !== body.accountIds.length)
-        return reply.status(400).send({ error: "One or more accountIds are invalid" });
+    if (nextAccountIds !== undefined) {
       await prisma.postJobTarget.deleteMany({ where: { postJobId: id } });
       await prisma.postJobTarget.createMany({
-        data: body.accountIds.map((accountId) => ({ postJobId: id, accountId })),
+        data: nextAccountIds.map((accountId) => ({ postJobId: id, accountId })),
       });
+    }
+
+    if (images !== undefined) {
+      const now = new Set(contentMediaUrls(updated.content));
+      try {
+        await releaseMedia(storage, [...held].filter((u) => !now.has(u)), [job.userId, userId]);
+      } catch (err) {
+        req.log.warn({ err }, "media of an API-edited post was not cleaned up");
+      }
     }
 
     if (body.scheduledFor) {
@@ -441,13 +489,16 @@ export async function publicApiRoutes(
 
     const job = await prisma.postJob.findFirst({
       where: { id, workspaceId },
-      include: { designRequest: { select: { status: true } }, targets: { select: { id: true }, take: 1 } },
+      include: { designRequest: { select: { status: true } }, targets: { select: { id: true, account: { select: { platform: true } } } } },
     });
     if (!job) return reply.status(404).send({ error: "Post not found" });
     if (job.status !== "draft") return reply.status(409).send({ error: `Post status is '${job.status}' — only drafts can be approved` });
     // the design is with the designer, or there is no account to post to
     const refused = promoteRefusal(job);
     if (refused) return reply.status(refused.status).send(refused.body);
+    const designProblems = designImageProblems(job.content, job.targets.map((t) => t.account.platform));
+    if (designProblems.length > 0)
+      return reply.status(409).send({ error: designProblems.join(" "), code: "DESIGN_IMAGE_INCOMPATIBLE", problems: designProblems });
 
     const updated = await prisma.postJob.update({
       where: { id },

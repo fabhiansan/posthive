@@ -320,7 +320,9 @@ describe("Marketing home: review state (phase 6)", () => {
     expect(within(rows[1]).queryByText("Unsubmitted changes")).toBeNull();
     expect(within(rows[2]).getByText("Changes requested")).toBeTruthy();
     expect(within(rows[2]).getByText(/Make it shorter/)).toBeTruthy(); // the designer's words, to the owner
-    expect(within(rows[3]).queryByText(/In review|Approved|Changes requested|Unsubmitted/)).toBeNull(); // never submitted: nothing to say
+    expect(within(rows[3]).queryByText(/In review|Approved|Changes requested|Unsubmitted/)).toBeNull(); // never submitted: no answer, no unsubmitted work
+    expect(within(rows[3]).getByText("Design draft")).toBeTruthy(); // ... it is a saved design draft, found here and reopened
+    for (const i of [0, 1, 2]) expect(within(rows[i]).queryByText("Design draft")).toBeNull(); // a submitted design is not a draft
   });
 
   it("a design that was never submitted offers Delete; one that was submitted offers Archive and its history instead", async () => {
