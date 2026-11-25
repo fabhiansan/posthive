@@ -14,6 +14,7 @@ import { safeLink } from "../lib/contentList.js";
 import { realDate } from "../lib/dashboardData.js";
 import { DEADLINE_MESSAGE, deadlineProblem, designRequestSelect, toDesignRequestView } from "../lib/designRequest.js";
 import { notify } from "../lib/notifications.js";
+import { designHistory } from "../lib/designHistory.js";
 
 const DESIGNERS_MAX = 100;
 
@@ -27,6 +28,35 @@ const requestBody = z.object({
 });
 
 export async function designRequestRoutes(app: FastifyInstance): Promise<void> {
+  app.post("/jobs/:id/design-request/revision", { preHandler: [withAuth], config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
+    const { id: userId } = getUser(req);
+    const workspaceId = getWorkspaceId(req);
+    const { id } = req.params as { id: string };
+    const role = await getWorkspaceRole(userId, workspaceId);
+    if (!isContentEditorRole(role)) return reply.status(403).send(CONTENT_EDITOR_FORBIDDEN);
+    const body = z.object({ note: z.string().trim().min(1).max(2000) }).safeParse(req.body);
+    if (!body.success) return reply.status(400).send({ error: "Describe the design changes needed." });
+    const result = await prisma.$transaction(async (tx) => {
+      // Submission locks this same post row, preventing a submit from racing a reopened request.
+      await tx.$queryRaw`SELECT id FROM "PostJob" WHERE id = ${id} AND "workspaceId" = ${workspaceId} FOR UPDATE`;
+      const job = await tx.postJob.findFirst({ where: { id, workspaceId }, select: { status: true, approvalStatus: true, userId: true, designRequest: true } });
+      if (!job || !isDraftVisibleTo(role, userId, job)) return { code: 404, error: "Job not found" };
+      const r = job.designRequest;
+      if (job.status !== "draft" || job.approvalStatus === "pending" || job.approvalStatus === "approved" || r?.status !== "done") return { code: 409, error: "Request changes on a returned or unsubmitted draft with a delivered design." };
+      const member = r.assigneeId && await tx.workspaceMember.findFirst({ where: { workspaceId, userId: r.assigneeId, role: "designer" }, select: { id: true } });
+      if (!member) return { code: 409, error: "The assigned designer is no longer available." };
+      const actor = await tx.user.findUnique({ where: { id: userId }, select: { name: true } });
+      const history = designHistory(r.history);
+      if (!history.some((e) => e.kind === "submitted") && r.doneAt) history.push({ kind: "submitted", at: r.doneAt.toISOString(), by: null, figmaUrl: r.figmaUrl, note: r.designerNote });
+      history.push({ kind: "revision", at: new Date().toISOString(), by: actor?.name ?? null, figmaUrl: null, note: body.data.note });
+      const changed = await tx.designRequest.updateMany({ where: { id: r.id, status: "done" }, data: { status: "sent", revisionNote: body.data.note, figmaUrl: null, designerNote: null, doneAt: null, history: history.map((e) => ({ ...e })) } });
+      if (!changed.count) return { code: 409, error: "This design already changed. Reload the post." };
+      return { code: 200, assigneeId: r.assigneeId, request: await tx.designRequest.findUnique({ where: { id: r.id }, select: designRequestSelect(workspaceId) }) };
+    });
+    if (result.code !== 200) return reply.status(result.code).send({ error: result.error });
+    await notify([{ workspaceId, userId: result.assigneeId, kind: "design_revision", postJobId: id, actorId: userId }]);
+    return reply.send({ request: result.request ? toDesignRequestView(result.request) : null });
+  });
   // The designers of the workspace, for the "Designer (PIC)" select. Marketing cannot list members (that route is
   // owner/admin only), so this answers only what the select needs: no e-mail addresses.
   app.get("/design-requests/designers", { preHandler: [withAuth] }, async (req, reply) => {

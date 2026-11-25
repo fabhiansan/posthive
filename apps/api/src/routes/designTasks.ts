@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { designHistory } from "../lib/designHistory.js";
 import { getUser, getWorkspaceId, getWorkspaceRole, withAuth } from "../lib/auth/withAuth.js";
 import { contentOf, titleOf } from "../lib/dashboardData.js";
 import {
@@ -144,14 +145,18 @@ export async function designTaskRoutes(app: FastifyInstance): Promise<void> {
 
       const figmaUrl = parsed.data.figmaUrl;
       const answered = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "PostJob" WHERE id = ${postId} AND "workspaceId" = ${who.workspaceId} FOR UPDATE`;
+        const current = await tx.designRequest.findFirst({ where: { ...taskBase(who.workspaceId, who.userId), postJobId: postId, status: "sent" }, select: { history: true, revisionNote: true, postJob: { select: { content: true } } } });
+        if (!current) return false;
+        const actor = await tx.user.findUnique({ where: { id: who.userId }, select: { name: true } });
+        const history = designHistory(current.history);
+        history.push({ kind: "submitted", at: new Date().toISOString(), by: actor?.name ?? null, figmaUrl, note: parsed.data.note || null });
         const { count } = await tx.designRequest.updateMany({
           where: { ...taskBase(who.workspaceId, who.userId), postJobId: postId, status: "sent" },
-          data: { status: "done", doneAt: new Date(), figmaUrl, designerNote: parsed.data.note || null },
+          data: { status: "done", doneAt: new Date(), figmaUrl, designerNote: parsed.data.note || null, revisionNote: null, history: history.map((e) => ({ ...e })) },
         });
         if (count === 0) return false;
-        // shortcut: read-modify-write of the content JSON; a Marketing PATCH in the same instant can win and lose this key. The link
-        // is still on the request, so nothing is lost: upgrade to a JSON merge in SQL if it ever matters.
-        await tx.postJob.update({ where: { id: postId }, data: { content: JSON.stringify({ ...contentOf(task.postJob.content), designFigmaUrl: figmaUrl }) } });
+        await tx.postJob.update({ where: { id: postId }, data: { content: JSON.stringify({ ...contentOf(current.postJob.content), designFigmaUrl: figmaUrl }), ...(current.revisionNote ? { approvalStatus: null } : {}) } });
         return true;
       });
       if (!answered) return reply.status(409).send(TASK_DONE);

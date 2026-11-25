@@ -22,7 +22,9 @@ vi.mock("../lib/prisma.js", () => {
       return result(args);
     });
   const tx = {
-    designRequest: { updateMany: record("tx.dr.updateMany", () => ({ count: h.updated })) },
+    $queryRaw: record("tx.lock", () => []),
+    user: { findUnique: record("tx.user", () => ({ name: "Dewi K." })) },
+    designRequest: { findFirst: record("tx.dr.findFirst", () => h.task), updateMany: record("tx.dr.updateMany", () => ({ count: h.updated })) },
     postJob: { update: record("tx.post.update", () => ({})) },
   };
   return {

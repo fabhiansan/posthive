@@ -604,6 +604,8 @@ model DesignRequest {
   figmaUrl      String?
   designerNote  String?
   doneAt        DateTime?
+  revisionNote  String?
+  history       Json      @default("[]")
   createdById  String?
   createdBy    User?     @relation("DesignRequestCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   createdAt    DateTime  @default(now())

@@ -3,6 +3,7 @@
 // Like the dashboard's toPost, a post leaves the server only as these fields: the content JSON never does, it can
 // hold a whole design copy.
 import { normalizeCategory, pillarFor } from "./contentTypes.js";
+import { designHistory, type DesignEvent } from "./designHistory.js";
 import { contentOf, images, text } from "./dashboardData.js";
 import { explainPublishError } from "./publishError.js";
 import { missingForReview, type MissingField } from "./submitReadiness.js";
@@ -135,7 +136,8 @@ export interface DetailRecord extends ListRecord {
   reviewedBy: { name: string } | null;
   user: { name: string } | null;
   targets: { status: string; error: string | null; account: { platform: string; displayName: string } | null }[];
-  designRequest: { status: string; deadline: Date | null; doneAt: Date | null; assignee: { name: string } | null } | null;
+  submittedAt?: Date | null;
+  designRequest: { status: string; deadline: Date | null; doneAt: Date | null; assignee: { name: string } | null; brief?: string; referenceUrl?: string | null; sentAt?: Date | null; figmaUrl?: string | null; designerNote?: string | null; revisionNote?: string | null; history?: unknown } | null;
 }
 
 export interface ActivityEntry {
@@ -150,6 +152,9 @@ export interface ActivityEntry {
 }
 
 export interface PostDetail extends ListItem {
+  assets: { link: string | null; text: string };
+  designPath: "A" | "B" | null;
+  designInfo: { brief: string; referenceUrl: string | null; sentAt: string | null; revisionNote: string | null; designerNote: string | null; inProgress: boolean; history: DesignEvent[] } | null;
   pillar: string | null;
   /** Who is asked about the post: the plan's PIC, else the person who made it. */
   owner: string | null;
@@ -204,6 +209,17 @@ export function toDetail(job: DetailRecord): PostDetail {
   const caption = text(content.text);
   return {
     ...item,
+    assets: { link: safeLink(content.assetNotes), text: safeLink(content.assetNotes) ? "" : text(content.assetNotes).slice(0, 500) },
+    designPath: job.designRequest ? "B" : content.canvasInstanceId || (Array.isArray(content.canvasDesigns) && content.canvasDesigns.length) ? "A" : null,
+    designInfo: job.designRequest ? {
+      brief: job.designRequest.brief ?? "",
+      referenceUrl: safeLink(job.designRequest.referenceUrl),
+      sentAt: job.designRequest.sentAt?.toISOString() ?? null,
+      revisionNote: job.designRequest.revisionNote ?? null,
+      designerNote: job.designRequest.status === "done" ? job.designRequest.designerNote ?? null : designHistory(job.designRequest.history).filter((e) => e.kind === "submitted").at(-1)?.note ?? null,
+      inProgress: job.designRequest.status === "sent" && Boolean(job.designRequest.figmaUrl || job.designRequest.designerNote),
+      history: designHistory(job.designRequest.history),
+    } : null,
     pillar: text(content.pillar) || (category ? pillarFor(category) : null),
     owner: text(content.picContent) || job.user?.name || null,
     accounts: job.targets.flatMap((t) => (t.account ? [t.account] : [])),

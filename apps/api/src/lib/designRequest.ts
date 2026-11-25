@@ -14,6 +14,8 @@ export const designRequestSelect = (workspaceId: string) => ({
   figmaUrl: true,
   designerNote: true,
   doneAt: true,
+  revisionNote: true,
+  history: true,
   assignee: {
     select: {
       id: true,
@@ -27,6 +29,7 @@ export const designRequestSelect = (workspaceId: string) => ({
 type DesignRequestRow = Prisma.DesignRequestGetPayload<{ select: ReturnType<typeof designRequestSelect> }>;
 
 export interface DesignRequestView {
+  revisionNote?: string | null;
   id: string;
   status: string;
   /** The assignee; `active` is false when they left the design team, null when the account is gone. */
@@ -49,6 +52,7 @@ export function toDesignRequestView(row: DesignRequestRow): DesignRequestView {
   return {
     id: row.id,
     status: row.status,
+    revisionNote: row.revisionNote ?? null,
     assignee: a ? { id: a.id, name: a.name, avatarUrl: a.avatarUrl, active: a.workspaceMembers.length > 0 } : null,
     deadline: row.deadline ? row.deadline.toISOString() : null,
     brief: row.brief,

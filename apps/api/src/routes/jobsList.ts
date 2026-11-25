@@ -37,7 +37,7 @@ const DETAIL_SELECT = {
   reviewedBy: { select: { name: true } },
   user: { select: { name: true } },
   targets: { select: { status: true, error: true, account: { select: { platform: true, displayName: true } } } },
-  designRequest: { select: { status: true, deadline: true, doneAt: true, assignee: { select: { name: true } } } },
+  designRequest: { select: { status: true, deadline: true, doneAt: true, brief: true, referenceUrl: true, sentAt: true, figmaUrl: true, designerNote: true, revisionNote: true, history: true, assignee: { select: { name: true } } } },
 } satisfies Prisma.PostJobSelect;
 
 /** The newest plan file imported into the workspace, and how many posts came in with it. */

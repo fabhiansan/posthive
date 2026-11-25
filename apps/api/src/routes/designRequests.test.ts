@@ -23,8 +23,9 @@ vi.mock("../lib/prisma.js", () => {
       h.calls.push({ fn, args });
       return result(args);
     });
-  return {
-    prisma: {
+  const db = {
+      $queryRaw: record("lock", () => []),
+      user: { findUnique: record("user.findUnique", () => ({ name: "Marketing" })) },
       postJob: { findFirst: record("job.findFirst", () => h.job) },
       workspaceMember: {
         findFirst: record("member.findFirst", () => h.designer),
@@ -39,8 +40,8 @@ vi.mock("../lib/prisma.js", () => {
         // the cancel route first asks who the task was with (select: { assigneeId }), then reads the whole row
         findUnique: record("dr.findUnique", (args) => ((args as { select: { id?: true } }).select.id ? h.saved : h.was)),
       },
-    },
   };
+  return { prisma: { ...db, $transaction: async (work: (tx: typeof db) => unknown) => work(db) } };
 });
 vi.mock("../lib/auth/withAuth.js", async () => {
   const real = await vi.importActual<typeof import("../lib/auth/withAuth.js")>("../lib/auth/withAuth.js");
@@ -89,6 +90,29 @@ beforeEach(() => {
   h.was = { assigneeId: DESIGNER };
   h.notified = [];
   h.calls = [];
+});
+
+describe("design revision", () => {
+  const revise = (note = "Change the map") => app.inject({ method: "POST", url: "/jobs/p1/design-request/revision", payload: { note } });
+  it("preserves the delivered version and reopens only the assigned designer's task", async () => {
+    h.job = post({ approvalStatus: "rejected", designRequest: { id: "dr1", status: "done", assigneeId: DESIGNER, doneAt: new Date("2030-03-02"), figmaUrl: "https://figma.com/design/old", designerNote: "First version", history: [] } });
+    expect((await revise()).statusCode).toBe(200);
+    expect(call("dr.updateMany")[0].args).toMatchObject({ where: { id: "dr1", status: "done" }, data: { status: "sent", figmaUrl: null, designerNote: null, revisionNote: "Change the map", history: [{ kind: "submitted", note: "First version" }, { kind: "revision", by: "Marketing", note: "Change the map" }] } });
+    expect(h.notified).toEqual([expect.objectContaining({ kind: "design_revision", userId: DESIGNER })]);
+  });
+  it.each(["pending", "approved"])("refuses a post already %s", async (approvalStatus) => {
+    h.job = post({ approvalStatus, designRequest: { status: "done" } });
+    expect((await revise()).statusCode).toBe(409);
+    expect(call("dr.updateMany")).toHaveLength(0);
+  });
+  it("refuses designers, blank notes and absent posts", async () => {
+    h.role = "designer";
+    expect((await revise()).statusCode).toBe(403);
+    h.role = "member";
+    expect((await revise(" ")).statusCode).toBe(400);
+    h.job = null;
+    expect((await revise()).statusCode).toBe(404);
+  });
 });
 
 describe("GET /design-requests/designers", () => {

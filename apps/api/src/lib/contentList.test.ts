@@ -148,6 +148,18 @@ const detail = (patch: Partial<DetailRecord> & { content?: unknown } = {}): Deta
 };
 
 describe("toDetail", () => {
+  it("shares delivered history during revision without exposing the new designer draft", () => {
+    const d = toDetail(detail({ designRequest: {
+      status: "sent", deadline: null, doneAt: null, assignee: { name: "Dewi" },
+      figmaUrl: "https://figma.com/design/private", designerNote: "PRIVATE DRAFT",
+      revisionNote: "Change visual", history: [{ kind: "submitted", at: "2026-11-13T03:42:00.000Z", by: "Dewi", figmaUrl: "https://figma.com/design/shared", note: "Delivered" }],
+    } }));
+    expect(d.designInfo?.designerNote).toBe("Delivered");
+    expect(d.designInfo?.inProgress).toBe(true);
+    expect(JSON.stringify(d)).not.toContain("PRIVATE DRAFT");
+    expect(JSON.stringify(d)).not.toContain("design/private");
+    expect(d.designInfo?.history[0].figmaUrl).toBe("https://figma.com/design/shared");
+  });
   const imported = {
     title: "When Environmental Data Leads to Enforcement",
     text: "Most regional monitoring fails.",

@@ -84,6 +84,8 @@ export const TASK_SELECT = {
   updatedAt: true,
   figmaUrl: true,
   designerNote: true,
+  revisionNote: true,
+  history: true,
   createdById: true,
   createdBy: { select: { name: true } },
   postJob: {
@@ -150,6 +152,7 @@ function linkOrText(value: unknown): { link: string | null; text: string } {
 }
 
 export interface TaskDetail extends TaskItem {
+  revisionNote?: string | null;
   /** The whole caption (cut at a few thousand characters) and its length. */
   caption: string;
   captionLength: number;
@@ -182,6 +185,7 @@ export function toTaskDetail(row: TaskRow): TaskDetail {
     ...item,
     brief: row.brief.slice(0, BRIEF_PREVIEW),
     briefFull: row.brief,
+    revisionNote: row.revisionNote,
     referenceUrl: safeLink(row.referenceUrl),
     caption: caption.slice(0, CAPTION_MAX),
     captionLength: caption.length,

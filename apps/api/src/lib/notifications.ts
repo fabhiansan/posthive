@@ -6,6 +6,7 @@ import { MANAGE_ROLES } from "./auth/withAuth.js";
 import { contentOf, images, text, titleOf } from "./dashboardData.js";
 
 export const NOTIFICATION_KINDS = [
+  "design_revision",
   "task_assigned", // to the designer: Marketing sent a design request
   "task_cancelled", // to the designer: Marketing took it back
   "design_done", // to Marketing: the designer marked the design done
