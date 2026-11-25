@@ -4,7 +4,7 @@ import { apiFetch } from "./api";
 import { shortName } from "./dashboard-format";
 import { formatDate, formatTime, wibDateKey } from "./datetime";
 
-export const NOTIFICATION_KINDS = ["task_assigned", "task_cancelled", "design_done", "review_submitted", "post_approved", "post_sent_back", "post_failed"] as const;
+export const NOTIFICATION_KINDS = ["design_revision", "task_assigned", "task_cancelled", "design_done", "review_submitted", "post_approved", "post_sent_back", "post_failed"] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
 export interface NotificationItem {
@@ -40,6 +40,7 @@ interface Words {
 }
 
 const KIND: Record<NotificationKind, Words> = {
+  design_revision: { pill: "Design revision", tone: "info", line: (by) => `${by} requested design changes` },
   task_assigned: { pill: "Assigned", tone: "neutral", line: (by) => `Assigned by ${by} · Marketing` },
   task_cancelled: { pill: "Cancelled", tone: "danger", line: (by) => `${by} took the request back` },
   design_done: { pill: "Design done", tone: "success", line: (by) => `${by} sent the Figma link` },
@@ -66,7 +67,7 @@ export function notificationHref(n: Pick<NotificationItem, "kind" | "postId">): 
   if (n.kind === "task_cancelled") return "/tasks";
   if (!n.postId) return null;
   const id = encodeURIComponent(n.postId);
-  if (n.kind === "task_assigned") return `/tasks/${id}`;
+  if (n.kind === "task_assigned" || n.kind === "design_revision") return `/tasks/${id}`;
   if (n.kind === "design_done" || n.kind === "post_sent_back") return `/jobs/${id}/edit`;
   return `/jobs?open=${id}`;
 }

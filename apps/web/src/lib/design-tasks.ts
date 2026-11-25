@@ -58,6 +58,7 @@ export interface TaskLink {
 }
 
 export interface TaskDetail extends TaskItem {
+  revisionNote?: string | null;
   caption: string;
   captionLength: number;
   category: string | null;

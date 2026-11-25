@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CloudUploadIcon, ImageIcon, ImageOffIcon } from "lucide-react";
+import { CloudUploadIcon, ImageIcon, ImageOffIcon, LinkIcon, FolderIcon, ExternalLinkIcon } from "lucide-react";
 import { DesignReferenceCard } from "@/components/DesignReferenceCard";
 import { PlatformIcon } from "@/components/PlatformIcon";
 import { PLATFORM_LIMIT } from "@/components/PlatformPreview";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card } from "@/components/ui/card";
+import { DesignRevisionButton } from "./DesignRevisionButton";
 import { apiFetch, assetUrl } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { normalizeCategory } from "@/lib/contentTypes";
@@ -24,7 +25,6 @@ import {
   timeWib,
   type PostDetail,
 } from "@/lib/content-list";
-import { CONTENT_STATUS } from "@/lib/content-status";
 import { designLine } from "@/lib/post-editor";
 import { formatPlanDate } from "@/lib/import-rows";
 import { wibDateKey } from "@/lib/datetime";
@@ -55,7 +55,7 @@ type Props = {
 export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn, onClose, onEdit, onReview, onSubmit, onRetry, onDelete }: Props) {
   const [post, setPost] = useState<PostDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState("overview");
+  const [version, setVersion] = useState(0);
 
   // The answer for the post on screen only: a slow one for a row the person already left is dropped
   useEffect(() => {
@@ -63,14 +63,13 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
     let live = true;
     setPost(null);
     setError(null);
-    setTab("overview");
     apiFetch<PostDetail>(`/jobs/${id}/detail`)
       .then((answer) => live && setPost(answer))
       .catch((e) => live && setError(e instanceof Error ? e.message : "Something went wrong. Try again."));
     return () => {
       live = false;
     };
-  }, [id]);
+  }, [id, version]);
 
   const category = post ? normalizeCategory(post.category) : null;
   const template = category ? templatesByCategory(templates).get(category) : undefined;
@@ -106,8 +105,7 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
   return (
     <Sheet open={id !== null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent side="right" showCloseButton className="w-full gap-0 bg-surface p-0 sm:max-w-170">
-        <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1 gap-0">
-        <header className="space-y-2 border-b border-border px-6 pt-5 pb-0">
+        <header className="space-y-2 border-b border-border px-6 py-5">
           {post ? (
             <>
               <p className="pr-10 type-body-r-xxs tracking-wide text-muted-foreground uppercase">
@@ -144,14 +142,9 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
             </>
           )}
 
-          <TabsList variant="line" className="border-b-0">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="design">Design{post ? ` (${post.media.length})` : ""}</TabsTrigger>
-            <TabsTrigger value="activity">Activity{post ? ` (${post.activity.length})` : ""}</TabsTrigger>
-          </TabsList>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-bg px-4 py-5 sm:px-6">
           {error && (
             <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 type-body-r-s text-red-600">
               {error}
@@ -167,29 +160,22 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
 
           {post && (
             <>
-              <TabsContent value="overview" className="space-y-6">
+              <div className="space-y-4">
+                <Card className="gap-4 p-4 sm:p-5">
                 <section aria-labelledby="info-title">
                   <div className="flex items-baseline justify-between gap-3">
                     <h3 id="info-title" className="type-body-sb-m text-fg">Content information</h3>
                     <p className="type-body-r-xs text-muted-foreground">{post.source ? "Imported · read-only preview" : "Read-only preview"}</p>
                   </div>
                   <dl className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <InfoTile label="Content pillar">{post.category ?? post.pillar ?? "Not set"}</InfoTile>
+                    <InfoTile label="Content pillar">{post.pillar ?? "Not set"}</InfoTile>
+                    <InfoTile label="Content format">{post.format === "carousel" ? `Carousel${post.media.length ? ` · ${post.media.length} slides` : ""}` : post.format === "single" ? "Single image" : "Not set"}</InfoTile>
                     <InfoTile label="Publishing platform">
                       {post.channels.length > 0 ? post.channels.map(platformLabel).join(" · ") : "No channel yet"}
                     </InfoTile>
                     <InfoTile label="Publishing date">{post.scheduledFor ? longDate(post.scheduledFor) : "No date yet"}</InfoTile>
                     <InfoTile label="Publishing time">{post.scheduledFor ? timeWib(post.scheduledFor) : "—"}</InfoTile>
                     <InfoTile label="Approval status">{approvalLabel(post)}</InfoTile>
-                    <InfoTile label="Link copywrite">
-                      {post.link ? (
-                        <a href={post.link} target="_blank" rel="noopener noreferrer" className="block truncate text-brand-800 underline-offset-2 hover:underline" title={post.link}>
-                          {post.link.replace(/^https?:\/\//, "")}
-                        </a>
-                      ) : (
-                        <span className="text-muted-foreground">{post.designCopy ? "Not a link" : "None"}</span>
-                      )}
-                    </InfoTile>
                   </dl>
                   {post.reviewNote && post.approvalStatus === "rejected" && (
                     <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 type-body-r-s text-red-600">
@@ -216,17 +202,39 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
                   )}
                 </section>
 
-                <DesignSection post={post} template={template} category={category} />
-                <ActivitySection post={post} />
-              </TabsContent>
-
-              <TabsContent value="design" className="space-y-4">
-                <DesignSection post={post} template={template} category={category} />
-              </TabsContent>
-
-              <TabsContent value="activity">
-                <ActivitySection post={post} />
-              </TabsContent>
+                <section aria-label="Copywriting & Supporting Assets">
+                  <h3 className="type-body-sb-s">Copywriting &amp; Supporting Assets</h3>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {[["Copywriting", post.link, post.designCopy, LinkIcon], ["Supporting Assets", post.assets?.link, post.assets?.text, FolderIcon]].map(([label, url, text, Icon]) => {
+                      const Glyph = Icon as typeof LinkIcon;
+                      return url ? <Button key={String(label)} asChild variant="secondary" className="justify-start text-blue-700"><a href={String(url)} target="_blank" rel="noopener noreferrer"><Glyph />{String(label)}<ExternalLinkIcon className="ml-auto" /></a></Button> : <p key={String(label)} className="rounded-xl bg-bg p-3 type-body-r-xs break-words text-muted">{String(label)}: {text ? String(text) : "Not provided"}</p>;
+                    })}
+                  </div>
+                </section>
+                </Card>
+                <Card className="gap-4 p-4 sm:p-5">
+                  <h3 className="type-body-sb-m">Design Information</h3>
+                  <dl className="grid gap-3 sm:grid-cols-2">
+                    <InfoTile label="Design path">{post.designPath === "B" || post.designRequest ? "Path B · Assign to Designer" : post.designPath === "A" ? "Path A · Use a template" : "Not determined"}</InfoTile>
+                    <InfoTile label="Designer (PIC)">{post.designRequest?.assignee ?? "Not assigned"}</InfoTile>
+                    <InfoTile label="Design deadline">{post.designRequest?.deadline ? `${longDate(post.designRequest.deadline)} · ${timeWib(post.designRequest.deadline)}` : "Not set"}</InfoTile>
+                    <InfoTile label="Reference">{post.designInfo?.referenceUrl ? <a href={post.designInfo.referenceUrl} target="_blank" rel="noopener noreferrer" className="break-all text-brand-800 underline">{post.designInfo.referenceUrl}</a> : "Not provided"}</InfoTile>
+                  </dl>
+                  {post.designPath === "A" && <DesignReferenceCard template={template} category={category} />}
+                </Card>
+                <DesignStatus post={post} />
+                <Card className="gap-3 p-4 sm:p-5">
+                  <h3 className="type-body-sb-m">Designer detail</h3>
+                  <dl className="grid gap-3">
+                    <InfoTile label="Notes / Instructions">{post.designInfo?.brief || "Not provided"}</InfoTile>
+                    <InfoTile label="Designer note">{post.designInfo?.designerNote || "No submitted note yet"}</InfoTile>
+                    {post.designInfo?.revisionNote && <InfoTile label="Requested design changes">{post.designInfo.revisionNote}</InfoTile>}
+                  </dl>
+                  {canEditPost && post.designRequest?.status === "done" && unsent && <DesignRevisionButton postId={post.id} onChanged={() => setVersion((n) => n + 1)} />}
+                </Card>
+                <Card className="p-4 sm:p-5"><DesignSection key={post.id} post={post} template={template} category={category} /></Card>
+                <Card className="p-4 sm:p-5"><ActivitySection post={post} /></Card>
+              </div>
             </>
           )}
         </div>
@@ -250,21 +258,19 @@ export function ContentDrawer({ id, templates, canEdit, canReview, canSubmitOwn,
             {post && canEditPost && <Button onClick={() => onEdit(post.id)}>Edit Content</Button>}
           </div>
         </footer>
-        </Tabs>
       </SheetContent>
     </Sheet>
   );
 }
 
 function DesignSection({ post, template, category }: { post: PostDetail; template: DesignTemplate | undefined; category: ReturnType<typeof normalizeCategory> }) {
-  // A file that cannot be loaded (deleted from storage) says so in its own square; the others stay. The section is drawn
-  // twice (Overview, Design tab) and is thrown away when the post changes, so each draw learns it from the browser.
+  // A failed image stays in its own square; switching posts resets the errors.
   const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
   const shown = post.media.length - post.media.filter((url) => gone.has(url)).length;
   return (
     <section aria-labelledby={`design-title-${post.id}`}>
       <div className="flex items-baseline justify-between gap-3">
-        <h3 id={`design-title-${post.id}`} className="type-body-sb-m text-fg">Design</h3>
+        <h3 id={`design-title-${post.id}`} className="type-body-sb-m text-fg">Design Preview</h3>
         <p className="type-body-r-xs text-muted-foreground">Template &amp; ready design</p>
       </div>
       <div className="mt-3 space-y-3">
@@ -310,24 +316,53 @@ function DesignSection({ post, template, category }: { post: PostDetail; templat
             Open the design in Figma <span aria-hidden>↗</span>
           </a>
         )}
-        <DesignReferenceCard template={template} category={category} />
       </div>
     </section>
   );
 }
 
+function DesignStatus({ post }: { post: PostDetail }) {
+  const r = post.designRequest;
+  const info = post.designInfo;
+  const stage = post.approvalStatus === "approved" ? 4 : r?.status === "sent" && info?.revisionNote ? 3 : r?.status === "done" ? 2 : info?.inProgress ? 1 : 0;
+  const requested = r && r.status !== "draft";
+  const revised = info?.history.some((e) => e.kind === "revision");
+  return <Card className="gap-4 p-4 sm:p-5">
+    <h3 className="type-body-sb-m">Design status</h3>
+    {requested ? <>
+      <ol aria-label="Design milestones" className="grid grid-cols-5">
+        {["Requested", "In Design", "Submitted", "Revision", "Completed"].map((label, i) => <li key={label} aria-current={stage === i ? "step" : undefined} className="relative flex min-w-0 flex-col items-center gap-2 text-center">
+          {i < 4 && <span aria-hidden="true" className="absolute top-2 left-1/2 h-px w-full bg-neutral-200" />}
+          <span aria-hidden="true" className={cn("relative size-4 rounded-full border-2", i === stage ? "border-brand-700 bg-accent" : i < stage && (i !== 3 || revised) ? "border-green-700 bg-green-100" : "border-neutral-200 bg-surface")} />
+          <span className="type-body-r-xxs">{label}</span>
+          {i === 3 && stage === 4 && !revised && <span className="type-body-r-xxs text-muted">Not needed</span>}
+        </li>)}
+      </ol>
+      <p className="type-body-r-xs text-muted">{stage === 4 ? "Approved by Admin" : stage === 3 ? "Design revision requested by Marketing" : stage === 2 ? post.approvalStatus === "pending" ? "Waiting for Admin approval" : post.approvalStatus === "rejected" ? "Returned to Marketing by Admin" : "Waiting for Marketing to submit to Admin" : stage === 1 ? "Designer is working on the design" : "Request sent to designer"}</p>
+    </> : <p className="type-body-r-s text-muted">{r ? "Brief saved · request not sent" : "No designer assignment"}</p>}
+  </Card>;
+}
+
 function ActivitySection({ post }: { post: PostDetail }) {
+  const events = [
+    ...post.activity.filter((e) => !post.designInfo?.history.some((h) => (h.kind === "approved" && e.kind === "approved") || (h.kind === "returned" && e.kind === "revision"))).map((e) => ({ at: e.at, label: activityText(e, platformLabel), note: null as string | null, url: null as string | null })),
+    ...(post.designInfo?.sentAt ? [{ at: post.designInfo.sentAt, label: `Design requested · ${post.designRequest?.assignee ?? "Designer removed"}`, note: null, url: null }] : []),
+    ...(post.designInfo?.history ?? []).map((e) => ({ at: e.at, label: `${({ submitted: "Design submitted to Marketing", revision: "Design revision requested", review_submitted: "Marketing submitted to Admin", approved: "Approved by Admin", returned: "Admin returned content to Marketing" })[e.kind]}${e.by ? ` · ${e.by}` : ""}`, note: e.note, url: e.figmaUrl })),
+  ].sort((a, b) => (a.at ? Date.parse(a.at) : Infinity) - (b.at ? Date.parse(b.at) : Infinity));
   return (
     <section aria-labelledby={`activity-title-${post.id}`}>
       <div className="flex items-baseline justify-between gap-3">
         <h3 id={`activity-title-${post.id}`} className="type-body-sb-m text-fg">Activity</h3>
-        <p className="type-body-r-xs text-muted-foreground">Latest</p>
+        <p className="type-body-r-xs text-muted-foreground">Oldest first</p>
       </div>
       <ol className="mt-3 space-y-2.5">
-        {[...post.activity].reverse().map((entry, i) => (
-          <li key={i} className="flex items-start gap-2.5 type-body-r-s text-fg">
-            <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", entry.kind === "failed" ? CONTENT_STATUS.failed.dot : entry.kind === "revision" ? CONTENT_STATUS.changes.dot : entry.kind === "approved" ? CONTENT_STATUS.approved.dot : "bg-brand-700")} />
-            <span className="min-w-0 break-words">{activityText(entry, platformLabel)}</span>
+        {events.map((entry, i) => (
+          <li key={i} className="relative border-l border-border pb-4 pl-5 type-body-r-s text-fg last:border-transparent last:pb-0">
+            <span aria-hidden="true" className="absolute top-1 -left-1 size-2 rounded-full bg-brand-700" />
+            <p className="break-words">{entry.label}</p>
+            {entry.at && <p className="mt-1 type-body-r-xs text-muted">{longDate(entry.at)} · {timeWib(entry.at)}</p>}
+            {entry.note && <p className="mt-2 rounded-lg bg-bg p-3 whitespace-pre-wrap break-words">{entry.note}</p>}
+            {entry.url && <a href={entry.url} target="_blank" rel="noopener noreferrer" className="text-brand-800 underline">Open submitted design</a>}
           </li>
         ))}
       </ol>

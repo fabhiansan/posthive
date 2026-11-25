@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CircleCheckIcon, ExternalLinkIcon, LockIcon, Undo2Icon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DesignRevisionButton } from "@/components/content-list/DesignRevisionButton";
 import { DatePicker } from "@/components/DatePicker";
 import { InlineAlert } from "@/components/InlineAlert";
 import { TimeInput24 } from "@/components/TimeInput24";
@@ -149,6 +150,7 @@ export function DesignRequestForm({ request, publishAt, ensurePost, onChange, on
           <dd className="type-body-r-s whitespace-pre-wrap break-words text-fg">{request.brief}</dd>
         </dl>
         <p className="type-body-r-xs text-muted">The Figma link is saved on this post. Open it to export the design, upload it below, then submit for review. This request is locked.</p>
+        {!disabled && <DesignRevisionButton postId={ensurePost} onChanged={(result) => onChange((result as { request: DesignRequestView }).request)} />}
       </div>
     );
   }

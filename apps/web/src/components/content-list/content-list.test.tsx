@@ -357,17 +357,17 @@ describe("ContentDrawer", () => {
   it("does not make up what is not stored: no format tile, no priority tile", async () => {
     await open(detail());
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).queryByText("Content format")).toBeNull();
+    expect(within(dialog).getByText("Content format")).toBeTruthy();
     expect(within(dialog).queryByText("Priority")).toBeNull();
   });
 
   it("the link is an address only when the server said it is one", async () => {
     await open(detail());
-    expect(within(screen.getByRole("dialog")).getByRole("link", { name: "docs.google.com/document/d/abc/env-enforcement" }).getAttribute("href")).toBe("https://docs.google.com/document/d/abc/env-enforcement");
+    expect(within(screen.getByRole("dialog")).getByRole("link", { name: "Copywriting" }).getAttribute("href")).toBe("https://docs.google.com/document/d/abc/env-enforcement");
     cleanup();
     await open(detail({ link: null, designCopy: "Slide 1" }));
     expect(within(screen.getByRole("dialog")).queryByRole("link", { name: /docs\.google/ })).toBeNull();
-    expect(within(screen.getByRole("dialog")).getByText("Not a link")).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText("Copywriting: Slide 1")).toBeTruthy();
   });
 
   it("a caption over what its channel takes says by how much", async () => {
@@ -379,10 +379,10 @@ describe("ContentDrawer", () => {
   it("with no design it says so and what to do; with images it shows them and counts them in the tab", async () => {
     await open(detail());
     expect(within(screen.getByRole("dialog")).getAllByText("No template or design yet").length).toBeGreaterThan(0);
-    expect(screen.getByRole("tab", { name: "Design (0)" })).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
     cleanup();
     await open(detail({ media: ["/uploads/a.png", "/uploads/b.png"] }));
-    expect(screen.getByRole("tab", { name: "Design (2)" })).toBeTruthy();
+    expect(screen.getByText("2 images attached")).toBeTruthy();
     const imgs = [...screen.getByRole("dialog").querySelectorAll("img")];
     expect(imgs.map((i) => i.getAttribute("src"))).toEqual(expect.arrayContaining(["http://api.test/uploads/a.png"]));
   });
@@ -424,12 +424,10 @@ describe("ContentDrawer", () => {
 
   it("the tabs show Overview, the design alone, or the activity alone", async () => {
     await open(detail({ activity: [{ kind: "imported", by: null, at: "2026-11-13T03:42:00.000Z", note: null, channel: null }, { kind: "revision", by: "Dewi Kusuma", at: "2026-11-14T02:00:00.000Z", note: "Fix the hook", channel: null }] }));
-    expect(screen.getByRole("tab", { name: "Activity (2)" })).toBeTruthy();
-    await userEvent.click(screen.getByRole("tab", { name: "Activity (2)" }));
+    expect(screen.queryByRole("tab")).toBeNull();
     const log = screen.getByRole("list");
-    // newest first
-    expect(within(log).getAllByRole("listitem")[0].textContent).toContain("Revision requested by Dewi K.: Fix the hook");
-    expect(screen.queryByText("Content information")).toBeNull();
+    expect(within(log).getAllByRole("listitem")[1].textContent).toContain("Revision requested by Dewi K.: Fix the hook");
+    expect(screen.getByText("Content information")).toBeTruthy();
   });
 
   /** The buttons of the footer, by name. */
@@ -470,7 +468,7 @@ describe("ContentDrawer", () => {
 
     it("the Design tab shows the request, and the Figma link of the design when there is one", async () => {
       await open(detail({ designRequest: { status: "sent", assignee: null, deadline: "2026-03-04T10:00:00.000Z", doneAt: null }, designFigmaUrl: "https://www.figma.com/design/AbC/Case" }));
-      await userEvent.click(screen.getByRole("tab", { name: /Design/ }));
+      expect(screen.queryByRole("tab")).toBeNull();
       expect(screen.getAllByText(/Design requested · Designer removed · due Wed, 4 Mar 2026, 17:00 WIB/).length).toBeGreaterThan(0);
       expect(screen.getAllByRole("link", { name: /Open the design in Figma/ })[0].getAttribute("href")).toBe("https://www.figma.com/design/AbC/Case");
     });

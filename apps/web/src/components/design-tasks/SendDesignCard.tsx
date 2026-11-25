@@ -118,6 +118,7 @@ export function SendDesignCard({ task, onChanged }: Props) {
   return (
     <Card className="gap-4 border-0 p-5">
       <h2 className="type-body-sb-m text-fg">Send design to Marketing</h2>
+      {task.revisionNote && <div className="rounded-xl bg-brand-100 p-3 text-brand-800"><p className="type-body-sb-s">Design revision requested</p><p className="mt-1 type-body-r-s whitespace-pre-wrap">{task.revisionNote}</p></div>}
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="figma-link" className={LABEL}>

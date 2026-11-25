@@ -56,6 +56,9 @@ export interface ActivityEntry {
 }
 
 export interface PostDetail extends ListItem {
+  assets?: { link: string | null; text: string };
+  designPath?: "A" | "B" | null;
+  designInfo?: { brief: string; referenceUrl: string | null; sentAt: string | null; revisionNote: string | null; designerNote: string | null; inProgress: boolean; history: { kind: "submitted" | "revision" | "review_submitted" | "approved" | "returned"; at: string; by: string | null; figmaUrl: string | null; note: string | null }[] } | null;
   pillar: string | null;
   owner: string | null;
   accounts: { platform: string; displayName: string }[];
