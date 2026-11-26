@@ -1,11 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { CanvasDocument, CanvasStageHandle, ExportOptions, History, OverrideEntry } from "posthive-canvas";
+import { SaveIcon } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/Toast";
 import type { Saved } from "@/lib/autosave";
 import { STORAGE_UNSUPPORTED_MESSAGE, canvasProblem, editorFonts, getInstance, liveReview, loadAsset, saveInstance, uploadCanvasAsset, type InstanceDetail } from "@/lib/canvas";
+import { attachDesignExport, exportFormatsFor, formatFromMime, notifyDesignExportSaved, uploadDesignFile } from "@/lib/designExport";
+import { fetchJob } from "@/lib/jobActions";
+import { jpegToPdf } from "@/lib/pdf";
 import type { CanvasEngine, LoadedImages } from "./useCanvasBootstrap";
 import { download, isTyping, slugOf } from "./CanvasEditor";
 import { CanvasShell } from "./CanvasShell";
@@ -33,6 +39,10 @@ type Overrides = readonly OverrideEntry[];
 export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; instance: InstanceDetail & LoadedImages }) {
   const { CanvasStage, applyOverrides, setOverride, clearOverride, sameOverrides, nodeById, textRoom, cleanName, createHistory, commit, seal, undo, redo, canUndo, canRedo, ExportError, LIMITS } = engine;
   const toast = useToast();
+  const router = useRouter();
+  // The compose draft that opened this design (Path A): Save exports and attaches there. Opened from /canvas, there is none.
+  const postId = useSearchParams().get("post");
+  const [savingExport, setSavingExport] = useState(false);
 
   const base: CanvasDocument = instance.document;
   const manifest = instance.manifest;
@@ -154,6 +164,53 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
     }
   };
 
+  /**
+   * Save (Path A): the design is already autosaved; this draws the file(s) the draft's channels need, stores them and
+   * attaches them to the draft, then returns to it. It never submits the post and never touches the compose form: the
+   * attach endpoint writes only content.canvasExport, so unsaved fields in the other tab stay.
+   */
+  const saveToDraft = async () => {
+    const handle = stage.current;
+    if (!postId || !handle || savingExport) return;
+    setSavingExport(true);
+    try {
+      if (!(await autosave.flush())) {
+        toast.error("Your latest changes could not be saved yet. Try again.");
+        return;
+      }
+      const job = await fetchJob(postId);
+      if (job.status !== "draft" || job.approvalStatus === "pending") {
+        toast.error("This post is not a plain draft any more. Open it and send it back to Draft first.");
+        return;
+      }
+      const platforms = job.targets.map((t) => t.account?.platform).filter((p): p is string => Boolean(p));
+      const formats = exportFormatsFor(platforms);
+      // One JPEG serves both the PDF page and Instagram; the engine draws it once.
+      const jpeg = formats.some((f) => f === "jpeg" || f === "pdf") ? await handle.exportImage({ format: "jpeg", multiplier: 1 }) : null;
+      // The format is the one the SERVER stored (the upload route reports it), never the one we asked it to export:
+      // the two can only agree, but claiming the stored one is what keeps the attach's extension check exact.
+      const stored = async (blob: Blob, name: string) => {
+        const { url, mimeType } = await uploadDesignFile(blob, name);
+        const format = formatFromMime(mimeType);
+        if (!format) throw new Error("The design was stored in a format this draft cannot use.");
+        return { format, mediaUrl: url };
+      };
+      const files: Array<{ format: "png" | "jpeg" | "pdf"; mediaUrl: string }> = [];
+      if (formats.includes("pdf") && jpeg) files.push(await stored(await jpegToPdf(jpeg, effective.width, effective.height), "design.pdf"));
+      if (formats.includes("jpeg") && jpeg) files.push(await stored(jpeg, "design.jpg"));
+      if (formats.includes("png")) files.push(await stored(await handle.exportImage({ format: "png", multiplier: 1 }), "design.png"));
+      const version = autosave.currentVersion() ?? instance.version;
+      await attachDesignExport(postId, { instanceId: instance.id, version, files });
+      notifyDesignExportSaved(postId);
+      toast.success("Design saved to your draft.");
+      router.push(`/jobs/${encodeURIComponent(postId)}/edit`);
+    } catch (err) {
+      toast.error(err instanceof ExportError ? err.message : canvasProblem(err, "The design could not be saved to the draft."));
+    } finally {
+      setSavingExport(false);
+    }
+  };
+
   // Keyboard: undo and redo, and Escape. Nothing here moves or deletes a layer. Typing in a field keeps its own keys.
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -224,7 +281,19 @@ export function InstanceEditor({ engine, instance }: { engine: CanvasEngine; ins
         actions={
           <>
             <span className="hidden type-body-r-xs text-muted xl:inline">Based on revision {instance.baseRevision.number}</span>
-            <SaveDraftAction flush={autosave.flush} disabled={autosave.info.state === "archived" || autosave.info.state === "deleted"} />
+            {postId ? (
+              <Button
+                size="sm"
+                onClick={() => void saveToDraft()}
+                disabled={savingExport || autosave.info.state === "archived" || autosave.info.state === "deleted"}
+                aria-busy={savingExport}
+                title="Save the design and attach it to the post"
+              >
+                <SaveIcon /> <span className="max-sm:sr-only">{savingExport ? "Saving…" : "Save"}</span>
+              </Button>
+            ) : (
+              <SaveDraftAction flush={autosave.flush} disabled={autosave.info.state === "archived" || autosave.info.state === "deleted"} />
+            )}
             <ReviewAction designId={instance.id} review={review} flush={autosave.flush} />
             <ExportMenu width={effective.width} height={effective.height} busy={exporting} onExport={onExport} />
           </>

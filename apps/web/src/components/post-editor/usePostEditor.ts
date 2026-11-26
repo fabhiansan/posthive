@@ -7,6 +7,7 @@ import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { apiFetch } from "@/lib/api";
 import { normalizeCategory } from "@/lib/contentTypes";
+import { clearDesignExport, designExportOf, DESIGN_EXPORT_CHANNEL } from "@/lib/designExport";
 import { fetchJob, submitForReview } from "@/lib/jobActions";
 import type { DesignRequestView, Job } from "@/lib/jobTypes";
 import {
@@ -98,6 +99,48 @@ export function usePostEditor(jobId: string | null) {
     apiFetch<Account[]>("/accounts").then(setAccounts).catch(() => {});
   }, []);
 
+  /**
+   * The Studio saved an export in its own tab: take ONLY that key from the server. The form (and every unsaved field)
+   * stays exactly as the person left it. The BroadcastChannel message arrives at once; a focus/visibility change is
+   * the fallback, and covers a browser without BroadcastChannel.
+   */
+  const refreshDesignExport = useCallback(async () => {
+    if (!postId) return;
+    try {
+      const fresh = await fetchJob(postId);
+      setJob((j) => {
+        if (!j) return j;
+        const content = parseContent(j.content);
+        const next = parseContent(fresh.content).canvasExport;
+        if (next === undefined) delete content.canvasExport;
+        else content.canvasExport = next;
+        return { ...j, content: JSON.stringify(content) };
+      });
+    } catch {
+      // the next save or reload reads it; a failed refresh must not disturb the form
+    }
+  }, [postId]);
+
+  useEffect(() => {
+    if (!postId) return;
+    const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(DESIGN_EXPORT_CHANNEL) : null;
+    const onMessage = (e: MessageEvent) => {
+      if ((e.data as { jobId?: string } | null)?.jobId === postId) void refreshDesignExport();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshDesignExport();
+    };
+    channel?.addEventListener("message", onMessage);
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      channel?.removeEventListener("message", onMessage);
+      channel?.close();
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [postId, refreshDesignExport]);
+
   // Opened from the Template Library (/compose?template=<id>): the template's pillar and category are filled in, and only
   // those. The parameter is taken out of the address, and any other one (?design=) stays.
   const templates = templatesState.data?.templates;
@@ -133,6 +176,7 @@ export function usePostEditor(jobId: string | null) {
 
   // ── What the page may do ──────────────────────────────────────────────────
   const stored = useMemo(() => parseContent(job?.content ?? "{}"), [job]);
+  const designExport = useMemo(() => designExportOf(stored.canvasExport), [stored]);
   const request: DesignRequestView | null = job?.designRequest ?? null;
   const isNew = postId === null;
   const status = job?.status ?? "draft";
@@ -259,14 +303,32 @@ export function usePostEditor(jobId: string | null) {
     setJob((j) => (j ? { ...j, content: JSON.stringify({ ...parseContent(j.content), ...ids }) } : j));
   }
 
+  /** Removes the Studio's generated export from the draft; the server releases its files. Its own busy state is in the card. */
+  const removeDesignExport = async () => {
+    if (!postId) return;
+    try {
+      await clearDesignExport(postId);
+      setJob((j) => {
+        if (!j) return j;
+        const content = parseContent(j.content);
+        delete content.canvasExport;
+        return { ...j, content: JSON.stringify(content) };
+      });
+      success("Generated design removed.");
+    } catch (e) {
+      toastError(messageOf(e));
+    }
+  };
+
   return {
     // state
     job, stored, load, loadError, accounts, templates, templatesLoading: templatesState.loading, form, initial, set, dirty, uploading, setUploading, opening, setOpening, saveBlocked: link,
     briefDirty, setBriefDirty, busy, request, setRequest: (r: DesignRequestView | null) => setJob((j) => (j ? { ...j, designRequest: r } : j)),
+    designExport,
     // what the page may do
     isNew, postId, status, approvalStatus, readOnlyReason, approvalFlow, missing, actions, primaryBlock, template, perms,
     // actions
-    ensurePost, ensureSaved, saveDraft, savePrimary, submit, schedule, noteCanvas,
+    ensurePost, ensureSaved, saveDraft, savePrimary, submit, schedule, noteCanvas, removeDesignExport,
   };
 }
 

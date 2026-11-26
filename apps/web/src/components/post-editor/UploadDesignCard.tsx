@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type DragEvent } from "react";
-import { CloudUploadIcon, FileVideoIcon, LinkIcon, PaletteIcon, XIcon } from "lucide-react";
+import { CloudUploadIcon, FileTextIcon, FileVideoIcon, LinkIcon, XIcon } from "lucide-react";
 import { InlineAlert } from "@/components/InlineAlert";
 import { Spinner } from "@/components/Spinner";
 import { Button } from "@/components/ui/button";
@@ -9,9 +9,10 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { apiFetch, assetUrl } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import type { DesignExport } from "@/lib/designExport";
 import { designImageProblems, pruneDesigns, type PostDesign } from "@/lib/designImage";
 import { IMAGE_TYPES, MAX_FILES, MAX_IMAGE_MB, designLinkProblem, imageProblem, isVideoUrl, type PostFormat } from "@/lib/post-editor";
-import { ApprovedDesignPicker, DESIGN_DISCLOSURE } from "./ApprovedDesignPicker";
+import { DESIGN_DISCLOSURE } from "./ApprovedDesignPicker";
 
 type Props = {
   format: PostFormat | "";
@@ -21,23 +22,27 @@ type Props = {
   /** The channels of the post, for the warning about a design a channel cannot take. */
   platforms: readonly string[];
   designFigmaUrl: string;
+  /** The files the Studio saved for this draft, shown apart from the manual uploads. */
+  designExport: DesignExport | null;
   onMedia: (change: { mediaUrls: string[]; canvasDesigns: PostDesign[] }) => void;
   onFigma: (url: string) => void;
+  onRemoveExport: () => Promise<void>;
   onBusy: (busy: boolean) => void;
   disabled?: boolean;
 };
 
 /**
- * Card C: the finished design as PNG or JPG (one file per slide of a carousel), an APPROVED Canvas design of the person's own, and
- * optionally the Figma link to its source.
+ * Card C: the finished design as PNG or JPG (one file per slide of a carousel), the files the Studio saved for this draft, and
+ * optionally the Figma link to its source. Posts from before Path A may also carry approved Canvas designs among the pictures;
+ * those are still marked and warned about, but the picker is no longer offered here.
  */
-export function UploadDesignCard({ format, mediaUrls, canvasDesigns, platforms, designFigmaUrl, onMedia, onFigma, onBusy, disabled }: Props) {
+export function UploadDesignCard({ format, mediaUrls, canvasDesigns, platforms, designFigmaUrl, designExport, onMedia, onFigma, onRemoveExport, onBusy, disabled }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [working, setWorking] = useState(false);
   const [problems, setProblems] = useState<string[]>([]);
   const [touched, setTouched] = useState(false);
-  const [picking, setPicking] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const designUrls = new Set(canvasDesigns.map((d) => d.mediaUrl));
   const designProblems = designImageProblems(canvasDesigns, platforms);
   const single = format === "single";
@@ -85,13 +90,6 @@ export function UploadDesignCard({ format, mediaUrls, canvasDesigns, platforms, 
   /** The pictures and the designs change in ONE patch, so a design never outlives its picture (the server prunes the same way). */
   const change = (urls: string[], designs: PostDesign[] = canvasDesigns) => onMedia({ mediaUrls: urls, canvasDesigns: pruneDesigns(designs, urls) });
   const remove = (url: string) => change(mediaUrls.filter((u) => u !== url));
-  const attached = ({ submissionId, url, bytes }: { submissionId: string; url: string; bytes: number }) => {
-    const design = { submissionId, mediaUrl: url, bytes };
-    // the same rule as an upload: a single image takes one picture (the videos of the old editor stay), a carousel adds a slide
-    if (single) change([...mediaUrls.filter(isVideoUrl), url], [design]);
-    else if (images.length < MAX_FILES) change([...mediaUrls, url], [...canvasDesigns, design]);
-    else setProblems([`A post takes ${MAX_FILES} files at most. Remove one first.`]);
-  };
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     setOver(false);
@@ -118,13 +116,53 @@ export function UploadDesignCard({ format, mediaUrls, canvasDesigns, platforms, 
         </p>
         <div className="flex flex-wrap justify-center gap-2">
           <Button variant="secondary" size="sm" disabled={disabled || working} onClick={() => input.current?.click()}>Browse files</Button>
-          <Button variant="secondary" size="sm" disabled={disabled || working} onClick={() => setPicking(true)}>
-            <PaletteIcon /> Use approved design
-          </Button>
         </div>
         <input ref={input} type="file" accept={IMAGE_TYPES.join(",")} multiple={!single} hidden aria-label="Choose design files" onChange={(e) => void upload(Array.from(e.target.files ?? []))} />
       </div>
-      <ApprovedDesignPicker open={picking} onClose={() => setPicking(false)} onAttach={attached} />
+
+      {designExport && designExport.files.length > 0 && (
+        <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+            <p className="type-body-sb-xs text-fg">From the Studio</p>
+            <p className="type-body-r-xxs text-muted">Saved automatically from this draft&apos;s design</p>
+          </div>
+          <ol aria-label="Generated design files" className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
+            {designExport.files.map((file) => (
+              <li key={file.mediaUrl} className="group relative aspect-square overflow-hidden rounded-xl bg-neutral-50">
+                {file.format === "pdf" ? (
+                  <a href={assetUrl(file.mediaUrl)} target="_blank" rel="noopener noreferrer" className="flex size-full flex-col items-center justify-center gap-1 p-2 text-center text-muted hover:text-fg">
+                    <FileTextIcon aria-hidden="true" className="size-6" />
+                    <span className="type-body-sb-xxs">PDF</span>
+                    <span className="type-body-r-xxs">Open</span>
+                  </a>
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={assetUrl(file.mediaUrl)} alt={`Generated ${file.format.toUpperCase()}`} loading="lazy" className="size-full object-cover" />
+                )}
+                <span className="absolute right-1 bottom-1 rounded-md bg-neutral-900/70 px-1.5 type-body-sb-xxs text-white">Studio</span>
+                <Button
+                  variant="secondary"
+                  size="icon-sm"
+                  aria-label="Remove the generated design"
+                  disabled={disabled || removing}
+                  onClick={async () => {
+                    if (removing) return;
+                    setRemoving(true);
+                    try {
+                      await onRemoveExport();
+                    } finally {
+                      setRemoving(false);
+                    }
+                  }}
+                  className="absolute top-1 right-1 size-6"
+                >
+                  <XIcon />
+                </Button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       {problems.length > 0 && (
         <ul role="alert" className="space-y-1 type-body-r-xs text-red-600">

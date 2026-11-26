@@ -29,6 +29,7 @@ const EXT_MAP: Record<string, string> = {
   "video/mp4": ".mp4",
   "video/quicktime": ".mov",
   "video/mov": ".mov",
+  "application/pdf": ".pdf",
   "application/x-figma": ".fig",
 };
 

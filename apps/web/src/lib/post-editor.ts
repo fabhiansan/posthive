@@ -69,6 +69,8 @@ export interface StoredContent {
   assetNotes?: string;
   canvasInstanceId?: string | null;
   canvasTemplateId?: string | null;
+  /** The Studio's generated export (lib/designExport); the server writes it, the form never sends it. */
+  canvasExport?: unknown;
   sourceRow?: number;
   importSource?: { fileName?: string };
   perAccount?: PerAccount;

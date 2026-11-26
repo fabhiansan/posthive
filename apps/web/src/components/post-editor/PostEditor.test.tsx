@@ -15,8 +15,6 @@ const h = vi.hoisted(() => ({
   workspace: { id: "ws-1", name: "Braga Geo", role: "member", approvalRequired: true },
   createInstance: vi.fn(),
   getInstance: vi.fn(),
-  // what the approved-design picker hands back when the stub attaches (the picker itself has its own test file)
-  attach: { submissionId: "sub1", url: "/uploads/canvas-designs/sub1/p.png", bytes: 2_000_000 },
 }));
 
 vi.mock("@/lib/api", () => ({ apiFetch: h.apiFetch, assetUrl: (u: string) => u, API_BASE: "http://api" }));
@@ -30,10 +28,9 @@ vi.mock("@/components/TrialUrgentBanner", () => ({ TrialUrgentBanner: () => null
 vi.mock("@/components/templates/TemplatesHeader", () => ({ TemplatesHeader: ({ title }: { title: string }) => <h1>{title}</h1> }));
 vi.mock("@/lib/canvas", () => ({ createInstance: h.createInstance, getInstance: h.getInstance }));
 vi.mock("@/lib/track", () => ({ trackEvent: vi.fn() }));
+// The picker is no longer offered in Compose (Path A attaches the Studio export); only its disclosure text is still read.
 vi.mock("./ApprovedDesignPicker", () => ({
   DESIGN_DISCLOSURE: "DISCLOSURE: the picture itself cannot be checked.",
-  ApprovedDesignPicker: ({ open, onAttach, onClose }: { open: boolean; onAttach: (a: typeof h.attach) => void; onClose: () => void }) =>
-    open ? <button onClick={() => { onAttach(h.attach); onClose(); }}>Stub: attach design</button> : null,
 }));
 
 import { PostEditor } from "./PostEditor";
@@ -468,7 +465,7 @@ describe("Edit Content: Path A, the template and the Studio", () => {
     render(<PostEditor jobId="p1" />);
     await ready();
     await userEvent.click(await screen.findByRole("button", { name: "Open Studio Editor" }));
-    await waitFor(() => expect(tab.location.href).toContain("/canvas/ckcccccccccccccccccccccc"));
+    await waitFor(() => expect(tab.location.href).toContain("/canvas/ckcccccccccccccccccccccc?post=p1"));
     expect(open).toHaveBeenCalledWith("", "_blank");
     expect(h.createInstance).toHaveBeenCalledWith(TEMPLATE.id);
     expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ canvasInstanceId: "ckcccccccccccccccccccccc", canvasTemplateId: TEMPLATE.id });
@@ -481,7 +478,7 @@ describe("Edit Content: Path A, the template and the Studio", () => {
     render(<PostEditor jobId="p1" />);
     await ready();
     const link = await screen.findByRole("link", { name: "Open Studio Editor" });
-    expect(link.getAttribute("href")).toBe("/canvas/ckcccccccccccccccccccccc");
+    expect(link.getAttribute("href")).toBe("/canvas/ckcccccccccccccccccccccc?post=p1");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(h.createInstance).not.toHaveBeenCalled();
   });
@@ -607,36 +604,21 @@ describe("Edit Content: what the review found", () => {
 
 describe("an approved Canvas design on the post", () => {
   const DESIGN = { submissionId: "sub1", mediaUrl: "/uploads/canvas-designs/sub1/p.png" };
-  const attach = async () => {
-    await userEvent.click(await screen.findByRole("button", { name: /Use approved design/ }));
-    await userEvent.click(await screen.findByRole("button", { name: "Stub: attach design" }));
-  };
+  const withDesign = (bytes = 2_000_000, extra: Record<string, unknown> = {}) =>
+    job({ content: JSON.stringify({ ...STORED, mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [{ ...DESIGN, bytes }] }), ...extra });
 
-  it("attaching sends the picture AND the design in one save: only the id and the picture, never the size", async () => {
+  it("marks the picture as a Canvas design and no longer offers the approved-design picker", async () => {
+    current = withDesign();
     render(<PostEditor jobId="p1" />);
     await ready();
-    await attach();
-    await userEvent.click(button("Save as Draft"));
-    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
-    // format is "single": the design replaces the picture
-    expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [DESIGN] });
-  });
-
-  it("a carousel keeps its slides and adds the design as one more", async () => {
-    current = job({ content: JSON.stringify({ ...STORED, format: "carousel", mediaUrls: ["/uploads/a.png", "/uploads/b.png"] }) });
-    render(<PostEditor jobId="p1" />);
-    await ready();
-    await attach();
-    await userEvent.click(button("Save as Draft"));
-    await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
-    expect(bodyOf("/jobs/p1", "PATCH")).toEqual({ mediaUrls: ["/uploads/a.png", "/uploads/b.png", DESIGN.mediaUrl], canvasDesigns: [DESIGN] });
+    expect(screen.getByText("Canvas")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Use approved design/ })).toBeNull();
   });
 
   it("removing the design's picture sends the pictures and an EMPTY design list, so no stale reference is left", async () => {
-    current = job({ content: JSON.stringify({ ...STORED, mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [{ ...DESIGN, bytes: 2_000_000 }] }) });
+    current = withDesign();
     render(<PostEditor jobId="p1" />);
     await ready();
-    expect(screen.getByText("Canvas")).toBeTruthy(); // the picture is marked as a Canvas design
     await userEvent.click(screen.getByRole("button", { name: "Remove file 1" }));
     await userEvent.click(button("Save as Draft"));
     await waitFor(() => expect(calls("/jobs/p1", "PATCH")).toHaveLength(1));
@@ -644,7 +626,7 @@ describe("an approved Canvas design on the post", () => {
   });
 
   it("a post that already holds a design saves an unrelated edit WITHOUT resending it", async () => {
-    current = job({ content: JSON.stringify({ ...STORED, mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [{ ...DESIGN, bytes: 2_000_000 }] }) });
+    current = withDesign();
     render(<PostEditor jobId="p1" />);
     await ready();
     await userEvent.type(screen.getByLabelText(/Content title/), "!");
@@ -653,23 +635,11 @@ describe("an approved Canvas design on the post", () => {
     expect(Object.keys(bodyOf("/jobs/p1", "PATCH"))).toEqual(["title"]);
   });
 
-  it("a new post sends the design with its picture when it is created", async () => {
-    render(<PostEditor />);
-    await screen.findByRole("heading", { name: "Add Content" });
-    await attach();
-    await userEvent.type(screen.getByLabelText(/Content title/), "T");
-    await userEvent.click(button("Save as Draft"));
-    await waitFor(() => expect(calls("/jobs", "POST")).toHaveLength(1));
-    expect(bodyOf("/jobs", "POST").content).toMatchObject({ mediaUrls: [DESIGN.mediaUrl], canvasDesigns: [DESIGN] });
-  });
-
   it("says before publishing that Instagram cannot take it, names the reason, and the warning goes away with the channel", async () => {
-    current = job({ targets: [{ id: "t1", accountId: "acc-ig", status: "pending", platformPostId: null, error: null, attempts: 0, account: null }] });
+    current = withDesign(2_000_000, { targets: [{ id: "t1", accountId: "acc-ig", status: "pending", platformPostId: null, error: null, attempts: 0, account: null }] });
     render(<PostEditor jobId="p1" />);
     await ready();
-    await attach();
-    const alert = await screen.findByText("An approved design can't go to every channel you picked");
-    expect(alert).toBeTruthy();
+    expect(await screen.findByText("An approved design can't go to every channel you picked")).toBeTruthy();
     expect(screen.getByText(/Instagram publishes JPEG pictures only.*does not convert/)).toBeTruthy();
     expect(screen.getByText(/DISCLOSURE/)).toBeTruthy();
     await userEvent.click(screen.getByRole("checkbox", { name: "Instagram: @braga.geo" }));
@@ -677,10 +647,9 @@ describe("an approved Canvas design on the post", () => {
   });
 
   it("no warning for a channel with no known problem, and none without a design", async () => {
-    render(<PostEditor jobId="p1" />); // LinkedIn, 2 MB: under its 5 MB
+    current = withDesign(); // LinkedIn, 2 MB: under its 5 MB
+    render(<PostEditor jobId="p1" />);
     await ready();
-    expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
-    await attach();
     expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
   });
 
@@ -698,19 +667,46 @@ describe("an approved Canvas design on the post", () => {
       }
       throw new Error(`unexpected ${method} ${path}`);
     });
-    render(<PostEditor jobId="p1" />); // LinkedIn: 5 MB limit
+    current = withDesign(); // LinkedIn: 5 MB limit, the browser's 2 MB is under it
+    render(<PostEditor jobId="p1" />);
     await ready();
-    await attach(); // the browser's own number (2 MB) is under the limit
     expect(screen.queryByText("An approved design can't go to every channel you picked")).toBeNull();
+    await userEvent.type(screen.getByLabelText(/Content title/), "!"); // a real change, so the save sends a PATCH
     await userEvent.click(button("Save as Draft"));
     expect(await screen.findByText(/LinkedIn accepts pictures up to 5\.00 MB.*6\.00 MB/)).toBeTruthy(); // the server measured 6 MB
   });
+});
 
-  it("is not offered when the post is locked", async () => {
-    h.perms = { canEditContent: false, canReview: false, canManageTemplates: false, canSubmitOwn: false, loading: false };
+describe("the Studio's generated export on the draft", () => {
+  const EXPORT = { instanceId: "i1", version: 3, files: [{ format: "pdf", mediaUrl: "/uploads/d.pdf" }, { format: "jpeg", mediaUrl: "/uploads/d.jpg" }] };
+  const withExport = () => job({ content: JSON.stringify({ ...STORED, canvasExport: EXPORT }) });
+
+  it("shows the files apart from the manual uploads, with a Studio badge and an open link for the PDF", async () => {
+    current = withExport();
     render(<PostEditor jobId="p1" />);
     await ready();
-    expect((screen.getByRole("button", { name: /Use approved design/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(await screen.findByText("From the Studio")).toBeTruthy();
+    expect(screen.getAllByText("Studio")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: /PDF/ }).getAttribute("href")).toBe("/uploads/d.pdf");
+    expect(screen.getByAltText("Generated JPEG")).toBeTruthy();
+  });
+
+  it("removing it calls the server and takes it out of the card", async () => {
+    h.apiFetch.mockImplementation(async (path: string, init?: { method?: string }) => {
+      const method = init?.method ?? "GET";
+      if (path === "/accounts") return ACCOUNTS;
+      if (path === "/templates") return { templates };
+      if (path === "/jobs/p1" && method === "GET") return current;
+      if (path === "/jobs/p1/design-export" && method === "DELETE") return { ok: true };
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    current = withExport();
+    render(<PostEditor jobId="p1" />);
+    await ready();
+    const removes = await screen.findAllByRole("button", { name: "Remove the generated design" });
+    await userEvent.click(removes[0]);
+    await waitFor(() => expect(calls("/jobs/p1/design-export", "DELETE")).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByText("From the Studio")).toBeNull());
   });
 });
 

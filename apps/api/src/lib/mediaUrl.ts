@@ -20,11 +20,15 @@ const MAX_URL = 2048;
 export const isStoredUploadPath = (url: unknown): url is string =>
   typeof url === "string" && url.length <= MAX_URL && /^\/uploads\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(url);
 
-/** Every address in a post's content that can be a stored file: the pictures and videos, the YouTube thumbnail and the YouTube video address. */
+/** Every address in a post's content that can be a stored file: the pictures and videos, the YouTube thumbnail and video address, and the Studio export. */
 export function contentMediaUrls(content: string): string[] {
   try {
-    const c = JSON.parse(content) as { mediaUrls?: unknown; youtubeThumbnailUrl?: unknown; youtubeVideoUrl?: unknown };
-    return [...(Array.isArray(c.mediaUrls) ? c.mediaUrls : []), c.youtubeThumbnailUrl, c.youtubeVideoUrl].filter((u): u is string => typeof u === "string" && u.length > 0);
+    const c = JSON.parse(content) as { mediaUrls?: unknown; youtubeThumbnailUrl?: unknown; youtubeVideoUrl?: unknown; canvasExport?: unknown };
+    const exportFiles = (c.canvasExport as { files?: unknown } | null)?.files;
+    const designs = Array.isArray(exportFiles)
+      ? exportFiles.map((f) => (f && typeof f === "object" ? (f as { mediaUrl?: unknown }).mediaUrl : undefined))
+      : [];
+    return [...(Array.isArray(c.mediaUrls) ? c.mediaUrls : []), c.youtubeThumbnailUrl, c.youtubeVideoUrl, ...designs].filter((u): u is string => typeof u === "string" && u.length > 0);
   } catch {
     return [];
   }

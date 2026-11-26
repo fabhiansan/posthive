@@ -51,4 +51,13 @@ describe("contentMediaUrls", () => {
     for (const c of ["", "not json", "null", "[]", "{}", JSON.stringify({ mediaUrls: "x" })]) expect(contentMediaUrls(c)).toEqual([]);
     expect(contentMediaUrls(JSON.stringify({ mediaUrls: [1, null, "/uploads/a.png", ""], youtubeThumbnailUrl: 5 }))).toEqual(["/uploads/a.png"]);
   });
+  it("collects the Studio export's files too, so a delete or a copy owns them like any other media", () => {
+    const c = JSON.stringify({
+      mediaUrls: ["/uploads/a.png"],
+      canvasExport: { instanceId: "i1", version: 1, files: [{ format: "pdf", mediaUrl: "/uploads/d.pdf" }, { format: "jpeg", mediaUrl: "/uploads/d.jpg" }] },
+    });
+    expect(contentMediaUrls(c)).toEqual(["/uploads/a.png", "/uploads/d.pdf", "/uploads/d.jpg"]);
+    expect(contentMediaUrls(JSON.stringify({ canvasExport: { files: "x" } }))).toEqual([]);
+    expect(contentMediaUrls(JSON.stringify({ canvasExport: { files: [null, 4, { mediaUrl: 5 }] } }))).toEqual([]);
+  });
 });

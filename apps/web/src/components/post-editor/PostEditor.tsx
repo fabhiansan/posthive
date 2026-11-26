@@ -98,6 +98,7 @@ export function PostEditor({ jobId = null }: { jobId?: string | null }) {
                       onPick={(t) => set({ pillar: t.pillar, category: t.category })}
                       canvasInstanceId={stored.canvasInstanceId ?? null}
                       canvasTemplateId={stored.canvasTemplateId ?? null}
+                      postId={editor.postId}
                       ensurePost={editor.ensurePost}
                       onBusy={editor.setOpening}
                       onOpened={async (ids, id) => {
@@ -126,8 +127,10 @@ export function PostEditor({ jobId = null }: { jobId?: string | null }) {
                   canvasDesigns={form.canvasDesigns}
                   platforms={accounts.filter((a) => form.accountIds.includes(a.id)).map((a) => a.platform)}
                   designFigmaUrl={form.designFigmaUrl}
+                  designExport={editor.designExport}
                   onMedia={(change) => set(change)}
                   onFigma={(designFigmaUrl) => set({ designFigmaUrl })}
+                  onRemoveExport={editor.removeDesignExport}
                   onBusy={editor.setUploading}
                   disabled={locked}
                 />

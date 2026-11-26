@@ -13,6 +13,8 @@ type Props = {
   /** The Canvas design this post already opened from this template, if any. */
   canvasInstanceId: string | null;
   canvasTemplateId: string | null;
+  /** The post the Studio saves back to. Null only before Add mode has made its draft (ensurePost then returns it). */
+  postId: string | null;
   /** The post's id, creating the draft first in Add mode: Studio opens a design that belongs to a post that exists. */
   ensurePost: () => Promise<string>;
   /** Saves the design on the post. Never an edit of the content: it does not send the post back out of review. */
@@ -27,7 +29,7 @@ type Props = {
  * on the post: pressing it again opens the same design, not another one. A template that has no Canvas design but a Figma
  * link opens that link; one with neither says so.
  */
-export function StudioButton({ template, canvasInstanceId, canvasTemplateId, ensurePost, onOpened, onBusy, disabled }: Props) {
+export function StudioButton({ template, canvasInstanceId, canvasTemplateId, postId, ensurePost, onOpened, onBusy, disabled }: Props) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   // The design the post kept: used only when it was made from THIS template (a category change never reopens another's)
@@ -62,7 +64,7 @@ export function StudioButton({ template, canvasInstanceId, canvasTemplateId, ens
   if (alive) {
     return (
       <Button asChild>
-        <a href={`/canvas/${alive}`} target="_blank" rel="noopener noreferrer">
+        <a href={`/canvas/${alive}${postId ? `?post=${encodeURIComponent(postId)}` : ""}`} target="_blank" rel="noopener noreferrer">
           <PaletteIcon />
           Open Studio Editor
         </a>
@@ -76,10 +78,10 @@ export function StudioButton({ template, canvasInstanceId, canvasTemplateId, ens
     setBusy(true);
     onBusy?.(true);
     try {
-      const postId = await ensurePost();
+      const jobId = await ensurePost();
       const { instance } = await createInstance(template.id);
-      await onOpened({ canvasInstanceId: instance.id, canvasTemplateId: template.id }, postId);
-      if (tab) tab.location.href = `${window.location.origin}/canvas/${instance.id}`;
+      await onOpened({ canvasInstanceId: instance.id, canvasTemplateId: template.id }, jobId);
+      if (tab) tab.location.href = `${window.location.origin}/canvas/${instance.id}?post=${encodeURIComponent(jobId)}`;
       else toast.success("Your design is ready. Press Open Studio Editor.");
     } catch (e) {
       tab?.close();

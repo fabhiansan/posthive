@@ -67,6 +67,7 @@ import { aiRoutes } from "./routes/ai.js";
 import { libraryRoutes } from "./routes/library.js";
 import { accountGroupRoutes } from "./routes/accountGroups.js";
 import { canvasRoutes } from "./routes/canvas.js";
+import { designExportRoutes } from "./routes/designExport.js";
 import { publicUploadsStatic } from "./lib/canvasAssets.js";
 import { withAuth } from "./lib/auth/withAuth.js";
 import { validateAuthConfig } from "./lib/auth/config.js";
@@ -196,6 +197,7 @@ async function main() {
   // App routes (auth required — withAuth applied per-route)
   await app.register(accountRoutes, { storage });
   await app.register(jobRoutes, { storage });
+  await app.register(designExportRoutes, { storage });
   await app.register(jobsListRoutes);
   await app.register(designRequestRoutes);
   await app.register(designTaskRoutes);

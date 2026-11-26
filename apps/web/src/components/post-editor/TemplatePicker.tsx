@@ -24,6 +24,8 @@ type Props = {
   picked: DesignTemplate | null;
   canvasInstanceId: string | null;
   canvasTemplateId: string | null;
+  /** The post the Studio saves its export back to. */
+  postId: string | null;
   ensurePost: () => Promise<string>;
   onOpened: (ids: { canvasInstanceId: string; canvasTemplateId: string }, postId: string) => Promise<void>;
   /** The Studio is being opened (true) or is open (false). */
@@ -34,7 +36,7 @@ type Props = {
 const ALL = "all";
 
 /** Path A: pick one of the published templates, then open it in the Studio. Picking only fills the pillar and the category. */
-export function TemplatePicker({ templates, loading, category, onPick, picked, canvasInstanceId, canvasTemplateId, ensurePost, onOpened, onBusy, disabled }: Props) {
+export function TemplatePicker({ templates, loading, category, onPick, picked, canvasInstanceId, canvasTemplateId, postId, ensurePost, onOpened, onBusy, disabled }: Props) {
   const [filters, setFilters] = useState<LibraryFilters>(NO_FILTERS);
   const [chip, setChip] = useState(ALL);
 
@@ -128,7 +130,7 @@ export function TemplatePicker({ templates, loading, category, onPick, picked, c
           The selected template opens in the design Studio, where you can customize its text and images. Export it, then upload the result below.
         </p>
         {picked ? (
-          <StudioButton template={picked} canvasInstanceId={canvasInstanceId} canvasTemplateId={canvasTemplateId} ensurePost={ensurePost} onOpened={onOpened} onBusy={onBusy} disabled={disabled} />
+          <StudioButton template={picked} canvasInstanceId={canvasInstanceId} canvasTemplateId={canvasTemplateId} postId={postId} ensurePost={ensurePost} onOpened={onOpened} onBusy={onBusy} disabled={disabled} />
         ) : (
           <p className="type-body-r-xs text-muted">Pick a template to open it in the Studio.</p>
         )}

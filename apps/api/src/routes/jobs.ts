@@ -539,6 +539,11 @@ export async function jobRoutes(app: FastifyInstance, { storage }: { storage: St
       const existing = JSON.parse(job.content) as Record<string, unknown>;
       const merged: Record<string, unknown> = { ...existing, ...changes, ...(type ?? {}) };
       if (Array.isArray(merged.canvasDesigns) && merged.canvasDesigns.length === 0) delete merged.canvasDesigns; // no design left: no key left
+      // The Studio writes content.canvasExport from its own tab (POST /jobs/:id/design-export). This form never edits that
+      // key, so carry the stored one over: a save that read the content before the Studio's write must not drop the export.
+      const latest = await prisma.postJob.findFirst({ where: { id, workspaceId }, select: { content: true } });
+      const latestExport = latest ? (JSON.parse(latest.content) as { canvasExport?: unknown }).canvasExport : undefined;
+      if (latestExport !== undefined) merged.canvasExport = latestExport;
       updateData.content = JSON.stringify(merged);
     }
     const metadataProblem = canvasDesignMetadataProblem(updateData.content ?? job.content);
