@@ -41,6 +41,9 @@ import { latestForInstances, latestSubmission } from "../lib/canvasReviewDb.js";
 import { userLimit } from "../lib/userRateLimit.js";
 import { canvasReviewRoutes } from "./canvasReview.js";
 import { canvasDesignRoutes } from "./canvasDesigns.js";
+import { FIG_LIMITS, FigError } from "../lib/figImport/limits.js";
+import { inspectFigWithWorker, tryAcquireFigSlot } from "../lib/figImport/inspect.js";
+import { createFigStaging, deleteFigStaging, saveFigUpload, startFigStagingCleanup } from "../lib/figImport/staging.js";
 
 const STORAGE_UNSUPPORTED = {
   error: "Canvas image assets need local storage (STORAGE_PROVIDER=local). R2 and Supabase private storage is not supported yet.",
@@ -71,6 +74,23 @@ const INSTANCE_SUMMARY = { id: true, name: true, version: true, createdAt: true,
 
 const DESIGN_LINKED = refuse(409, "This design is already attached to a template.", "DESIGN_LINKED");
 
+const FIG_MESSAGES: Record<FigError["code"], string> = {
+  FIG_INVALID: "The file is not a valid supported .fig archive.",
+  FIG_LIMIT: "The .fig exceeds a safety limit.",
+  FIG_TOO_LARGE: "The .fig is larger than 50 MB.",
+  FIG_BUSY: "Another .fig inspection is running.",
+  FIG_TIMEOUT: "The .fig inspection took too long.",
+  FIG_UPLOAD_TIMEOUT: "The upload took too long.",
+  FIG_WORKER_FAILED: "The .fig inspection worker failed.",
+  FIG_UNSUPPORTED: "This .fig uses an unsupported ZIP compression for canvas.fig.",
+};
+
+function figError(error: unknown): FigError {
+  if (error instanceof FigError) return error;
+  if ((error as { statusCode?: number } | null)?.statusCode === 413) return new FigError("FIG_TOO_LARGE", 413);
+  return new FigError("FIG_INVALID");
+}
+
 /** Locks one design's row until the transaction ends. Lock order everywhere: the template first, then the design. */
 async function lockDesign(tx: Prisma.TransactionClient, id: string, workspaceId: string): Promise<boolean> {
   const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Design" WHERE "id" = ${id} AND "workspaceId" = ${workspaceId} AND "kind" = ${KIND} FOR UPDATE`;
@@ -88,6 +108,7 @@ class TemplateChanged extends Error {}
  */
 export async function canvasRoutes(app: FastifyInstance, { storage, gate }: { storage: StorageAdapter; gate?: CanvasAuthGate | false }): Promise<void> {
   if (gate !== false) registerCanvasAuthGate(app, gate);
+  startFigStagingCleanup();
   const local = isPrivateAssetStorage(storage);
   if (!local) app.log.warn("Canvas image assets are disabled: they need STORAGE_PROVIDER=local (private delivery is only built for local disk).");
 
@@ -95,6 +116,31 @@ export async function canvasRoutes(app: FastifyInstance, { storage, gate }: { st
   const needsLocalStorage = async (_req: unknown, reply: FastifyReply) => {
     if (!local) return reply.status(501).send(STORAGE_UNSUPPORTED);
   };
+
+  // F1 inspects one native .fig without creating a Design, revision or asset. The worker owns all parsing; this
+  // process only streams the upload to private staging and relays a bounded, sanitised summary.
+  app.post("/canvas/imports/inspect", { preHandler: [withAuth, designerOnly], config: userLimit(10) }, async (req, reply) => {
+    const release = tryAcquireFigSlot();
+    if (!release) return reply.code(503).header("Retry-After", "5").send({ error: FIG_MESSAGES.FIG_BUSY, code: "FIG_BUSY" });
+    let staged: string | undefined;
+    try {
+      const file = await req.file({ limits: { fileSize: FIG_LIMITS.uploadBytes, files: 1 } });
+      if (!file) return reply.status(400).send({ error: "No file uploaded. Send it as the multipart field 'file'.", code: "FIG_INVALID" });
+      if (file.fieldname !== "file" || !/\.fig$/i.test(file.filename ?? "")) {
+        return reply.status(400).send({ error: "Send one .fig file as the multipart field 'file'.", code: "FIG_INVALID" });
+      }
+      staged = await createFigStaging();
+      await saveFigUpload(file, staged);
+      return await inspectFigWithWorker(staged, file.filename ?? "upload.fig");
+    } catch (error) {
+      const failure = figError(error);
+      req.log.warn({ code: failure.code }, "Figma inspection refused");
+      return reply.status(failure.status).send({ error: FIG_MESSAGES[failure.code], code: failure.code });
+    } finally {
+      release();
+      if (staged) await deleteFigStaging(staged);
+    }
+  });
 
   // Any workspace member may import: Marketing replaces images and Designers build with them.
   app.post(

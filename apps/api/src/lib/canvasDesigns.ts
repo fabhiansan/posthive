@@ -5,6 +5,7 @@ import { INSTANCE, refuse, type Refusal } from "./canvasHttp.js";
 import { canvasDesignMetadataProblem, pruneDesigns, type StoredDesign } from "./designImage.js";
 import { isStoredUploadPath, toStoredUrl } from "./mediaUrl.js";
 import type { StorageAdapter } from "./storage.js";
+import { MAX_IMAGE_SIDE as MAX_SIDE } from "./canvasImageBounds.js";
 
 /**
  * Approved Canvas designs on a post (phase 7, T7). What the server establishes, and what it cannot:
@@ -21,7 +22,6 @@ import type { StorageAdapter } from "./storage.js";
 export const MAX_DESIGN_PNG_BYTES = 10_000_000;
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const IEND = Buffer.from([0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
-const MAX_SIDE = 8192;
 
 export class DesignImageRejected extends Error {
   constructor(

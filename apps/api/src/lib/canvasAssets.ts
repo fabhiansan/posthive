@@ -18,12 +18,11 @@
 import type { FastifyStaticOptions } from "@fastify/static";
 import { SaxesParser, type SaxesTagNS } from "saxes";
 import { LocalDiskStorage, type StorageAdapter } from "./storage.js";
+import { MAX_IMAGE_PIXELS as MAX_PIXELS, MAX_IMAGE_SIDE as MAX_SIDE } from "./canvasImageBounds.js";
 
 export const CANVAS_PRIVATE_DIR = ".canvas-private";
 export const MAX_ASSET_BYTES = 10_000_000; // PNG limit, also the upload request cap
 const MAX_SVG_BYTES = 1_000_000;
-const MAX_SIDE = 8192;
-const MAX_PIXELS = 40e6;
 const RASTER_EDGE = 3072;
 const MAX_DEPTH = 64;
 const MAX_ELEMENTS = 10_000;
